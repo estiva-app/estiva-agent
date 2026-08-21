@@ -1,0 +1,46 @@
+name: check
+
+# No deploy job. Nothing here is served: the outputs are a CLI, an MCP server
+# and an extension bundle, all of which run on somebody's machine.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Offline and credential-free by construction. `conformance.test.ts` is the
+      # one that matters most here: it is the only thing standing between this
+      # repository's vendored fold and Ship's, now that they are separated.
+      - name: Test
+        run: npm test
+
+      # Onboarding is what the extension is for, and a build only its author can
+      # run puts the author back in the loop for every new person.
+      - name: Pack the Desktop extension
+        run: npm run extension:pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: estiva-agent-mcpb
+          path: extension/estiva-agent.mcpb
+          retention-days: 30

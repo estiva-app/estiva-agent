@@ -1,0 +1,29 @@
+{
+  "name": "estiva-agent",
+  "private": true,
+  "type": "module",
+  "description": "Read and act on the Estiva ecosystem as a service identity — MCP server, CLI, and Claude Desktop extension",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "agent": "tsx scripts/agent.ts",
+    "mcp": "tsx scripts/mcp-server.ts",
+    "probe:agent": "tsx scripts/probe-agent.ts",
+    "probe:manifest": "tsx scripts/manifest-reader.ts",
+    "extension": "node scripts/build-extension.mjs",
+    "extension:pack": "node scripts/build-extension.mjs --pack",
+    "test": "tsx scripts/nip19.test.ts && tsx scripts/signer.test.ts && tsx scripts/conformance.test.ts && tsx scripts/agent-cli.test.ts && tsx scripts/mcp-server.test.ts && tsx scripts/extension.test.ts && tsx scripts/manifest-reader.test.ts",
+    "test:signer:agent": "tsx scripts/agent-signer.test.ts",
+    "soak:renewal": "tsx scripts/agent-renewal-soak.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@noble/curves": "1.9.2",
+    "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
+    "typescript": "~5.9.3"
+  }
+}
