@@ -41,9 +41,29 @@ export interface ServiceCredentials {
   base?: string
 }
 
+/**
+ * Where the credential this process is using actually came from.
+ *
+ * Reported because two surfaces of one client can disagree about it and nothing
+ * says so. On a Windows machine with WSL, a packaged Desktop extension is given
+ * its credential by Desktop from the OS keychain, while a Claude Code session in
+ * the same account reads `~/.estiva-agent.env` inside the distro — two
+ * credentials, two homes, drifting apart silently. Re-issuing either **revokes**
+ * the other, because minting replaces, so the first symptom is one surface
+ * failing `invalid_client` for no visible reason (PEEK-168).
+ */
+export interface CredentialSource {
+  /** `environment` when the process was handed them, `file` when it read them. */
+  from: 'environment' | 'file' | 'mixed'
+  /** The file that was read or looked for, whichever happened. */
+  file: string
+  fileState: 'read' | 'absent' | 'unreadable'
+}
+
 /** Credentials with the default already applied, so callers need no `??`. */
 export interface ResolvedCredentials extends ServiceCredentials {
   base: string
+  source: CredentialSource
 }
 
 export interface TokenResponse {
@@ -246,9 +266,24 @@ export function loadCredentials(env: NodeJS.ProcessEnv = process.env): ResolvedC
     )
   }
 
+  /*
+    Which half won, per value rather than overall. A machine that has both a
+    file and an environment variable is the normal state for somebody who set
+    the file up first and then installed the extension, and "mixed" is the
+    honest answer there — it is also the state most likely to surprise
+    somebody, because half their configuration is being ignored.
+  */
+  const idFrom = fromEnv.clientId ? 'environment' : 'file'
+  const secretFrom = fromEnv.clientSecret ? 'environment' : 'file'
+
   return {
     clientId,
     clientSecret,
     base: fromEnv.base || fromFile.ESTIVA_ID_BASE || DEFAULT_ID_BASE,
+    source: {
+      from: idFrom === secretFrom ? idFrom : 'mixed',
+      file,
+      fileState,
+    },
   }
 }

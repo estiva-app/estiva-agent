@@ -13,6 +13,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BadRequest, flagValue, parseArgs } from '../lib/agent/cli'
+import { isWslKernel } from '../lib/agent/cli'
 import { loadCredentials } from '../lib/agent/credentials'
 import { findIssue, findProject, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
@@ -276,6 +277,54 @@ try {
 
   const commandLike = /set -a|source |npm |npx |chmod |export [A-Z_]+=/.test(message)
   check('contains no command for a model to run', !commandLike, message.slice(0, 70))
+}
+
+/*
+  Where this process is running (PEEK-168).
+
+  The environment is what actually broke twice — a Desktop extension on the
+  Windows host and a Code session inside WSL are separate installs with separate
+  credentials, and each answered "is it working?" truthfully about itself while
+  saying nothing about the other. Both checks below take their input as an
+  argument, because a check that reads the machine it runs on can only ever
+  confirm that machine.
+*/
+{
+  const wslKernel = 'Linux version 6.6.87.2-microsoft-standard-WSL2 (root@abc) #1 SMP'
+  const plainKernel = 'Linux version 6.1.0-18-amd64 (debian-kernel@lists.debian.org) #1 SMP'
+  check('a WSL kernel is recognised', isWslKernel(wslKernel))
+  check('an ordinary Linux kernel is not', !isWslKernel(plainKernel))
+  // Case, because the string is not ours and has varied across releases.
+  check('and the match is case-insensitive', isWslKernel('Linux version 5.15-Microsoft-Standard'))
+}
+
+/*
+  Which credential won, and where it came from.
+
+  Two surfaces of one client can each be correctly configured while holding
+  *different* credentials, and re-issuing either revokes the other because
+  minting replaces. Naming the source is the only thing that makes that visible
+  without a shell.
+*/
+{
+  const both = loadCredentials({
+    ESTIVA_AGENT_ENV_FILE: file,
+    ESTIVA_ID_CLIENT_ID: 'from-env',
+    ESTIVA_ID_CLIENT_SECRET: 'env-secret',
+  } as NodeJS.ProcessEnv)
+  check('the environment is named when it wins', both.source.from === 'environment', both.source.from)
+  check('and the ignored file is still named', both.source.file === file && both.source.fileState === 'read')
+
+  const fileOnly = loadCredentials({ ESTIVA_AGENT_ENV_FILE: file } as NodeJS.ProcessEnv)
+  check('the file is named when it wins', fileOnly.source.from === 'file', fileOnly.source.from)
+
+  // Half from each is the state somebody who set up a file and then installed
+  // the extension is actually in, and the one most likely to surprise them.
+  const mixed = loadCredentials({
+    ESTIVA_AGENT_ENV_FILE: file,
+    ESTIVA_ID_CLIENT_ID: 'from-env',
+  } as NodeJS.ProcessEnv)
+  check('a split credential says so', mixed.source.from === 'mixed', mixed.source.from)
 }
 
 console.log(failures === 0 ? '\nAll agent CLI checks passed.' : `\n${failures} failed.`)

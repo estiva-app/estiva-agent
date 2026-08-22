@@ -20,6 +20,7 @@
  * Peek touches no file in `lib/agent/` except the registry it is added to.
  */
 import type { Signer } from '../nostr/signer'
+import { readFileSync } from 'node:fs'
 import { Relay } from '../nostr/relay'
 import { clientCredentialsToken, loadCredentials, serviceIdentitySigner } from './credentials'
 
@@ -154,6 +155,72 @@ function relayUrl(): string {
   return (configured || DEFAULT_RELAY_URL).replace(/\/+$/, '')
 }
 
+/**
+ * Where this process is running, in the terms a person would use to place it.
+ *
+ * Reported because the environment is what actually went wrong, twice, and was
+ * invisible from either end. A packaged Desktop extension runs under Desktop's
+ * own Node on Windows; a Claude Code session opened on a WSL folder runs its
+ * agent inside the distro. Same application, two surfaces, opposite sides of a
+ * machine boundary, two unrelated MCP registries and two credential stores —
+ * and asking either one "is it working?" gave an answer that was true of itself
+ * and said nothing about the other (PEEK-168).
+ *
+ * Diagnosing that took a process tree and a package-container path. **A person
+ * without a shell had no route to the answer at all**, which is exactly the
+ * person the packaged extension exists to serve. So the server says which
+ * environment it is in, and "it works in one tab and not the other" is settled
+ * by asking both and comparing two replies.
+ */
+export interface Runtime {
+  platform: NodeJS.Platform
+  /** True on WSL, where `platform` says `linux` and the distinction matters. */
+  wsl: boolean
+  /** The distro, when there is one, because a person has more than one. */
+  distro?: string
+  node: string
+  /** The file actually running, which names the install this answer is about. */
+  entry: string
+  /** The client that opened this session, from the MCP handshake. */
+  client?: string
+}
+
+/**
+ * Whether a `/proc/version` string describes a WSL kernel.
+ *
+ * Split out so it can be tested at all. Asserting on the *result* only works on
+ * the machine the test happens to run on — the check that shipped first was
+ * `typeof wsl === 'boolean'`, which is satisfied by hardcoding `false`, proved
+ * by hardcoding `false` and watching it pass. The predicate takes its input as
+ * an argument so both answers can be demanded from any machine.
+ */
+/**
+ * Detected rather than configured, and from `/proc/version` rather than an
+ * environment variable, because `WSL_DISTRO_NAME` is absent exactly when it
+ * would help: `wsl.exe -e` runs a program with no login shell, which is how
+ * this server gets launched in the setup that needed diagnosing.
+ */
+export function isWslKernel(procVersion: string): boolean {
+  return /microsoft|wsl/i.test(procVersion)
+}
+
+function detectRuntime(client?: string): Runtime {
+  let wsl = false
+  try {
+    wsl = isWslKernel(readFileSync('/proc/version', 'utf8'))
+  } catch {
+    // Not Linux, or no procfs. Either way this is not WSL.
+  }
+  return {
+    platform: process.platform,
+    wsl,
+    distro: process.env.WSL_DISTRO_NAME?.trim() || undefined,
+    node: process.version,
+    entry: process.argv[1] ?? process.execPath,
+    client,
+  }
+}
+
 /** One hop of the connection check, and whether it held. */
 export interface StatusHop {
   hop: 'credentials' | 'token' | 'relay'
@@ -163,6 +230,9 @@ export interface StatusHop {
 
 export interface ConnectionStatus {
   ok: boolean
+  runtime: Runtime
+  /** Where the credential came from, when there was one to find. */
+  credentialSource?: string
   /** The hop that broke, absent when everything held. */
   failed?: StatusHop['hop']
   identityService: string
@@ -189,15 +259,20 @@ export interface ConnectionStatus {
  * anything: this output reaches a model as untrusted text like any other tool
  * result, and `docs/untrusted-content.md` is the incident that taught us so.
  */
-export async function connectionStatus(app: AgentApp): Promise<ConnectionStatus> {
+export async function connectionStatus(
+  app: AgentApp,
+  { client }: { client?: string } = {},
+): Promise<ConnectionStatus> {
   const hops: StatusHop[] = []
   const relay = relayUrl()
+  const runtime = detectRuntime(client)
   const done = (
     ok: boolean,
     summary: string,
     extra: Partial<ConnectionStatus> = {},
   ): ConnectionStatus => ({
     ok,
+    runtime,
     failed: ok ? undefined : hops.find((h) => !h.ok)?.hop,
     identityService: extra.identityService ?? 'unknown',
     relayUrl: relay,
@@ -209,10 +284,24 @@ export async function connectionStatus(app: AgentApp): Promise<ConnectionStatus>
   let credentials
   try {
     credentials = loadCredentials()
+    /*
+      The source is named, not just the fact that something was found. Two
+      surfaces on one machine can each be correctly configured and be holding
+      *different* credentials, and this line is the only place that becomes
+      visible without a shell.
+    */
+    const { from, file, fileState } = credentials.source
     hops.push({
       hop: 'credentials',
       ok: true,
-      detail: `client id "${credentials.clientId}" is configured`,
+      detail:
+        `client id "${credentials.clientId}", from ${
+          from === 'environment'
+            ? 'the environment this process was launched with'
+            : from === 'file'
+              ? file
+              : `the environment and ${file} together`
+        }` + (from === 'environment' && fileState === 'read' ? ` (${file} exists and was not used)` : ''),
     })
   } catch (error) {
     hops.push({
@@ -258,10 +347,17 @@ export async function connectionStatus(app: AgentApp): Promise<ConnectionStatus>
     const context = await connect()
     const events = await context.relay.query(filters)
     hops.push({ hop: 'relay', ok: true, detail: `read ${events.length} event(s)` })
-    return done(true, `Connected. Signing as ${token.pubkey} and reading ${relay}.`, {
-      identityService: credentials.base,
-      signsAs: token.pubkey,
-    })
+    return done(
+      true,
+      `Connected. Signing as ${token.pubkey} and reading ${relay}, ` +
+        `from ${runtime.wsl ? `WSL${runtime.distro ? ` (${runtime.distro})` : ''}` : runtime.platform}` +
+        `${runtime.client ? ` via ${runtime.client}` : ''}.`,
+      {
+        identityService: credentials.base,
+        signsAs: token.pubkey,
+        credentialSource: credentials.source.from === 'file' ? credentials.source.file : credentials.source.from,
+      },
+    )
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     hops.push({ hop: 'relay', ok: false, detail: message })

@@ -246,6 +246,39 @@ async function main() {
   */
   check('an unconfigured server reports itself unconnected', pingBody.ok === false)
   check('and names the hop that broke', pingBody.failed === 'credentials', pingBody.failed)
+  /*
+    Reported even here, and *especially* here. An unconfigured install is the
+    state every new person is in, and "which of my two Claudes is this?" is the
+    question they cannot otherwise answer — the environment is what actually
+    went wrong (PEEK-168), and it was invisible from inside either surface.
+  */
+  const runtime = (pingBody as { runtime?: Record<string, unknown> }).runtime
+  check('it says where it is running even with nothing configured', Boolean(runtime))
+  check('naming the platform', typeof runtime?.platform === 'string', String(runtime?.platform))
+  /*
+    Only the shape here — the value depends on the machine, and the detection
+    itself is pinned by `agent-cli.test.ts`, which feeds `isWslKernel` both
+    kinds of kernel string. Asserting the value here would pass on a laptop and
+    fail in CI, or worse, pass everywhere while the detection was broken.
+  */
+  check('whether this is WSL', typeof runtime?.wsl === 'boolean', String(runtime?.wsl))
+  check('the Node it is running under', typeof runtime?.node === 'string', String(runtime?.node))
+  /*
+    The install this answer is about. Two surfaces of one application run two
+    different copies of this server, and the path is what tells them apart.
+  */
+  check('and which file is actually running', typeof runtime?.entry === 'string')
+  /*
+    From the `initialize` handshake, which is the only thing the client states
+    about itself — the environment cannot be asked, since `wsl.exe -e` provides
+    no login shell and therefore no variables to read.
+  */
+  check(
+    'it names the client that opened the session',
+    runtime?.client === 'estiva-selftest 0',
+    String(runtime?.client),
+  )
+
   check(
     'and its summary issues no command',
     !/set -a|source |npm |npx |chmod |export [A-Z_]+=/.test(pingBody.summary ?? ''),

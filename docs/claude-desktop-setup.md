@@ -18,6 +18,12 @@ writes refused by Estiva ID, server-side, before anything reaches the relay. If
 Claude tells you it could not close an issue, believe it and ask your admin what
 your identity is allowed to sign.
 
+**Anything it writes is attributed to your agent, not to you**, and appears
+under the name your admin gave the identity — in Ship's activity feeds and, if
+your credential allows it, in Peek conversations where it looks like any other
+participant. If that name does not say it is your agent, ask for it to be
+changed before you start using it.
+
 **No signing key touches your laptop.** The key lives in Estiva ID. Your machine
 holds a client secret, exchanges it for a short-lived token, and asks Estiva ID
 to sign. Losing your laptop does not leak a key; it leaks a credential an admin
@@ -32,14 +38,33 @@ three steps are done.
 
 ### 1. Create a service identity for *this person*
 
-**Add a service identity** → Name it for the person, e.g. `Claude (Katerina)` →
-**Create**.
+**Add a service identity** → **Create**.
+
+**Name it so it says whose it is** — `Claude (steered by Katerina)`, not
+`Claude`. That name is not a label in a console. It is published to the relay as
+the identity's profile, and it is what every app shows beside anything this
+agent ever writes.
+
+The reason is worth a paragraph, because it is not obvious until you see it. In
+Ship's activity feed an agent's name is a tidiness question. In a Peek
+conversation it is not: the agent renders exactly like a person — same avatar,
+same name treatment, same position in the thread as whoever replied above it.
+Named `Claude`, it reads as a colleague nobody can place. Named for its owner,
+a reader knows immediately who to ask about the message.
+
+The name can be changed later from the identity's page, and changing it
+republishes the profile, so every message it has already written re-renders
+under the new name. But somebody has to notice it was wrong first, and in a chat
+that is exactly the thing nobody queries.
 
 **One identity per person. Do not share one.** Re-issuing a credential deletes
 any other credential for the same identity, so two people on one identity means
 whoever re-mints silently breaks the other — and the audit log cannot tell them
 apart. A separate identity costs nothing and buys revoking one person without
 disturbing anyone else.
+
+A shared identity also destroys the naming above: `Claude (steered by Katerina)`
+is a lie the moment two people use it, and there is no way for a reader to tell.
 
 ### 2. Mint its credential
 

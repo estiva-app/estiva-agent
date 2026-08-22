@@ -46,6 +46,24 @@ import { peekApp, PEEK_WRITE_NOTE } from '../lib/agent/apps/peek'
 const server = new Server({ name: 'estiva', version: '0.2.0' }, { capabilities: { tools: {} } })
 
 /**
+ * Which client opened this session, from the MCP handshake.
+ *
+ * Reported by `estiva_ping` so an answer names the surface it is about. One
+ * application can run this server twice — Desktop's chat under its own Node on
+ * the host, and a Code session inside WSL — with different configuration and
+ * different credentials, and asking either "is it working?" produced an answer
+ * true of itself and silent about the other (PEEK-168).
+ *
+ * Read from `initialize` rather than guessed from the environment, because it
+ * is the one thing the client states about itself.
+ */
+function callingClient(): string | undefined {
+  const info = server.getClientVersion()
+  if (!info) return undefined
+  return info.version ? `${info.name} ${info.version}` : info.name
+}
+
+/**
  * One relay connection per process, made on first use rather than at startup.
  *
  * Connecting eagerly would make a missing credential look like a server that
@@ -264,7 +282,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'estiva_ping',
       description:
         'Check the Estiva connection and report which hop is broken, without reading any workspace data. ' +
-        'Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, summary }`. ' +
+        'Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, runtime, summary }`. ' +
+        '`runtime` says where this server is actually running — platform, whether it is inside WSL, and which client opened the session — and the credentials hop names where the credential came from. ' +
+        'That matters when one application runs this server twice: a Desktop extension on the host and a Code session inside WSL are separate installs with separate configuration, so "it works in one place and not the other" is answered by asking both and comparing, not by assuming they share anything. ' +
         'Use it when a read fails, and when a person asks why this is not working: "the connection is down" and "there is nothing to report" look identical in an empty answer, and the causes — an unconfigured credential, a replaced secret, an identity never admitted to the relay — have completely different fixes. ' +
         'Several of those fixes are administrative actions in Estiva ID that nobody can carry out from inside this conversation; report the state and say who has to act.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -293,7 +313,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         promise would make it fail in exactly the case it exists for.
       */
       case 'estiva_ping':
-        return text({ at: new Date().toISOString(), ...(await connectionStatus(shipApp)) })
+        return text({ at: new Date().toISOString(), ...(await connectionStatus(shipApp, { client: callingClient() })) })
 
       case 'ship_list_issues':
         return text(
