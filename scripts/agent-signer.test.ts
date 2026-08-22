@@ -58,7 +58,7 @@ async function main() {
 
   // A real signer signs. Table stakes, but it separates "renewal is broken"
   // from "nothing works" when this file starts failing.
-  const signer = await serviceIdentitySigner(credentials)
+  const { signer: signer } = await serviceIdentitySigner(credentials)
   const signed = await signer.sign({ ...httpAuth(), pubkey: signer.pubkey })
   check('signs with a freshly obtained token', signed.sig.length === 128, `kind:${signed.kind}`)
   check('signs as the identity the token names', signed.pubkey === signer.pubkey)

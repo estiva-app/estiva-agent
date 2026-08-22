@@ -72,6 +72,28 @@ export interface TokenResponse {
   /** The role identity this token signs as — `sub` in the JWT. */
   pubkey: string
   expires_in?: number
+  /**
+   * The kinds this credential may sign, as Estiva ID sees it.
+   *
+   * Optional because a deployment predating PEEK-172 does not send it, and an
+   * agent that refused to start against an older identity service would trade a
+   * quiet failure for a loud one at the wrong moment. Absent means "unknown",
+   * never "none" — see `mayPublish`.
+   */
+  allowed_kinds?: number[]
+}
+
+/**
+ * Whether a ceiling permits a kind, when the ceiling is known at all.
+ *
+ * **Unknown permits everything**, deliberately. This exists to stop an agent
+ * offering what cannot work; it is not an authorisation check, and Estiva ID
+ * enforces the real one server-side regardless. Treating an absent ceiling as
+ * empty would silently disable every write against an older deployment —
+ * turning a diagnostic into an outage.
+ */
+export function mayPublish(allowedKinds: number[] | undefined, kind: number): boolean {
+  return allowedKinds === undefined || allowedKinds.includes(kind)
 }
 
 const DEFAULT_ID_BASE = 'https://id.estiva.app'
@@ -122,6 +144,19 @@ export async function clientCredentialsToken({
  * decides that from the credential, and disagreeing with it would only produce
  * events the relay rejects as unsigned by their author.
  */
+export interface ServiceSigner {
+  signer: Signer
+  /**
+   * The ceiling the first token reported, or undefined against an identity
+   * service predating PEEK-172.
+   *
+   * Carried here rather than added to `lib/nostr/signer.ts`, which is a verbatim
+   * copy of estiva-ship's and must stay one — `diff -r` and the conformance test
+   * both depend on it. An agent-only fact belongs in the agent-only module.
+   */
+  allowedKinds?: number[]
+}
+
 export async function serviceIdentitySigner(
   credentials: ServiceCredentials,
   /**
@@ -130,11 +165,11 @@ export async function serviceIdentitySigner(
    * agent-renewal-soak.ts` uses this to watch for one across a real TTL.
    */
   { onRenew }: { onRenew?: (ok: boolean) => void } = {},
-): Promise<Signer> {
+): Promise<ServiceSigner> {
   const base = trimSlashes(credentials.base ?? DEFAULT_ID_BASE)
   const first = await clientCredentialsToken({ ...credentials, base })
 
-  return estivaIdSigner({
+  const signer = estivaIdSigner({
     base,
     pubkey: first.pubkey,
     token: first.access_token,
@@ -158,6 +193,8 @@ export async function serviceIdentitySigner(
       }
     },
   })
+
+  return { signer, allowedKinds: first.allowed_kinds }
 }
 
 /**

@@ -36,6 +36,7 @@ import {
   BadRequest,
   connect,
   connectionStatus,
+  refuseUnsignable,
   type AgentApp,
   type AgentContext,
   type ParsedArgs,
@@ -90,6 +91,20 @@ function command(name: string, app: AgentApp = shipApp) {
   const found = app.commands.find((candidate) => candidate.name === name)
   if (!found) throw new Error(`no such command: ${name}`)
   return found
+}
+
+/**
+ * Which command each write tool runs, so the ceiling check can find its kinds.
+ *
+ * Only the writes: a read publishes nothing and can never be refused for a kind.
+ */
+const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
+  ship_comment: { app: shipApp, command: 'comment' },
+  ship_set_status: { app: shipApp, command: 'set-status' },
+  ship_assign: { app: shipApp, command: 'assign' },
+  ship_create_issue: { app: shipApp, command: 'create-issue' },
+  peek_reply: { app: peekApp, command: 'reply' },
+  peek_say: { app: peekApp, command: 'say' },
 }
 
 /** A required string argument, or the empty string the command will refuse. */
@@ -305,6 +320,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const input = (request.params.arguments ?? {}) as Record<string, unknown>
 
   try {
+    /*
+      Refuse a tool this credential cannot sign for, before it does any work.
+
+      The kinds come off the command rather than from anything here — this file
+      still names none — and the ceiling comes from `/token`. Without it the
+      failure arrives at the last step, after the tool has already resolved a
+      target and reported progress, which is how `peek create-topic` shipped in
+      a state where it could never succeed (PEEK-172).
+    */
+    const wanted = TOOL_COMMANDS[request.params.name]
+    if (wanted) {
+      const refusal = refuseUnsignable(
+        command(wanted.command, wanted.app),
+        (await context()).allowedKinds,
+      )
+      if (refusal) return failure(refusal)
+    }
+
     switch (request.params.name) {
       /*
         Never routed through `context()`. Every other tool wants a working

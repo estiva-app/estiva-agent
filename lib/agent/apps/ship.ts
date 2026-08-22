@@ -393,6 +393,7 @@ export const shipApp: AgentApp = {
     },
     {
       name: 'comment',
+      signs: [KIND.MESSAGE],
       summary: 'add a comment to one issue',
       usage: 'comment <ref> --body "..."',
       async run(context, args) {
@@ -420,6 +421,7 @@ export const shipApp: AgentApp = {
     },
     {
       name: 'set-status',
+      signs: [KIND.CHANGE],
       summary: 'set one issue\'s status',
       usage: 'set-status <ref> <status>',
       async run(context, args) {
@@ -456,6 +458,7 @@ export const shipApp: AgentApp = {
     },
     {
       name: 'assign',
+      signs: [KIND.CHANGE],
       summary: 'assign one issue to somebody',
       usage: 'assign <ref> <pubkey|me>',
       async run(context, args) {
@@ -491,6 +494,7 @@ export const shipApp: AgentApp = {
     },
     {
       name: 'create-issue',
+      signs: [KIND.ISSUE],
       summary: 'file one new issue in a project',
       usage: 'create-issue --project <ref> --title "..." [--description "..."]',
       async run(context, args) {

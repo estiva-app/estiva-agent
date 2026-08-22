@@ -47,7 +47,7 @@ async function main() {
 
   let renewals = 0
   let failedRenewals = 0
-  const signer = await serviceIdentitySigner(credentials, {
+  const { signer: signer } = await serviceIdentitySigner(credentials, {
     onRenew: (ok) => {
       if (ok) renewals++
       else failedRenewals++
