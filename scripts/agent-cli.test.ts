@@ -13,7 +13,8 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BadRequest, flagValue, parseArgs } from '../lib/agent/cli'
-import { isWslKernel } from '../lib/agent/cli'
+import { isWslKernel, refuseUnsignable } from '../lib/agent/cli'
+import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
 import { findIssue, findProject, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
@@ -325,6 +326,49 @@ try {
     ESTIVA_ID_CLIENT_ID: 'from-env',
   } as NodeJS.ProcessEnv)
   check('a split credential says so', mixed.source.from === 'mixed', mixed.source.from)
+}
+
+/*
+  Refusing before the attempt (PEEK-172).
+
+  Five features in this ecosystem shipped, worked everywhere they were checked,
+  and failed at `/sign` after their own state had already changed — including
+  `peek create-topic` in this repository, which was written, documented and
+  merged in a state where it could never succeed. A refusal at the end is
+  indistinguishable from success from inside the app that asked.
+*/
+{
+  const agentCeiling = [27235, 1851, 9, 30851, 30850] // claude-agent, as on prod
+  const createTopic = { name: 'create-topic', summary: '', signs: [9007], run: async () => null }
+  const reply = { name: 'reply', summary: '', signs: [9], run: async () => null }
+  const read = { name: 'topics', summary: '', run: async () => null }
+
+  const refusal = refuseUnsignable(createTopic, agentCeiling)
+  check('a command needing an unpermitted kind is refused', Boolean(refusal))
+  check('the refusal names the kind', refusal?.includes('9007') ?? false)
+  check('and names the command', refusal?.includes('create-topic') ?? false)
+  /*
+    Whose problem it is. The ceiling is per identity in Estiva ID, so nobody in
+    a conversation can widen it — and saying so is what stops a model trying.
+  */
+  check('and says who can change it', refusal?.includes('administrator') ?? false)
+  check(
+    'without issuing a command to run',
+    !/set -a|source |npm |npx |chmod |export [A-Z_]+=/.test(refusal ?? ''),
+  )
+
+  check('a permitted command is not refused', refuseUnsignable(reply, agentCeiling) === undefined)
+  check('a read is never refused', refuseUnsignable(read, agentCeiling) === undefined)
+
+  /*
+    Unknown permits everything, and this is the assertion that matters most.
+    An identity service predating PEEK-172 sends no ceiling, and treating absent
+    as empty would disable every write against it — turning a diagnostic into an
+    outage. Verified against production before the deploy: the ceiling was
+    absent and every command still ran.
+  */
+  check('an unknown ceiling permits everything', refuseUnsignable(createTopic, undefined) === undefined)
+  check('mayPublish agrees', mayPublish(undefined, 9007) && !mayPublish([9], 9007))
 }
 
 console.log(failures === 0 ? '\nAll agent CLI checks passed.' : `\n${failures} failed.`)

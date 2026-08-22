@@ -29,6 +29,11 @@ export interface AgentContext {
   relay: Relay
   signer: Signer
   relayUrl: string
+  /**
+   * What this credential may sign, from `/token`. Undefined against an identity
+   * service that predates PEEK-172, which means unknown rather than none.
+   */
+  allowedKinds?: number[]
 }
 
 export interface ParsedArgs {
@@ -43,6 +48,15 @@ export interface AgentCommand {
   summary: string
   /** Shown in `--help`, e.g. `show <ref>`. */
   usage?: string
+  /**
+   * The kinds this command publishes, so the runner can refuse it up front.
+   *
+   * Declared per command because only the app knows what it writes, and read by
+   * `cli.ts` without ever naming one — the same shape as `AgentApp.probe`.
+   *
+   * Omitted by a read: nothing to publish, nothing to refuse.
+   */
+  signs?: number[]
   /**
    * Return anything JSON-serialisable. Printing, exit codes and error shape are
    * the runner's job, so a command never calls `process.exit` or `console.log`
@@ -134,8 +148,47 @@ function usage(apps: AgentApp[]): string {
  * it across many tool calls, rather than paying a token exchange per call.
  */
 export async function connect(): Promise<AgentContext> {
-  const signer = await serviceIdentitySigner(loadCredentials())
-  return { relay: new Relay(relayUrl(), signer), signer, relayUrl: relayUrl() }
+  const credentials = loadCredentials()
+  const { signer, allowedKinds } = await serviceIdentitySigner(credentials)
+  /*
+    A second token exchange purely to read the ceiling would be wasteful, so the
+    signer's own first token carries it — see `serviceIdentitySigner`.
+  */
+  return {
+    relay: new Relay(relayUrl(), signer),
+    signer,
+    relayUrl: relayUrl(),
+    allowedKinds,
+  }
+}
+
+/**
+ * Why a command cannot run here, or nothing.
+ *
+ * Checked **before** the command does any work, which is the whole point. Five
+ * features in this ecosystem have shipped, worked everywhere they were checked,
+ * and failed at `/sign` after their own state had already changed — a Ship
+ * change from Peek, a resolution, a topic rename, a topic delete, and this
+ * repository's own `peek create-topic` (PEEK-172). A refusal at the end looks
+ * identical to a success from inside the app; a refusal at the start does not.
+ *
+ * Not an authorisation check. Estiva ID enforces the real one server-side, and
+ * an unknown ceiling permits everything — this exists so a tool that cannot
+ * work says so instead of failing at the last step.
+ */
+export function refuseUnsignable(
+  command: AgentCommand,
+  allowedKinds: number[] | undefined,
+): string | undefined {
+  if (!command.signs || allowedKinds === undefined) return undefined
+  const missing = command.signs.filter((kind) => !allowedKinds.includes(kind))
+  if (!missing.length) return undefined
+  return (
+    `This credential may not sign kind ${missing.join(', ')}, which "${command.name}" has to publish. ` +
+    `It is allowed ${allowedKinds.join(', ')}. ` +
+    'What a credential may sign is set per identity in Estiva ID by an administrator, ' +
+    'and cannot be changed from within a conversation.'
+  )
 }
 
 /**
@@ -415,6 +468,14 @@ export async function run(apps: AgentApp[], argv: string[]): Promise<never> {
 
   try {
     const context = await connect()
+
+    /*
+      Before the command runs, not after it fails. A refusal at the end is
+      indistinguishable from success inside the app that asked (PEEK-172).
+    */
+    const unsignable = refuseUnsignable(command, context.allowedKinds)
+    if (unsignable) throw new BadRequest(unsignable)
+
     // The app and command names are consumed here so a command sees only its
     // own arguments — `show <ref>` reads positional[0], not positional[2].
     const result = await command.run(context, {

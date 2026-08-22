@@ -314,6 +314,7 @@ export const peekApp: AgentApp = {
     },
     {
       name: 'say',
+      signs: [KIND.MESSAGE],
       summary: 'start a new conversation in a topic',
       usage: 'say <topic> --body "..."',
       async run(context, args) {
@@ -334,6 +335,7 @@ export const peekApp: AgentApp = {
     },
     {
       name: 'reply',
+      signs: [KIND.MESSAGE],
       summary: 'reply in one conversation',
       usage: 'reply <topic> <conversation> --body "..."',
       async run(context, args) {
@@ -369,6 +371,7 @@ export const peekApp: AgentApp = {
     },
     {
       name: 'create-topic',
+      signs: [KIND.CHANNEL],
       summary: 'create a new topic',
       usage: 'create-topic --name "..." [--about "..."]',
       async run(context, args) {
