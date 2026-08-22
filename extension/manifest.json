@@ -59,6 +59,22 @@
     {
       "name": "estiva_ping",
       "description": "Report whether credentials, signing and relay access are working, naming the hop that failed"
+    },
+    {
+      "name": "peek_list_topics",
+      "description": "List Peek topics, busiest first"
+    },
+    {
+      "name": "peek_read_topic",
+      "description": "One Peek topic, with its conversations in order"
+    },
+    {
+      "name": "peek_reply",
+      "description": "Reply inside one existing Peek conversation"
+    },
+    {
+      "name": "peek_say",
+      "description": "Start a new conversation in a Peek topic"
     }
   ],
   "keywords": [

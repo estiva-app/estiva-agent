@@ -138,9 +138,27 @@ async function main() {
   }>
   const named = (name: string) => tools.find((tool) => tool.name === name)
 
-  check('advertises reads, writes and the ping', tools.length === 7, tools.map((t) => t.name).join(', '))
-  check('ship_list_issues is offered', Boolean(named('ship_list_issues')))
-  check('ship_get_issue is offered', Boolean(named('ship_get_issue')))
+  /*
+    Named rather than counted. A count breaks every time a tool is added, which
+    trains whoever hits it to bump the number without reading — and the thing
+    worth protecting is that each surface is actually offered, not that there
+    happen to be N of them.
+  */
+  for (const name of [
+    'ship_list_issues',
+    'ship_get_issue',
+    'ship_comment',
+    'ship_set_status',
+    'ship_assign',
+    'ship_create_issue',
+    'peek_list_topics',
+    'peek_read_topic',
+    'peek_reply',
+    'peek_say',
+    'estiva_ping',
+  ]) {
+    check(`${name} is offered`, Boolean(named(name)), tools.length + ' tools total')
+  }
 
   /*
     Descriptions are load-bearing here, not decoration.
@@ -170,7 +188,14 @@ async function main() {
     CLAUDE.md. A description trimmed without noticing silently removes the one
     instruction standing between fetched text and a real write.
   */
-  for (const name of ['ship_comment', 'ship_set_status', 'ship_assign', 'ship_create_issue']) {
+  for (const name of [
+    'ship_comment',
+    'ship_set_status',
+    'ship_assign',
+    'ship_create_issue',
+    'peek_reply',
+    'peek_say',
+  ]) {
     const description = named(name)?.description ?? ''
     check(`${name} exists`, description.length > 0)
     check(`${name} says the write is immediate and unreversed`, description.includes('no undo'))

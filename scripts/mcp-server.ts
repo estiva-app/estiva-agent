@@ -36,10 +36,12 @@ import {
   BadRequest,
   connect,
   connectionStatus,
+  type AgentApp,
   type AgentContext,
   type ParsedArgs,
 } from '../lib/agent/cli'
 import { shipApp } from '../lib/agent/apps/ship'
+import { peekApp, PEEK_WRITE_NOTE } from '../lib/agent/apps/peek'
 
 const server = new Server({ name: 'estiva', version: '0.2.0' }, { capabilities: { tools: {} } })
 
@@ -66,8 +68,8 @@ function context(): Promise<AgentContext> {
 }
 
 /** Look a command up by name, so this file never holds its own copy of one. */
-function command(name: string) {
-  const found = shipApp.commands.find((candidate) => candidate.name === name)
+function command(name: string, app: AgentApp = shipApp) {
+  const found = app.commands.find((candidate) => candidate.name === name)
   if (!found) throw new Error(`no such command: ${name}`)
   return found
 }
@@ -208,6 +210,56 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'peek_list_topics',
+      description:
+        'List topics in Peek, the team chat, busiest first. Topics and Ship projects share one Folder space; this shows conversation topics rather than project Folders.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      name: 'peek_read_topic',
+      description:
+        'Read one Peek topic: its conversations, each with the messages in order and who said them. Use it before replying, so the reply lands in the right conversation and reads as an answer to what was actually said.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          topic: { type: 'string', description: 'Topic name or part of one, or a Folder id.' },
+        },
+        required: ['topic'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'peek_reply',
+      description:
+        'Reply inside one existing Peek conversation. Read the topic first and pass the conversation you mean; if the reference matches more than one this returns the candidates instead of choosing. ' +
+        PEEK_WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          topic: { type: 'string', description: 'Topic name or part of one.' },
+          conversation: { type: 'string', description: 'Conversation id, or a distinctive phrase from its first message.' },
+          body: { type: 'string', description: 'The reply text.' },
+        },
+        required: ['topic', 'conversation', 'body'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'peek_say',
+      description:
+        'Start a new conversation in a Peek topic. Prefer replying to an existing conversation when there is a relevant one — a new conversation appears at the top of the topic for everybody in it. ' +
+        PEEK_WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          topic: { type: 'string', description: 'Topic name or part of one.' },
+          body: { type: 'string', description: 'The message text.' },
+        },
+        required: ['topic', 'body'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'estiva_ping',
       description:
         'Check the Estiva connection and report which hop is broken, without reading any workspace data. ' +
@@ -272,6 +324,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await command('create-issue').run(
             await context(),
             args(flagsFrom(input, ['project', 'title', 'description'])),
+          ),
+        )
+
+      case 'peek_list_topics':
+        return text(await command('topics', peekApp).run(await context(), args({})))
+
+      case 'peek_read_topic':
+        return text(await command('topic', peekApp).run(await context(), args({}, [str(input.topic)])))
+
+      case 'peek_reply':
+        return text(
+          await command('reply', peekApp).run(
+            await context(),
+            args(flagsFrom(input, ['body']), [str(input.topic), str(input.conversation)]),
+          ),
+        )
+
+      case 'peek_say':
+        return text(
+          await command('say', peekApp).run(
+            await context(),
+            args(flagsFrom(input, ['body']), [str(input.topic)]),
           ),
         )
 
