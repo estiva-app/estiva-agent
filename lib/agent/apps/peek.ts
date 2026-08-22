@@ -213,15 +213,46 @@ export const peekApp: AgentApp = {
 
         const wanted = args.flags.all ? topics : topics.filter((topic) => topic.type !== 'forum')
 
-        return wanted
-          .map((topic) => ({
-            folder: topic.folder,
-            name: topic.name,
-            type: topic.type,
-            about: topic.about,
-            messages: counts.get(topic.folder) ?? 0,
-          }))
-          .sort((a, b) => b.messages - a.messages)
+        return {
+          topics: wanted
+            .map((topic) => ({
+              folder: topic.folder,
+              name: topic.name,
+              type: topic.type,
+              about: topic.about,
+              messages: counts.get(topic.folder) ?? 0,
+            }))
+            .sort((a, b) => b.messages - a.messages),
+          /*
+            This list is the relay's, and Peek's is narrower.
+
+            Found the hard way: the agent read a topic, posted a correctly
+            threaded reply into it, and reported success — into a container no
+            Peek user could see. `test 5` exists on the relay, was created in
+            Peek by its owner, and carries no deletion request, yet the app does
+            not list it.
+
+            The cause is that **Peek's topics live in Convex and nothing imports
+            `kind:9007` back from the relay.** Peek publishes channel creates
+            outward; the index it renders from is its own. So a topic removed in
+            Peek, or never known to it, stays perfectly readable and writable
+            here forever.
+
+            Reported rather than filtered, for the same reason `ship issues`
+            reports coverage instead of hiding the gap: an agent asked "which
+            topics are there?" answers from whatever came back, and a list
+            carries no hint that some of it is invisible to the people being
+            described. Guessing which ones are live would be inventing Peek's
+            rule; saying that the rule is not ours to know is honest and
+            actionable.
+          */
+          coverage: {
+            listed: wanted.length,
+            source: 'relay',
+            note:
+              'These topics come from kind:9007 events on the relay. Peek renders its own list from Convex and does not import topics back, so some of these may not appear in the app at all — a message posted to one of those is readable here and invisible to everybody else. Do not tell somebody a topic exists without saying where you looked.',
+          },
+        }
       },
     },
     {

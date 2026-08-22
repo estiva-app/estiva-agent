@@ -101,6 +101,14 @@ also why "only speak when addressed" was not built as a check — mentions are
 `p` tags on the wire, and 0 of 136 `kind:9` messages on production carry one, so
 the gate would never open.
 
+**`peek topics` lists the relay's topics, not Peek's.** Peek keeps its topics in
+Convex and never imports `kind:9007` back, so a topic removed there — or never
+known to it — stays readable and writable here forever. Found by posting a
+correctly threaded reply into `test 5`, which exists on the relay and does not
+appear in the app: the write succeeded, the tool reported success, and no person
+could see the result. The command returns a `coverage` block saying so; read it
+before telling anybody a topic exists.
+
 **An `e` tag is what makes a message a reply.** `peek reply` sets it through
 `threadTags`, which emits the single `"reply"`-marked tag Buzz's own builder
 emits for a direct reply. Without it the message is not a reply at all — it is a

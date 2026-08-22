@@ -212,7 +212,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'peek_list_topics',
       description:
-        'List topics in Peek, the team chat, busiest first. Topics and Ship projects share one Folder space; this shows conversation topics rather than project Folders.',
+        'List topics in Peek, the team chat, busiest first. Topics and Ship projects share one Folder space; this shows conversation topics rather than project Folders. ' +
+        'Returns { topics, coverage }. **Read `coverage` before answering**: this list comes from the relay, and Peek renders its own list from a separate store without importing topics back, so some of these do not appear in the app at all. A message posted into one of those is readable by this tool and invisible to everybody else. Say where you looked rather than implying a person can see what you name.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
