@@ -34,6 +34,14 @@ jobs:
       - name: Test
         run: npm test
 
+      # `npm test` rebuilds the bundle the plugin ships. If that leaves the tree
+      # dirty, what is committed is a version behind its source — and a plugin
+      # runs no install step, so it would be installed that way. This is the one
+      # failure mode of a generated file that has to live in the repository, and
+      # it is silent everywhere else.
+      - name: The committed plugin bundle is current
+        run: git diff --exit-code -- plugin/
+
       # Onboarding is what the extension is for, and a build only its author can
       # run puts the author back in the loop for every new person.
       - name: Pack the Desktop extension
