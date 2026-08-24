@@ -103,6 +103,7 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   ship_set_status: { app: shipApp, command: 'set-status' },
   ship_assign: { app: shipApp, command: 'assign' },
   ship_create_issue: { app: shipApp, command: 'create-issue' },
+  ship_create_project: { app: shipApp, command: 'create-project' },
   peek_reply: { app: peekApp, command: 'reply' },
   peek_say: { app: peekApp, command: 'say' },
 }
@@ -223,6 +224,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           pubkey: { type: 'string', description: '64-character hex public key, or "me" for this agent.' },
         },
         required: ['ref', 'pubkey'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'ship_create_project',
+      description:
+        'Start a new project in Estiva Ship. Prefer filing an issue in an existing project when there is one — a project is a container other people navigate by, and an extra one for work that belonged in an existing project is harder to undo than an extra issue. ' +
+        'Pass `topic` to pair the project with a Peek conversation that already exists, so the discussion and the work share one container instead of being two things about the same subject. Without it a new container is created. ' +
+        WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'A short name for the project.' },
+          description: { type: 'string', description: 'Optional. What the project is for.' },
+          topic: {
+            type: 'string',
+            description:
+              'Optional. The name of an existing Peek topic to pair with, or a Folder id. Refuses if it matches more than one.',
+          },
+        },
+        required: ['title'],
         additionalProperties: false,
       },
     },
@@ -371,6 +393,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'ship_assign':
         return text(
           await command('assign').run(await context(), args({}, [str(input.ref), str(input.pubkey)])),
+        )
+
+      case 'ship_create_project':
+        return text(
+          await command('create-project').run(
+            await context(),
+            args(flagsFrom(input, ['title', 'description', 'topic'])),
+          ),
         )
 
       case 'ship_create_issue':
