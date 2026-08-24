@@ -57,6 +57,10 @@
       "description": "File one new issue in a project"
     },
     {
+      "name": "ship_create_project",
+      "description": "Start a new project, optionally paired with an existing Peek topic"
+    },
+    {
       "name": "estiva_ping",
       "description": "Report whether credentials, signing and relay access are working, naming the hop that failed"
     },

@@ -493,6 +493,86 @@ export const shipApp: AgentApp = {
       },
     },
     {
+      name: 'create-project',
+      /*
+        Two kinds, because creating a project usually creates its container
+        too: `Store.createProject` calls `ensureFolder` when no Folder is given,
+        and that publishes a `kind:9007`. Declaring only 30850 would let the
+        runner wave this through and let it fail at `/sign` on the second
+        publish — after the Folder existed, which is the worst of both.
+
+        Declared for the widest path it can take rather than the narrowest, so a
+        credential that cannot make a Folder is told before anything is written
+        rather than halfway through (PEEK-172).
+      */
+      signs: [KIND.PROJECT, KIND.FOLDER],
+      summary: 'start a new project',
+      usage: 'create-project --title "..." [--description "..."] [--topic <name|folder>]',
+      async run(context, args) {
+        const title = flagValue(args, 'title')
+        if (!title) throw new BadRequest('create-project needs --title.')
+
+        const store = new Store(context.relay, context.signer)
+
+        /*
+          `--topic` pairs the project to a Peek topic that already exists rather
+          than making a second container for one thing.
+
+          This is the case RFC_UPDATES.md §1.1 actually describes — "the Peek
+          topic, the Linear project, the messages all carry the same `h`" — and
+          the failure it prevents is specific: a project created in its own new
+          Folder alongside a topic about the same work gives two containers, and
+          nobody in the topic can see the issues.
+        */
+        const topic = flagValue(args, 'topic')
+        let folder: string | undefined
+        if (topic) {
+          const events = await context.relay.query([{ kinds: [KIND.FOLDER], limit: 500 }])
+          const channels = events.map((event) => ({
+            folder: event.tags.find((tag) => tag[0] === 'h')?.[1] ?? '',
+            name: event.tags.find((tag) => tag[0] === 'name')?.[1] ?? '',
+          }))
+          const match = resolveOne(
+            channels.filter((channel) => channel.folder),
+            topic,
+            {
+              noun: 'topic',
+              exact: (channel) => [channel.folder],
+              text: (channel) => channel.name,
+              label: (channel) => `${channel.name} (${channel.folder.slice(0, 8)}…)`,
+              hint: 'Pass a topic name or a Folder id.',
+            },
+          )
+          const adopted = await store.adoptFolder(match.folder)
+          if (!adopted.ok) {
+            throw new BadRequest(
+              `That Folder cannot be read with this credential: ${adopted.reason ?? 'no reason given'}`,
+            )
+          }
+          folder = match.folder
+        }
+
+        const created = await store.createProject({
+          title,
+          description: flagValue(args, 'description'),
+          folder,
+        })
+        published(created.result, `a new project "${title}"`)
+
+        return {
+          created: {
+            title,
+            addr: created.addr,
+            folder: created.folder,
+            // Said back, because "did it make a new container or use the one I
+            // meant" is the question a caller actually has.
+            pairedWithExistingTopic: Boolean(folder),
+          },
+          eventId: created.result.eventId,
+        }
+      },
+    },
+    {
       name: 'create-issue',
       signs: [KIND.ISSUE],
       summary: 'file one new issue in a project',

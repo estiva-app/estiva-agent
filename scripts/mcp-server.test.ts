@@ -151,6 +151,7 @@ async function main() {
     'ship_set_status',
     'ship_assign',
     'ship_create_issue',
+    'ship_create_project',
     'peek_list_topics',
     'peek_read_topic',
     'peek_reply',
@@ -193,6 +194,7 @@ async function main() {
     'ship_set_status',
     'ship_assign',
     'ship_create_issue',
+    'ship_create_project',
     'peek_reply',
     'peek_say',
   ]) {
