@@ -1,0 +1,12 @@
+{
+  "name": "estiva",
+  "description": "Read and act on the Estiva workspace — Ship issues and Peek topics — as your own service identity.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Estiva",
+    "url": "https://github.com/estiva-app"
+  },
+  "homepage": "https://github.com/estiva-app/estiva-agent",
+  "repository": "https://github.com/estiva-app/estiva-agent",
+  "keywords": ["estiva", "nostr", "issues", "chat"]
+}

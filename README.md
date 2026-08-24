@@ -10,7 +10,15 @@ npx tsx scripts/agent.ts ship show PEE-1
 npm run probe:agent          # four hops: token → sign → header → query
 ```
 
-Setting this up for a person is [`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md).
+Setting this up for a person is
+[`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md) for Claude Desktop
+and [`docs/claude-code-setup.md`](docs/claude-code-setup.md) for Claude Code —
+including the VS Code and JetBrains extensions, which run the same CLI.
+
+Both install **the same server**. `plugin/server/index.js` is the one built file
+this repository commits, because a Claude Code plugin runs no install step, and
+the Desktop `.mcpb` is packed from that file rather than built separately — so
+the two clients cannot drift into answering differently (PEEK-161).
 
 ## Why this is its own repository
 
@@ -52,6 +60,8 @@ wins. Nothing needs sourcing.
 | `lib/nostr/`, `src/` | The protocol layer, **vendored from `estiva-ship`** — see below. |
 | `scripts/` | The surfaces: CLI, MCP server, probes, tests. |
 | `extension/` | The Claude Desktop extension manifest. |
+| `plugin/` | The Claude Code plugin: manifest, `.mcp.json`, and the committed server bundle both clients run. |
+| `.claude-plugin/` | The marketplace entry, so the repository installs itself. |
 | `conformance/` | The recorded fold both repositories must agree with. |
 
 ## The vendored copy, and what keeps it honest

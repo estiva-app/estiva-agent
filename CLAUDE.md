@@ -216,6 +216,25 @@ seam was inconvenient.
   Inside this repository it starts without one, because Node walks up and finds
   ours; installed anywhere else it does not. Only the explicit test covers it.
 
+### The Claude Code plugin
+
+`plugin/` is the same server, reached the other way — `/plugin marketplace add
+estiva-app/estiva-agent` then `/plugin install estiva@estiva`. Two things about
+it are easy to break:
+
+- **`plugin/server/index.js` is committed**, which nothing else generated here
+  is. A plugin runs no install step, so the bundle has to already be in the
+  directory. `npm run extension` rebuilds it; **commit the result**, or CI fails
+  on a tree left dirty. A stale commit is not a broken plugin — it is a working
+  plugin one version behind, which is the harder thing to notice.
+- **Only `plugin.json` may live in `.claude-plugin/`.** `.mcp.json` belongs at
+  the plugin root. A file in the wrong place is not an error: it is ignored, and
+  presents as a plugin that installs cleanly and contributes no tools.
+
+The extension is packed *from* the plugin's bundle, so the two clients run
+identical bytes by construction rather than by discipline. `scripts/plugin.test.ts`
+checks that, and that the command the plugin declares actually starts.
+
 ### The vendored protocol layer — read this before editing `src/` or `lib/nostr/`
 
 Both directories are **copies of `estiva-ship`, at identical paths**. Editing one
@@ -256,6 +275,7 @@ npm test                                 # everything offline, no credentials ne
 npx tsx scripts/conformance.test.ts      # this repo still agrees with Ship's fold
 npx tsx scripts/agent-cli.test.ts        # parsing and reference resolution
 npx tsx scripts/extension.test.ts        # builds the .mcpb and drives it over stdio
+npx tsx scripts/plugin.test.ts           # the plugin's command, and the committed bundle
 npx tsx scripts/manifest-reader.test.ts  # the manifest reader is still app-agnostic
 npx tsx scripts/agent-signer.test.ts     # needs credentials — proves renewal fires
 ```

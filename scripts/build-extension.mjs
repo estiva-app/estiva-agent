@@ -32,15 +32,32 @@
  *
  * The shell wrapper stays for the repository-clone route, which is still how
  * anybody developing the server runs it.
+ *
+ * ## The same bytes serve Claude Code, and that is deliberate
+ *
+ * `plugin/server/index.js` is the one generated file this repository commits,
+ * because a Claude Code plugin runs no install step: whatever is in the plugin
+ * directory is what executes. The `.mcpb` is then assembled **from that file**
+ * rather than from a second build.
+ *
+ * So Desktop and Claude Code cannot drift into running different servers —
+ * they are not two builds that happen to agree, they are one file copied. The
+ * cost is a generated artefact in git, which `scripts/plugin.test.ts` guards by
+ * rebuilding and comparing; a stale commit fails CI rather than shipping a
+ * plugin that is quietly a version behind.
  */
 import { build } from 'esbuild'
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 
 const OUT = 'extension/build'
+/*
+  Committed, unlike `extension/build`. See the note above: a plugin has no
+  install step, so the bundle has to already be there.
+*/
+const PLUGIN_SERVER = 'plugin/server'
 
-if (existsSync(OUT)) rmSync(OUT, { recursive: true })
-mkdirSync(`${OUT}/server`, { recursive: true })
+mkdirSync(PLUGIN_SERVER, { recursive: true })
 
 await build({
   entryPoints: ['scripts/mcp-server.ts'],
@@ -53,7 +70,7 @@ await build({
     supporting rather than a description of any particular developer's machine.
   */
   target: 'node18',
-  outfile: `${OUT}/server/index.js`,
+  outfile: `${PLUGIN_SERVER}/index.js`,
   /*
     Kept, not stripped. They are the server's only channel for saying why it
     failed to start, they cost nothing in a file nobody reads, and Desktop
@@ -72,8 +89,16 @@ await build({
   a failure that appears only inside Claude Desktop's logs, in the one setup
   path whose whole purpose is that nobody has to open a terminal.
 */
-writeFileSync(`${OUT}/server/package.json`, `${JSON.stringify({ type: 'module' }, null, 2)}\n`)
+writeFileSync(`${PLUGIN_SERVER}/package.json`, `${JSON.stringify({ type: 'module' }, null, 2)}\n`)
 
+/*
+  The extension is assembled from the plugin's bundle rather than built again,
+  which is what makes "the same server, whichever client" a fact about the bytes
+  instead of a claim about the build.
+*/
+if (existsSync(OUT)) rmSync(OUT, { recursive: true })
+mkdirSync(OUT, { recursive: true })
+cpSync(PLUGIN_SERVER, `${OUT}/server`, { recursive: true })
 cpSync('extension/manifest.json', `${OUT}/manifest.json`)
 
 const manifest = JSON.parse(readFileSync('extension/manifest.json', 'utf8'))

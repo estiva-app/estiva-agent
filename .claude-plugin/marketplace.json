@@ -1,0 +1,15 @@
+{
+  "name": "estiva",
+  "owner": {
+    "name": "Estiva",
+    "url": "https://github.com/estiva-app"
+  },
+  "description": "The Estiva workspace, for Claude Code.",
+  "plugins": [
+    {
+      "name": "estiva",
+      "source": "./plugin",
+      "description": "Read and act on Ship issues and Peek topics as your own service identity."
+    }
+  ]
+}
