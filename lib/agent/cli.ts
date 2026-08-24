@@ -149,13 +149,17 @@ function usage(apps: AgentApp[]): string {
  */
 export async function connect(): Promise<AgentContext> {
   const credentials = loadCredentials()
-  const { signer, allowedKinds } = await serviceIdentitySigner(credentials)
+  const { signer, allowedKinds, relayHeaders } = await serviceIdentitySigner(credentials)
   /*
     A second token exchange purely to read the ceiling would be wasteful, so the
     signer's own first token carries it — see `serviceIdentitySigner`.
+
+    `relayHeaders` carries the NIP-OA owner attestation from the same response
+    (PEEK-164). It is passed as a callback rather than a value so a token
+    renewal, which is invisible by design, replaces the tag with it.
   */
   return {
-    relay: new Relay(relayUrl(), signer),
+    relay: new Relay(relayUrl(), signer, relayHeaders),
     signer,
     relayUrl: relayUrl(),
     allowedKinds,
