@@ -81,6 +81,21 @@ export interface TokenResponse {
    * never "none" — see `mayPublish`.
    */
   allowed_kinds?: number[]
+  /**
+   * A NIP-OA tag proving which person this identity belongs to (PEEK-164).
+   *
+   * `["auth", owner_pubkey, conditions, sig]`, signed by the owner's key over a
+   * statement naming *this* agent's key. Estiva ID is the only party that can
+   * make one — it custodies both halves — and Buzz verifies it without trusting
+   * anybody, recording the result in `users.agent_owner_pubkey`.
+   *
+   * Absent for three different reasons, none of them an error: an identity
+   * service predating this feature, a role identity that belongs to the
+   * workspace rather than a person (`Relay Operator`), or an owner who is no
+   * longer active. The agent works in all three; it just cannot prove who
+   * steers it.
+   */
+  owner_attestation?: [string, string, string, string]
 }
 
 /**
@@ -155,7 +170,24 @@ export interface ServiceSigner {
    * both depend on it. An agent-only fact belongs in the agent-only module.
    */
   allowedKinds?: number[]
+  /**
+   * Headers proving who owns this identity, for `new Relay(url, signer, headers)`.
+   *
+   * **A function, and it must be called per request rather than once.** The
+   * attestation arrives with the token and is re-minted on every renewal, which
+   * happens invisibly under `estivaIdSigner`. Reading it once at construction
+   * would work until the first expiry and then start sending a stale tag — and a
+   * stale tag on a closed relay is a `403 relay_membership_required`, which
+   * reads as an admission problem rather than an expiry.
+   *
+   * Returns `{}` when there is nothing to prove, so the relay client sends
+   * exactly what it sent before this existed.
+   */
+  relayHeaders: () => Record<string, string>
 }
+
+/** The header Buzz reads a NIP-OA attestation from — `bridge.rs`, `media.rs`. */
+export const AUTH_TAG_HEADER = 'x-auth-tag'
 
 export async function serviceIdentitySigner(
   credentials: ServiceCredentials,
@@ -168,6 +200,16 @@ export async function serviceIdentitySigner(
 ): Promise<ServiceSigner> {
   const base = trimSlashes(credentials.base ?? DEFAULT_ID_BASE)
   const first = await clientCredentialsToken({ ...credentials, base })
+
+  /*
+    The live attestation, replaced by each renewal alongside the access token.
+
+    Held in a mutable binding for the same reason `estivaIdSigner` holds the
+    bearer in one: the two are minted together by the same response and must not
+    drift apart. A renewal that refreshed the token and left the tag behind would
+    keep working on an open relay and fail on a closed one.
+  */
+  let attestation = first.owner_attestation
 
   const signer = estivaIdSigner({
     base,
@@ -185,6 +227,8 @@ export async function serviceIdentitySigner(
     renew: async () => {
       try {
         const renewed = await clientCredentialsToken({ ...credentials, base })
+        // Both halves, from the one response. See `attestation` above.
+        attestation = renewed.owner_attestation
         onRenew?.(true)
         return renewed.access_token
       } catch {
@@ -194,7 +238,15 @@ export async function serviceIdentitySigner(
     },
   })
 
-  return { signer, allowedKinds: first.allowed_kinds }
+  return {
+    signer,
+    allowedKinds: first.allowed_kinds,
+    relayHeaders: (): Record<string, string> =>
+      // The raw JSON array is the wire format — `verify_auth_tag` parses the
+      // header value with `serde_json::from_str` and expects an array of four
+      // strings, not an object and not a bare signature.
+      attestation ? { [AUTH_TAG_HEADER]: JSON.stringify(attestation) } : {},
+  }
 }
 
 /**
