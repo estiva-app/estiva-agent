@@ -16373,6 +16373,20 @@ var KIND2 = {
    */
   MESSAGE: 9,
   /**
+   * NIP-22 comment — a threaded comment scoped to any event or **address**.
+   *
+   * Read but not yet written (REW-10). Ship publishes comments as `kind:9` so
+   * that a comment and the Peek topic conversation are one event rather than
+   * two records nobody reconciles; `1111` keeps that property while dropping
+   * the one non-standard part, since scoping to an addressable event is
+   * precisely what lets two apps comment on the same object without either
+   * owning the comment kind.
+   *
+   * Uppercase `A`/`E`/`K`/`P` name the thread root, lowercase the immediate
+   * parent. See `parseNip22Comment` in `fold.ts` — the case is the whole spec.
+   */
+  COMMENT: 1111,
+  /**
    * NIP-09 deletion request.
    *
    * A request rather than a delete, and honoured only for the pubkey that
@@ -16695,6 +16709,7 @@ function foldChanges(changes) {
   return byTarget;
 }
 function parseMessage(event, resolveRefs) {
+  if (event.kind === KIND2.COMMENT) return parseNip22Comment(event, resolveRefs);
   if (event.kind !== KIND2.MESSAGE) return null;
   const es = event.tags.filter((t) => t[0] === "e");
   const marked = (name) => es.find((t) => t[3] === name)?.[1];
@@ -16713,6 +16728,28 @@ function parseMessage(event, resolveRefs) {
     // Both routes to "what is this about": an explicit `a` tag, and a
     // `nostr:naddr…` typed into the body by a person in Peek.
     about: [.../* @__PURE__ */ new Set([...tags(event, "a"), ...resolveRefs(event.content)])]
+  };
+}
+function parseNip22Comment(event, resolveRefs) {
+  const rootEvent = tag(event, "E");
+  const parentEvent = tag(event, "e");
+  const rawTs = Number.parseInt(tag(event, "ts") ?? "", 10);
+  return {
+    id: event.id,
+    author: event.pubkey,
+    createdAt: event.created_at,
+    ts: Number.isFinite(rawTs) ? rawTs : void 0,
+    body: event.content,
+    folder: tag(event, "h") ?? "",
+    rootId: rootEvent ?? parentEvent,
+    parentId: parentEvent ?? rootEvent,
+    about: [
+      .../* @__PURE__ */ new Set([
+        ...tags(event, "A"),
+        ...tags(event, "a"),
+        ...resolveRefs(event.content)
+      ])
+    ]
   };
 }
 function foldConversations(messages) {
@@ -16890,7 +16927,7 @@ function buildRecommendation(pubkey, createdAtMs, args2) {
 var MANIFEST_ADDRESS = "31990:88ac6aae1a874652ef05e2deba8c8a9526cda0c78e6b7d98b815cd0b5a710d13:estiva-ship";
 
 // src/store.ts
-var FOLDER_KINDS = [KIND2.PROJECT, KIND2.ISSUE, KIND2.CHANGE, KIND2.MESSAGE];
+var FOLDER_KINDS = [KIND2.PROJECT, KIND2.ISSUE, KIND2.CHANGE, KIND2.MESSAGE, KIND2.COMMENT];
 function referencedAddresses(body) {
   const out = [];
   for (const naddr of findNaddrs(body)) {
@@ -17238,10 +17275,10 @@ ${args2.aboutRef}` : args2.body;
   /**
    * Everything this identity can see: every project, and everything in it.
    *
-   * **Discovery, not an index.** The first query asks the relay for `kind:30850`
-   * with no `#h` at all, and access control decides what comes back — a project
-   * in a Folder you are not a member of, and which is not open, simply is not
-   * there. That is the whole reason there is no workspace object: Buzz already
+   * **Discovery, not an index.** The first round trip asks the relay for
+   * `kind:30850` and `kind:30851` with no `#h` at all, and access control
+   * decides what comes back — an object in a Folder you are not a member of,
+   * and which is not open, simply is not there. That is the whole reason there is no workspace object: Buzz already
    * scopes this by community, resolved from the relay host before the request is
    * even authenticated (`ARCHITECTURE.md` §3 Step 0). The relay URL *is* the
    * workspace, so a workspace Folder would be a worse copy of something the
@@ -17251,15 +17288,23 @@ ${args2.aboutRef}` : args2.body;
    * REW-11: a global project record comes back from exactly the same filter,
    * and `projectFolders` reads its `buzz-channel` where it used to read `h`.
    *
-   * Two round trips, and they cannot be collapsed: the second query's `#h` list
-   * *is* the answer to the first.
+   * **Issues are discovered directly as well as through their projects** — see
+   * SHI-7 and the note inside. Reaching them only through a parent loses every
+   * issue whose parent was deleted, which was 12 of 13 unreachable issues on
+   * production.
+   *
+   * At least two round trips, and they cannot be collapsed: the widening
+   * query's `#h` list *is* the answer to the discovery one.
    *
    * Folded as a single stream at the end rather than per Folder. Not an
    * optimisation — a re-linked project's record and its older issues sit in
    * different Folders, and folding those separately would drop changes.
    */
   async loadAll(limit = 2e3) {
-    let events = await this.relay.query([{ kinds: [KIND2.PROJECT], limit }]);
+    let events = await this.relay.query([
+      { kinds: [KIND2.PROJECT], limit },
+      { kinds: [KIND2.ISSUE], limit }
+    ]);
     const fetched = /* @__PURE__ */ new Set();
     for (let pass = 0; pass < 4; pass++) {
       const state = foldFolder(events, referencedAddresses);
@@ -17268,6 +17313,9 @@ ${args2.aboutRef}` : args2.body;
         for (const folder of projectFolders(project, state.activity)) {
           if (!fetched.has(folder)) wanted.add(folder);
         }
+      }
+      for (const issue2 of state.issues) {
+        if (issue2.folder && !fetched.has(issue2.folder)) wanted.add(issue2.folder);
       }
       if (!wanted.size) break;
       for (const folder of wanted) fetched.add(folder);
