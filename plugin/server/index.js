@@ -16492,8 +16492,36 @@ function buildChange(pubkey, createdAtMs, args2) {
     content: args2.note ?? ""
   };
 }
+function buildNip22Comment(pubkey, createdAtMs, args2) {
+  const [kind, author] = args2.about.split(":");
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND2.COMMENT,
+    tags: [
+      ["A", args2.about],
+      ["K", kind],
+      ["P", author],
+      ["a", args2.about],
+      ["k", kind],
+      ["p", author],
+      ["h", args2.folder],
+      // Same `ts` as everything else Ship writes, for the same reason: see
+      // `buildConversationMessage` below.
+      ["ts", String(Math.floor(createdAtMs))]
+    ],
+    content: args2.body
+  };
+}
 function buildConversationMessage(pubkey, createdAtMs, args2) {
   assertFolderId(args2.folder);
+  if (args2.about && !args2.replyTo) {
+    return buildNip22Comment(pubkey, createdAtMs, {
+      folder: args2.folder,
+      body: args2.body,
+      about: args2.about
+    });
+  }
   const event = buildMessage(pubkey, createdAtMs, {
     channelUuid: args2.folder,
     content: args2.body
