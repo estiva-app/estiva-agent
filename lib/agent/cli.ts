@@ -21,7 +21,7 @@
  */
 import type { Signer } from '../nostr/signer'
 import { readFileSync } from 'node:fs'
-import { Relay } from '../nostr/relay'
+import { Relay } from '@estiva-app/protocol'
 import { clientCredentialsToken, loadCredentials, serviceIdentitySigner } from './credentials'
 
 /** What every command is handed. Deliberately free of app concepts. */

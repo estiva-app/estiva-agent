@@ -44,9 +44,9 @@
  * is the thing at fault rather than the data.
  */
 import { clientCredentialsToken, loadCredentials } from '../lib/agent/credentials'
-import { Relay } from '../lib/nostr/relay'
+import { Relay } from '@estiva-app/protocol'
 import { estivaIdSigner } from '../lib/nostr/signer'
-import type { SignedEvent } from '../lib/nostr/events'
+import type { SignedEvent } from '@estiva-app/protocol'
 
 const RELAY_URL = (process.env.RELAY_URL ?? 'https://estiva.estiva.app').replace(/\/+$/, '')
 const APP = process.env.APP_D ?? 'estiva-ship'

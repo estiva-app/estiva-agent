@@ -15833,19 +15833,54 @@ var sha256 = /* @__PURE__ */ createHasher(() => new SHA256());
 // node_modules/@noble/hashes/esm/sha256.js
 var sha2562 = sha256;
 
-// lib/nostr/events.ts
+// node_modules/@estiva-app/protocol/dist/events.js
 var KIND = {
   PROFILE: 0,
+  DELETION: 5,
+  REACTION: 7,
+  STREAM_MESSAGE: 9,
+  NIP29_PUT_USER: 9e3,
+  NIP29_EDIT_METADATA: 9002,
+  NIP29_CREATE_GROUP: 9007,
+  NIP29_DELETE_GROUP: 9008,
+  /**
+   * Estiva assertion — a statement *about* something in the channel, rather
+   * than a message in it (PEEK-128). `resolution` is the first and, for now,
+   * only subtype; the `t` tag names it so later subtypes can join without a
+   * new kind.
+   *
+   * The number sits in the **regular** range (1000–9999), which is what makes
+   * it stored and append-only. A replaceable kind would overwrite the previous
+   * assertion and destroy exactly the history this exists to keep. It clears
+   * NIP-29's 9000–9030 block on purpose.
+   */
+  ASSERTION: 9101,
+  /**
+   * NIP-22 comment (REW-10). Ship's comments are posted into the project's
+   * Folder — which *is* a Peek topic's channel — so they arrive in a channel as
+   * ordinary messages and must be read alongside `STREAM_MESSAGE`.
+   *
+   * Both kinds, permanently: a `kind:9` is not replaceable, so every comment
+   * written before Ship flipped stays `kind:9` forever and this pair can never
+   * shrink to one.
+   */
+  COMMENT: 1111,
+  /** NIP-84 highlight. */
   HIGHLIGHT: 9802,
   /** NIP-FC File — see docs/buzz-compat/nips/NIP-FC.md in the Peek repo. */
   FILE: 30840,
   /** NIP-FC Component. */
   COMPONENT: 30841,
-  DELETION: 5,
-  REACTION: 7,
-  STREAM_MESSAGE: 9,
-  NIP29_PUT_USER: 9e3,
-  NIP29_CREATE_GROUP: 9007,
+  /**
+   * NIP-42 relay auth — the challenge response that turns a connected socket
+   * into an authenticated one (`Kind::Authentication`, PEE-5).
+   *
+   * Unlike every other kind here, this one is **never published**: Buzz builds
+   * it into `buzz-auth/src/nip42.rs`, never stores it, and never logs it —
+   * "AUTH events are never stored or logged (may contain bearer tokens)" is a
+   * comment in that file. It goes over the socket and is gone.
+   */
+  RELAY_AUTH: 22242,
   HTTP_AUTH: 27235
 };
 var MAX_MESSAGE_BYTES = 64 * 1024;
@@ -15861,18 +15896,26 @@ function assertHex64(value, label) {
 function canonicalChannelName(name) {
   return name.replace(/^[#\s]+/, "").replace(/\s+$/, "");
 }
+function addr(kind, pubkey, dTag) {
+  return `${kind}:${pubkey}:${dTag}`;
+}
 function buildCreateChannel(pubkey, createdAtMs, args2) {
   assertHex64(pubkey, "pubkey");
   const name = canonicalChannelName(args2.name);
-  if (name.trim() === "") throw new Error("channel name is required");
+  if (name.trim() === "")
+    throw new Error("channel name is required");
   const tags2 = [
     ["h", args2.channelUuid],
     ["name", name]
   ];
-  if (args2.visibility) tags2.push(["visibility", args2.visibility]);
-  if (args2.channelType) tags2.push(["channel_type", args2.channelType]);
-  if (args2.about) tags2.push(["about", args2.about]);
-  if (args2.ttlSeconds !== void 0) tags2.push(["ttl", String(args2.ttlSeconds)]);
+  if (args2.visibility)
+    tags2.push(["visibility", args2.visibility]);
+  if (args2.channelType)
+    tags2.push(["channel_type", args2.channelType]);
+  if (args2.about)
+    tags2.push(["about", args2.about]);
+  if (args2.ttlSeconds !== void 0)
+    tags2.push(["ttl", String(args2.ttlSeconds)]);
   return {
     pubkey,
     created_at: toNostrSeconds(createdAtMs),
@@ -15880,9 +15923,6 @@ function buildCreateChannel(pubkey, createdAtMs, args2) {
     tags: tags2,
     content: ""
   };
-}
-function addr(kind, pubkey, dTag) {
-  return `${kind}:${pubkey}:${dTag}`;
 }
 function threadTags(ref) {
   if (ref.rootId === ref.parentId) {
@@ -15900,7 +15940,10 @@ function buildMessage(pubkey, createdAtMs, args2) {
     throw new Error(`content is ${bytes} bytes, max ${MAX_MESSAGE_BYTES}`);
   }
   const tags2 = [["h", args2.channelUuid]];
-  if (args2.threadRef) tags2.push(...threadTags(args2.threadRef));
+  if (args2.threadRef)
+    tags2.push(...threadTags(args2.threadRef));
+  for (const address of [...new Set(args2.about ?? [])])
+    tags2.push(["a", address]);
   if (args2.mentions && args2.mentions.length > 0) {
     if (args2.mentions.length > MAX_MENTIONS) {
       throw new Error(`too many mentions: ${args2.mentions.length} > ${MAX_MENTIONS}`);
@@ -15915,8 +15958,10 @@ function buildMessage(pubkey, createdAtMs, args2) {
       }
     }
   }
-  if (args2.broadcast) tags2.push(["broadcast", "1"]);
-  for (const mt of args2.mediaTags ?? []) tags2.push(mt);
+  if (args2.broadcast)
+    tags2.push(["broadcast", "1"]);
+  for (const mt of args2.mediaTags ?? [])
+    tags2.push(mt);
   return {
     pubkey,
     created_at: toNostrSeconds(createdAtMs),
@@ -15926,7 +15971,130 @@ function buildMessage(pubkey, createdAtMs, args2) {
   };
 }
 
-// lib/nostr/nip98.ts
+// node_modules/@estiva-app/protocol/dist/nip19.js
+var CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+var GENERATOR = [996825010, 642813549, 513874426, 1027748829, 705979059];
+function polymod(values) {
+  let chk = 1;
+  for (const value of values) {
+    const top = chk >>> 25;
+    chk = (chk & 33554431) << 5 ^ value;
+    for (let i = 0; i < 5; i++) {
+      if (top >>> i & 1)
+        chk ^= GENERATOR[i];
+    }
+  }
+  return chk >>> 0;
+}
+function hrpExpand(hrp) {
+  const high = [];
+  const low = [];
+  for (const char of hrp) {
+    high.push(char.charCodeAt(0) >>> 5);
+    low.push(char.charCodeAt(0) & 31);
+  }
+  return [...high, 0, ...low];
+}
+function convertBits(data, from, to, pad) {
+  let acc = 0;
+  let bits = 0;
+  const out = [];
+  const maxv = (1 << to) - 1;
+  for (let i = 0; i < data.length; i++) {
+    const value = data[i];
+    if (value < 0 || value >> from !== 0)
+      throw new Error(`value out of range: ${value}`);
+    acc = acc << from | value;
+    bits += from;
+    while (bits >= to) {
+      bits -= to;
+      out.push(acc >>> bits & maxv);
+    }
+  }
+  if (pad) {
+    if (bits > 0)
+      out.push(acc << to - bits & maxv);
+  } else if (bits >= from || (acc << to - bits & maxv) !== 0) {
+    throw new Error("invalid padding");
+  }
+  return out;
+}
+function bech32Decode(encoded) {
+  const lower = encoded.toLowerCase();
+  if (lower !== encoded && encoded.toUpperCase() !== encoded) {
+    throw new Error("mixed case bech32 string");
+  }
+  const split = lower.lastIndexOf("1");
+  if (split < 1 || split + 7 > lower.length)
+    throw new Error("malformed bech32 string");
+  const hrp = lower.slice(0, split);
+  const data = [];
+  for (const char of lower.slice(split + 1)) {
+    const index = CHARSET.indexOf(char);
+    if (index === -1)
+      throw new Error(`invalid bech32 character: ${char}`);
+    data.push(index);
+  }
+  if (polymod([...hrpExpand(hrp), ...data]) !== 1)
+    throw new Error("bad bech32 checksum");
+  return { hrp, data: data.slice(0, -6) };
+}
+var TLV_IDENTIFIER = 0;
+var TLV_RELAY = 1;
+var TLV_AUTHOR = 2;
+var TLV_KIND = 3;
+function decodeNaddr(encoded) {
+  const { hrp, data } = bech32Decode(encoded.replace(/^nostr:/i, "").toLowerCase());
+  if (hrp !== "naddr")
+    throw new Error(`expected an naddr, got ${hrp}`);
+  const bytes = convertBits(data, 5, 8, false);
+  let identifier;
+  let pubkey;
+  let kind;
+  const relays = [];
+  for (let i = 0; i < bytes.length; ) {
+    const type = bytes[i];
+    const length = bytes[i + 1];
+    const value = bytes.slice(i + 2, i + 2 + length);
+    if (value.length !== length)
+      throw new Error("truncated TLV");
+    i += 2 + length;
+    switch (type) {
+      case TLV_IDENTIFIER:
+        identifier = new TextDecoder().decode(new Uint8Array(value));
+        break;
+      case TLV_RELAY:
+        relays.push(new TextDecoder().decode(new Uint8Array(value)));
+        break;
+      case TLV_AUTHOR:
+        if (length !== 32)
+          throw new Error(`author must be 32 bytes, got ${length}`);
+        pubkey = bytesToHex(new Uint8Array(value));
+        break;
+      case TLV_KIND:
+        if (length !== 4)
+          throw new Error(`kind must be 4 bytes, got ${length}`);
+        kind = (value[0] << 24 | value[1] << 16 | value[2] << 8 | value[3]) >>> 0;
+        break;
+    }
+  }
+  if (identifier === void 0 || pubkey === void 0 || kind === void 0) {
+    throw new Error("naddr is missing identifier, author or kind");
+  }
+  return { identifier, pubkey, kind, relays };
+}
+function pointerToAddress(pointer) {
+  return `${pointer.kind}:${pointer.pubkey}:${pointer.identifier}`;
+}
+function naddrToAddr(encoded) {
+  return pointerToAddress(decodeNaddr(encoded));
+}
+var NADDR_RE = /nostr:(naddr1[023456789acdefghjklmnpqrstuvwxyz]+)/gi;
+function findNaddrs(text2) {
+  return [...text2.matchAll(NADDR_RE)].map((m) => m[1]);
+}
+
+// node_modules/@estiva-app/protocol/dist/nip98.js
 function normalizeUrl(raw) {
   try {
     const parsed = new URL(raw);
@@ -15936,7 +16104,7 @@ function normalizeUrl(raw) {
     return raw.toLowerCase();
   }
 }
-function buildAuthEvent(args2) {
+function buildUnsignedAuthEvent(args2) {
   const tags2 = [
     ["u", normalizeUrl(args2.url)],
     ["method", args2.method.toUpperCase()],
@@ -15960,38 +16128,80 @@ function buildAuthEvent(args2) {
 function base642(input) {
   const bytes = utf8ToBytes(input);
   let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
+  for (const b of bytes)
+    binary += String.fromCharCode(b);
   return btoa(binary);
 }
-async function authorizationHeader(signer, args2) {
-  const signed = await signer.sign(buildAuthEvent({ ...args2, pubkey: signer.pubkey }));
+function authorizationHeaderFor(signed) {
   return `Nostr ${base642(JSON.stringify(signed))}`;
 }
+async function authorizationHeader(signer, args2) {
+  return authorizationHeaderFor(await signer.sign(buildUnsignedAuthEvent({ ...args2, pubkey: signer.pubkey })));
+}
 
-// lib/nostr/relay.ts
+// node_modules/@estiva-app/protocol/dist/bridge.js
+function parsePublishResponse(status2, text2) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text2);
+  } catch {
+    return { ok: false, reason: `unparseable response: ${text2.slice(0, 200)}`, httpStatus: status2 };
+  }
+  if (status2 < 200 || status2 >= 300) {
+    return { ok: false, reason: parsed.error ?? text2.slice(0, 200), httpStatus: status2 };
+  }
+  if (parsed.accepted === false) {
+    const duplicate = (parsed.message ?? "").startsWith("duplicate:");
+    return { ok: duplicate, duplicate, eventId: parsed.event_id, reason: parsed.message, httpStatus: status2 };
+  }
+  return { ok: true, eventId: parsed.event_id, httpStatus: status2 };
+}
+function parseQueryResponse(status2, text2) {
+  if (status2 < 200 || status2 >= 300) {
+    let reason = text2.slice(0, 200);
+    try {
+      reason = JSON.parse(text2).error ?? reason;
+    } catch {
+    }
+    return { ok: false, events: [], reason, httpStatus: status2 };
+  }
+  try {
+    const parsed = JSON.parse(text2);
+    return { ok: true, events: Array.isArray(parsed) ? parsed : [], httpStatus: status2 };
+  } catch {
+    return { ok: false, events: [], reason: `unparseable response: ${text2.slice(0, 200)}`, httpStatus: status2 };
+  }
+}
 var Relay = class {
-  constructor(url, signer, headers = () => ({})) {
-    this.url = url;
-    this.signer = signer;
-    this.headers = headers;
+  url;
+  signer;
+  headers;
+  transport;
+  constructor(url, signer, options = {}) {
     this.url = url.replace(/\/+$/, "");
+    this.signer = signer;
+    const opts = typeof options === "function" ? { headers: options } : options;
+    this.headers = opts.headers ?? (() => ({}));
+    this.transport = opts.fetch;
   }
   async post(path, payload) {
     const url = `${this.url}${path}`;
     const body = JSON.stringify(payload);
-    const res = await fetch(url, {
+    const auth = await authorizationHeader(this.signer, { url, method: "POST", body });
+    const send = this.transport ?? fetch;
+    const res = await send(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         ...await this.headers(),
         // Rebuilt per request AND unique per request — identical requests in the
-        // same second would otherwise collide on the auth event id and the
-        // relay rejects the second as a replay. See nip98.ts on the nonce.
+        // same second would otherwise collide on the auth event id and the relay
+        // rejects the second as a replay. See nip98.ts on the nonce.
         //
         // Listed after the spread so a caller's headers cannot displace it:
         // authorization is this client's own contract with the relay, not
         // something an ambient credential gets to override.
-        authorization: await authorizationHeader(this.signer, { url, method: "POST", body })
+        authorization: auth
       },
       body
     });
@@ -15999,27 +16209,21 @@ var Relay = class {
   }
   async publish(event) {
     const { status: status2, text: text2 } = await this.post("/events", event);
-    let parsed;
-    try {
-      parsed = JSON.parse(text2);
-    } catch {
-      return { ok: false, reason: text2.slice(0, 200) };
-    }
-    if (status2 < 200 || status2 >= 300) {
-      return { ok: false, reason: parsed.error ?? text2.slice(0, 200) };
-    }
-    if (parsed.accepted === false) {
-      const duplicate = (parsed.message ?? "").startsWith("duplicate:");
-      return { ok: duplicate, duplicate, eventId: parsed.event_id, reason: parsed.message };
-    }
-    return { ok: true, eventId: parsed.event_id };
+    return parsePublishResponse(status2, text2);
   }
-  /** `filters` is an array — the bridge expects `Vec<Value>`. */
+  /**
+   * `filters` is an array — the bridge expects `Vec<Value>`.
+   *
+   * Throws on a transport-level failure rather than returning an empty array,
+   * because "no events" and "the relay refused you" are not the same answer and
+   * a caller that cannot tell them apart renders an empty screen either way.
+   */
   async query(filters) {
     const { status: status2, text: text2 } = await this.post("/query", filters);
-    if (status2 < 200 || status2 >= 300) throw new Error(`query failed: ${text2.slice(0, 200)}`);
-    const parsed = JSON.parse(text2);
-    return Array.isArray(parsed) ? parsed : [];
+    const result = parseQueryResponse(status2, text2);
+    if (!result.ok)
+      throw new Error(`query failed: ${result.reason}`);
+    return result.events;
   }
 };
 
@@ -16532,7 +16736,7 @@ function buildConversationMessage(pubkey, createdAtMs, args2) {
   tags2.push(["ts", String(Math.floor(createdAtMs))]);
   return { ...event, tags: tags2 };
 }
-function buildDeletion(pubkey, createdAtMs, args2) {
+function buildDeletion2(pubkey, createdAtMs, args2) {
   assertFolderId(args2.folder);
   const [targetKind] = args2.target.split(":");
   return {
@@ -16552,117 +16756,6 @@ function projectAddr(pubkey, projectId) {
 }
 function issueAddr(pubkey, issueId) {
   return addr(KIND2.ISSUE, pubkey, issueId);
-}
-
-// lib/nostr/nip19.ts
-var CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-var GENERATOR = [996825010, 642813549, 513874426, 1027748829, 705979059];
-function polymod(values) {
-  let chk = 1;
-  for (const value of values) {
-    const top = chk >>> 25;
-    chk = (chk & 33554431) << 5 ^ value;
-    for (let i = 0; i < 5; i++) {
-      if (top >>> i & 1) chk ^= GENERATOR[i];
-    }
-  }
-  return chk >>> 0;
-}
-function hrpExpand(hrp) {
-  const high = [];
-  const low = [];
-  for (const char of hrp) {
-    high.push(char.charCodeAt(0) >>> 5);
-    low.push(char.charCodeAt(0) & 31);
-  }
-  return [...high, 0, ...low];
-}
-function convertBits(data, from, to, pad) {
-  let acc = 0;
-  let bits = 0;
-  const out = [];
-  const maxv = (1 << to) - 1;
-  for (let i = 0; i < data.length; i++) {
-    const value = data[i];
-    if (value < 0 || value >> from !== 0) throw new Error(`value out of range: ${value}`);
-    acc = acc << from | value;
-    bits += from;
-    while (bits >= to) {
-      bits -= to;
-      out.push(acc >>> bits & maxv);
-    }
-  }
-  if (pad) {
-    if (bits > 0) out.push(acc << to - bits & maxv);
-  } else if (bits >= from || (acc << to - bits & maxv) !== 0) {
-    throw new Error("invalid padding");
-  }
-  return out;
-}
-function bech32Decode(encoded) {
-  const lower = encoded.toLowerCase();
-  if (lower !== encoded && encoded.toUpperCase() !== encoded) {
-    throw new Error("mixed case bech32 string");
-  }
-  const split = lower.lastIndexOf("1");
-  if (split < 1 || split + 7 > lower.length) throw new Error("malformed bech32 string");
-  const hrp = lower.slice(0, split);
-  const data = [];
-  for (const char of lower.slice(split + 1)) {
-    const index = CHARSET.indexOf(char);
-    if (index === -1) throw new Error(`invalid bech32 character: ${char}`);
-    data.push(index);
-  }
-  if (polymod([...hrpExpand(hrp), ...data]) !== 1) throw new Error("bad bech32 checksum");
-  return { hrp, data: data.slice(0, -6) };
-}
-var TLV_IDENTIFIER = 0;
-var TLV_RELAY = 1;
-var TLV_AUTHOR = 2;
-var TLV_KIND = 3;
-function decodeNaddr(encoded) {
-  const { hrp, data } = bech32Decode(encoded.replace(/^nostr:/, ""));
-  if (hrp !== "naddr") throw new Error(`expected an naddr, got ${hrp}`);
-  const bytes = convertBits(data, 5, 8, false);
-  let identifier;
-  let pubkey;
-  let kind;
-  const relays = [];
-  for (let i = 0; i < bytes.length; ) {
-    const type = bytes[i];
-    const length = bytes[i + 1];
-    const value = bytes.slice(i + 2, i + 2 + length);
-    if (value.length !== length) throw new Error("truncated TLV");
-    i += 2 + length;
-    switch (type) {
-      case TLV_IDENTIFIER:
-        identifier = new TextDecoder().decode(new Uint8Array(value));
-        break;
-      case TLV_RELAY:
-        relays.push(new TextDecoder().decode(new Uint8Array(value)));
-        break;
-      case TLV_AUTHOR:
-        if (length !== 32) throw new Error(`author must be 32 bytes, got ${length}`);
-        pubkey = bytesToHex(new Uint8Array(value));
-        break;
-      case TLV_KIND:
-        if (length !== 4) throw new Error(`kind must be 4 bytes, got ${length}`);
-        kind = (value[0] << 24 | value[1] << 16 | value[2] << 8 | value[3]) >>> 0;
-        break;
-    }
-  }
-  if (identifier === void 0 || pubkey === void 0 || kind === void 0) {
-    throw new Error("naddr is missing identifier, author or kind");
-  }
-  return { identifier, pubkey, kind, relays };
-}
-function naddrToAddr(encoded) {
-  const { kind, pubkey, identifier } = decodeNaddr(encoded);
-  return `${kind}:${pubkey}:${identifier}`;
-}
-var NADDR_RE = /nostr:(naddr1[023456789acdefghjklmnpqrstuvwxyz]+)/gi;
-function findNaddrs(text2) {
-  return [...text2.matchAll(NADDR_RE)].map((match) => match[1]);
 }
 
 // src/fold.ts
@@ -16897,7 +16990,7 @@ function foldFolder(events, resolveRefs = () => []) {
 }
 
 // src/profiles.ts
-function parseProfile(event) {
+function parseProfile2(event) {
   if (event.kind !== KIND2.PROFILE) return null;
   let meta2;
   try {
@@ -16924,7 +17017,7 @@ function directoryFrom(events) {
   const directory = /* @__PURE__ */ new Map();
   const ids = /* @__PURE__ */ new Map();
   for (const event of events) {
-    const profile = parseProfile(event);
+    const profile = parseProfile2(event);
     if (!profile) continue;
     const held = directory.get(profile.pubkey);
     if (held && (held.createdAt > profile.createdAt || held.createdAt === profile.createdAt && (ids.get(profile.pubkey) ?? "") < event.id)) {
@@ -17111,7 +17204,7 @@ var Store = class {
    */
   deleteProject(args2) {
     return this.publish(
-      buildDeletion(this.signer.pubkey, Date.now(), {
+      buildDeletion2(this.signer.pubkey, Date.now(), {
         target: args2.project,
         folder: args2.recordFolder,
         reason: args2.reason

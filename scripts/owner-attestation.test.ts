@@ -22,9 +22,9 @@
  *   npx tsx scripts/owner-attestation.test.ts
  */
 import { AUTH_TAG_HEADER, serviceIdentitySigner } from '../lib/agent/credentials'
-import { Relay } from '../lib/nostr/relay'
+import { Relay } from '@estiva-app/protocol'
 import { secretKeySigner } from '../lib/nostr/signer'
-import type { SignedEvent } from '../lib/nostr/events'
+import type { SignedEvent } from '@estiva-app/protocol'
 
 let failures = 0
 function check(label: string, condition: boolean, detail = '') {

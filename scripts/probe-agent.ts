@@ -29,7 +29,7 @@
  * rather than a promise about this file.
  */
 import { clientCredentialsToken, loadCredentials } from '../lib/agent/credentials'
-import { Relay } from '../lib/nostr/relay'
+import { Relay } from '@estiva-app/protocol'
 import { estivaIdSigner } from '../lib/nostr/signer'
 import { KIND } from '../src/kinds'
 

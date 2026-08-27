@@ -36,7 +36,7 @@
  * accurate about the data and wrong about the question.
  */
 import { foldFolder } from '../../../src/fold'
-import { buildCreateChannel, type SignedEvent } from '../../nostr/events'
+import { buildCreateChannel, type SignedEvent } from '@estiva-app/protocol'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { resolveOne } from '../resolve'
 import { Store } from '../../../src/store'
