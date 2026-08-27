@@ -20,7 +20,7 @@
  * every commit. Read-only throughout.
  */
 import { loadCredentials, clientCredentialsToken, serviceIdentitySigner } from '../lib/agent/credentials'
-import { Relay } from '../lib/nostr/relay'
+import { Relay } from '@estiva-app/protocol'
 import { KIND } from '../src/kinds'
 
 const RELAY_URL = (process.env.RELAY_URL ?? 'https://estiva.estiva.app').replace(/\/+$/, '')

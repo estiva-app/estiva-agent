@@ -39,11 +39,16 @@ const shipSpecific = imports.filter((path) => /(^|\/)\.\.\/src\//.test(path) || 
 check('it imports nothing from src/ or an app module', shipSpecific.length === 0, shipSpecific.join(', '))
 
 /*
-  What it *is* allowed: the relay client, the signer, and the credential
-  exchange. Those are how any consumer would talk to any Nostr relay, and
-  knowing them is knowing the substrate rather than knowing Ship.
+  What it *is* allowed: the wire format, the signer, and the credential exchange.
+  Those are how any consumer would talk to any Nostr relay, and knowing them is
+  knowing the substrate rather than knowing Ship.
+
+  `@estiva-app/protocol` is the substrate made explicit — SHA-3 moved the relay
+  client and the event builders there, and the package's own rule is that it
+  contains no interpretation. So an import of it can never be a way to reach
+  Ship's knowledge, which is what this check is actually defending.
 */
-const allowed = /^\.\.\/lib\/(nostr\/(relay|signer|events)|agent\/credentials)$/
+const allowed = /^(@estiva-app\/protocol|\.\.\/lib\/(nostr\/signer|agent\/credentials))$/
 const unexpected = imports.filter((path) => !allowed.test(path) && !path.startsWith('node:'))
 check('it imports only the relay, signer and credentials', unexpected.length === 0, unexpected.join(', '))
 
