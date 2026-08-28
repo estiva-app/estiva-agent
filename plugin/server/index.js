@@ -2980,7 +2980,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve.call(this, root, ref);
+      let _sch = resolve2.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -3007,7 +3007,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve(root, ref) {
+    function resolve2(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -3638,7 +3638,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve(baseURI, relativeURI, options) {
+    function resolve2(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
       const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
@@ -3922,7 +3922,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve,
+      resolve: resolve2,
       resolveComponent,
       equal,
       serialize,
@@ -14235,7 +14235,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -14252,7 +14252,7 @@ var Protocol = class {
    */
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -14330,7 +14330,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve(parseResult.data);
+            resolve2(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -14591,12 +14591,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve2, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve, interval);
+      const timeoutId = setTimeout(resolve2, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -15472,19 +15472,21 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve2) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve();
+        resolve2();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve2);
       }
     });
   }
 };
 
 // lib/agent/cli.ts
-import { readFileSync as readFileSync2 } from "node:fs";
+import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
+import { dirname, join as join2, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 
 // node_modules/@noble/hashes/esm/cryptoNode.js
 import * as nc from "node:crypto";
@@ -16529,7 +16531,77 @@ function relayUrl() {
 function isWslKernel(procVersion) {
   return /microsoft|wsl/i.test(procVersion);
 }
+function parseGitHead(head) {
+  const text2 = head.trim();
+  const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(text2);
+  if (ref) return { branch: ref[1] };
+  return /^[0-9a-f]{40}$/.test(text2) ? { commit: text2 } : {};
+}
+function gitDirsFor(start) {
+  let dir = dirname(start);
+  for (let up = 0; up < 8; up++) {
+    const candidate = join2(dir, ".git");
+    let gitDir;
+    try {
+      gitDir = statSync2(candidate).isDirectory() ? candidate : (() => {
+        const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync2(candidate, "utf8"));
+        return pointer ? resolve(dir, pointer[1].trim()) : void 0;
+      })();
+    } catch {
+    }
+    if (gitDir) {
+      let commonDir = gitDir;
+      try {
+        const common = readFileSync2(join2(gitDir, "commondir"), "utf8").trim();
+        if (common) commonDir = resolve(gitDir, common);
+      } catch {
+      }
+      return { gitDir, commonDir };
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return void 0;
+}
+function revisionFor(entry) {
+  const dirs = gitDirsFor(entry);
+  if (!dirs) return void 0;
+  let branch;
+  let commit;
+  try {
+    const head = parseGitHead(readFileSync2(join2(dirs.gitDir, "HEAD"), "utf8"));
+    branch = head.branch;
+    commit = head.commit;
+  } catch {
+    return void 0;
+  }
+  if (branch && !commit) {
+    try {
+      commit = readFileSync2(join2(dirs.commonDir, "refs", "heads", branch), "utf8").trim();
+    } catch {
+      try {
+        const packed = readFileSync2(join2(dirs.commonDir, "packed-refs"), "utf8");
+        commit = new RegExp(`^([0-9a-f]{40}) refs/heads/${branch}$`, "m").exec(packed)?.[1];
+      } catch {
+      }
+    }
+  }
+  let dirty;
+  try {
+    const out = execFileSync("git", ["status", "--porcelain"], {
+      cwd: dirname(entry),
+      encoding: "utf8",
+      timeout: 3e3,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    dirty = out.trim().length > 0;
+  } catch {
+  }
+  return { commit, branch, dirty };
+}
 function detectRuntime(client) {
+  const entry = process.argv[1] ?? process.execPath;
   let wsl = false;
   try {
     wsl = isWslKernel(readFileSync2("/proc/version", "utf8"));
@@ -16540,8 +16612,9 @@ function detectRuntime(client) {
     wsl,
     distro: process.env.WSL_DISTRO_NAME?.trim() || void 0,
     node: process.version,
-    entry: process.argv[1] ?? process.execPath,
-    client
+    entry,
+    client,
+    revision: revisionFor(entry)
   };
 }
 async function connectionStatus(app, { client } = {}) {
@@ -18463,7 +18536,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "estiva_ping",
-      description: 'Check the Estiva connection and report which hop is broken, without reading any workspace data. Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, runtime, summary }`. `runtime` says where this server is actually running \u2014 platform, whether it is inside WSL, and which client opened the session \u2014 and the credentials hop names where the credential came from. That matters when one application runs this server twice: a Desktop extension on the host and a Code session inside WSL are separate installs with separate configuration, so "it works in one place and not the other" is answered by asking both and comparing, not by assuming they share anything. Use it when a read fails, and when a person asks why this is not working: "the connection is down" and "there is nothing to report" look identical in an empty answer, and the causes \u2014 an unconfigured credential, a replaced secret, an identity never admitted to the relay \u2014 have completely different fixes. Several of those fixes are administrative actions in Estiva ID that nobody can carry out from inside this conversation; report the state and say who has to act.',
+      description: 'Check the Estiva connection and report which hop is broken, without reading any workspace data. Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, runtime, summary }`. `runtime` says where this server is actually running \u2014 platform, whether it is inside WSL, which client opened the session, and **which revision is answering** (`runtime.revision`: commit, branch, and whether the tree is dirty) \u2014 and the credentials hop names where the credential came from. Check the revision when a listing looks short or a fix seems absent: this server is launched from a shared checkout that is routinely parked on somebody else\'s branch, so it can answer from code days behind `origin/main` while every other signal looks correct. That matters when one application runs this server twice: a Desktop extension on the host and a Code session inside WSL are separate installs with separate configuration, so "it works in one place and not the other" is answered by asking both and comparing, not by assuming they share anything. Use it when a read fails, and when a person asks why this is not working: "the connection is down" and "there is nothing to report" look identical in an empty answer, and the causes \u2014 an unconfigured credential, a replaced secret, an identity never admitted to the relay \u2014 have completely different fixes. Several of those fixes are administrative actions in Estiva ID that nobody can carry out from inside this conversation; report the state and say who has to act.',
       inputSchema: { type: "object", properties: {}, additionalProperties: false }
     }
   ]

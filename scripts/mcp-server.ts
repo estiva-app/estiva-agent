@@ -320,7 +320,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'Check the Estiva connection and report which hop is broken, without reading any workspace data. ' +
         'Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, runtime, summary }`. ' +
-        '`runtime` says where this server is actually running — platform, whether it is inside WSL, and which client opened the session — and the credentials hop names where the credential came from. ' +
+        '`runtime` says where this server is actually running — platform, whether it is inside WSL, which client opened the session, and **which revision is answering** (`runtime.revision`: commit, branch, and whether the tree is dirty) — and the credentials hop names where the credential came from. '
+        + 'Check the revision when a listing looks short or a fix seems absent: this server is launched from a shared checkout that is routinely parked on somebody else\'s branch, so it can answer from code days behind `origin/main` while every other signal looks correct. ' +
         'That matters when one application runs this server twice: a Desktop extension on the host and a Code session inside WSL are separate installs with separate configuration, so "it works in one place and not the other" is answered by asking both and comparing, not by assuming they share anything. ' +
         'Use it when a read fails, and when a person asks why this is not working: "the connection is down" and "there is nothing to report" look identical in an empty answer, and the causes — an unconfigured credential, a replaced secret, an identity never admitted to the relay — have completely different fixes. ' +
         'Several of those fixes are administrative actions in Estiva ID that nobody can carry out from inside this conversation; report the state and say who has to act.',

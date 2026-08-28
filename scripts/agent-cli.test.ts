@@ -13,7 +13,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BadRequest, flagValue, parseArgs } from '../lib/agent/cli'
-import { isWslKernel, refuseUnsignable } from '../lib/agent/cli'
+import { isWslKernel, parseGitHead, refuseUnsignable } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
 import { archivedRemoved, findIssue, findProject, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
@@ -395,6 +395,24 @@ try {
   )
   check('the hidden one is the archived one', !archivedRemoved(projects).some((p) => p.archived))
   check('nothing is hidden when none are archived', archivedRemoved([{ archived: false }]).length === 1)
+}
+
+{
+  /*
+    AGE-6: the MCP server runs whatever branch the shared checkout is parked on,
+    and a listing 13 issues short arrived with a note blaming the workspace. The
+    answer now carries the revision that produced it.
+
+    Parsed rather than shelled out for, and tested here rather than on whatever
+    the author's HEAD happens to be — asserting against the real repository
+    would pass for the wrong reason on any machine.
+  */
+  check('a branch HEAD yields the branch', parseGitHead('ref: refs/heads/main\n').branch === 'main')
+  check('a branch name with slashes survives', parseGitHead('ref: refs/heads/janmikula/peek-161\n').branch === 'janmikula/peek-161')
+  check('a detached HEAD yields the commit', parseGitHead('a'.repeat(40)).commit === 'a'.repeat(40))
+  check('a detached HEAD has no branch', parseGitHead('b'.repeat(40)).branch === undefined)
+  check('a short hash is not mistaken for a commit', parseGitHead('abc123').commit === undefined)
+  check('a tag ref is neither', Object.keys(parseGitHead('ref: refs/tags/v1')).length === 0)
 }
 
 console.log(failures === 0 ? '\nAll agent CLI checks passed.' : `\n${failures} failed.`)
