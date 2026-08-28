@@ -20,7 +20,9 @@
  * Peek touches no file in `lib/agent/` except the registry it is added to.
  */
 import type { Signer } from '../nostr/signer'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { Relay } from '@estiva-app/protocol'
 import { clientCredentialsToken, loadCredentials, serviceIdentitySigner } from './credentials'
 
@@ -240,6 +242,30 @@ export interface Runtime {
   entry: string
   /** The client that opened this session, from the MCP handshake. */
   client?: string
+  /**
+   * Which code is answering, not just where it runs.
+   *
+   * AGE-6: this server is launched by `scripts/mcp-server.sh`, which runs
+   * whatever is checked out in the shared `~/estiva-agent` at the moment the
+   * session starts. That checkout sits on a peer's branch routinely, so an
+   * answer can come from a revision days behind `origin/main` — and the failure
+   * is silent *and* authoritative: a listing 13 issues short, with a `coverage`
+   * note asserting the shortfall is a limit of the workspace rather than of the
+   * binary. Measured 2026-08-28: the server reported `unreachable: 13` while the
+   * CLI at `origin/main` reported `0`, same identity, same relay, minutes apart.
+   *
+   * A person can be told to check their checkout. An agent cannot, because the
+   * answer carried no revision. Now it does.
+   */
+  revision?: RuntimeRevision
+}
+
+/** The commit answering, and whether its tree has uncommitted changes. */
+export interface RuntimeRevision {
+  commit?: string
+  branch?: string
+  /** Undefined when it could not be determined, which is not the same as clean. */
+  dirty?: boolean
 }
 
 /**
@@ -261,7 +287,123 @@ export function isWslKernel(procVersion: string): boolean {
   return /microsoft|wsl/i.test(procVersion)
 }
 
+/**
+ * `.git/HEAD` as a branch name or a detached commit.
+ *
+ * Pure, because this suite's premise is that decisions are testable without a
+ * machine in a particular state — and "is HEAD parsed correctly" is exactly the
+ * kind of thing that passes on the author's laptop by accident.
+ */
+export function parseGitHead(head: string): { branch?: string; commit?: string } {
+  const text = head.trim()
+  const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(text)
+  if (ref) return { branch: ref[1] }
+  return /^[0-9a-f]{40}$/.test(text) ? { commit: text } : {}
+}
+
+/**
+ * A path's git directories: its own, and the one refs actually live in.
+ *
+ * A worktree's `.git` is a *file* containing `gitdir: <path>`, and that
+ * directory holds the worktree's own `HEAD` but **not** its branch refs — those
+ * stay in the main repository, named by a `commondir` file beside it. Getting
+ * this wrong loses the whole revision rather than just the commit, which is how
+ * the first version of this failed: it read `HEAD`, could not resolve the ref,
+ * and returned nothing at all.
+ *
+ * Not an exotic case to support. A pinned worktree is one of the fixes proposed
+ * for AGE-6, so the diagnostic that reports the revision has to work in the
+ * arrangement meant to fix the problem.
+ */
+function gitDirsFor(start: string): { gitDir: string; commonDir: string } | undefined {
+  let dir = dirname(start)
+  for (let up = 0; up < 8; up++) {
+    const candidate = join(dir, '.git')
+    let gitDir: string | undefined
+    try {
+      gitDir = statSync(candidate).isDirectory()
+        ? candidate
+        : (() => {
+            const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(candidate, 'utf8'))
+            return pointer ? resolve(dir, pointer[1].trim()) : undefined
+          })()
+    } catch {
+      // Not here. Keep walking up.
+    }
+    if (gitDir) {
+      let commonDir = gitDir
+      try {
+        const common = readFileSync(join(gitDir, 'commondir'), 'utf8').trim()
+        if (common) commonDir = resolve(gitDir, common)
+      } catch {
+        // A normal checkout: its own git dir is the common one.
+      }
+      return { gitDir, commonDir }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return undefined
+}
+
+/**
+ * The revision the entry file belongs to, or nothing.
+ *
+ * Reads git's files rather than shelling out for the commit, so a missing `git`
+ * binary costs the dirty flag and not the whole answer. Each lookup fails on its
+ * own: an unresolvable ref loses the commit and keeps the branch, because a
+ * branch name alone still answers "which code is this?".
+ *
+ * `dirty` needs the binary, and when it cannot be determined it stays
+ * **undefined** — which a reader must not read as clean. That is the reason it
+ * is optional rather than defaulting to false.
+ */
+function revisionFor(entry: string): RuntimeRevision | undefined {
+  const dirs = gitDirsFor(entry)
+  if (!dirs) return undefined
+
+  let branch: string | undefined
+  let commit: string | undefined
+  try {
+    const head = parseGitHead(readFileSync(join(dirs.gitDir, 'HEAD'), 'utf8'))
+    branch = head.branch
+    commit = head.commit
+  } catch {
+    return undefined
+  }
+
+  if (branch && !commit) {
+    try {
+      commit = readFileSync(join(dirs.commonDir, 'refs', 'heads', branch), 'utf8').trim()
+    } catch {
+      try {
+        const packed = readFileSync(join(dirs.commonDir, 'packed-refs'), 'utf8')
+        commit = new RegExp(`^([0-9a-f]{40}) refs/heads/${branch}$`, 'm').exec(packed)?.[1]
+      } catch {
+        // Keep the branch; the commit is the half we lose.
+      }
+    }
+  }
+
+  let dirty: boolean | undefined
+  try {
+    const out = execFileSync('git', ['status', '--porcelain'], {
+      cwd: dirname(entry),
+      encoding: 'utf8',
+      timeout: 3000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    dirty = out.trim().length > 0
+  } catch {
+    // No git, not a repo, or too slow. Left undefined on purpose.
+  }
+
+  return { commit, branch, dirty }
+}
+
 function detectRuntime(client?: string): Runtime {
+  const entry = process.argv[1] ?? process.execPath
   let wsl = false
   try {
     wsl = isWslKernel(readFileSync('/proc/version', 'utf8'))
@@ -273,8 +415,9 @@ function detectRuntime(client?: string): Runtime {
     wsl,
     distro: process.env.WSL_DISTRO_NAME?.trim() || undefined,
     node: process.version,
-    entry: process.argv[1] ?? process.execPath,
+    entry,
     client,
+    revision: revisionFor(entry),
   }
 }
 
