@@ -25,7 +25,40 @@ if [ -s "$NVM_DIR/nvm.sh" ]; then
   . "$NVM_DIR/nvm.sh" 1>&2
 fi
 
-cd "$(dirname "$0")/.."
+# Which tree answers (AGE-6).
+#
+# This repository is shared and is routinely parked on somebody's branch, so
+# launching from it means a session can answer from code days old while every
+# other signal looks correct. The server runs from a worktree pinned to a
+# commit instead — `scripts/pin-server.sh` creates and moves it.
+#
+# Three ways out, in order:
+#
+#   ESTIVA_AGENT_DEV=1   run from this checkout, to test a local edit by
+#                        restarting a session. That workflow is the reason the
+#                        old shape existed and it is kept on purpose.
+#   the pinned worktree  the default.
+#   this checkout        when no worktree has been pinned yet.
+#
+# The last one is a **fallback, not a default**: hard-failing here would take
+# out Claude Desktop's tools with an error nobody is watching for, which this
+# file already warns about. So it falls back, says so on stderr, and — the part
+# that matters — exports the choice, so `estiva_ping` reports which tree
+# answered rather than leaving it to be inferred.
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+runtime="${ESTIVA_AGENT_RUNTIME:-$HOME/.estiva-agent-runtime}"
+
+if [ "${ESTIVA_AGENT_DEV:-}" = "1" ]; then
+  export ESTIVA_AGENT_SOURCE=dev
+  cd "$repo"
+elif [ -e "$runtime/.git" ]; then
+  export ESTIVA_AGENT_SOURCE=pinned
+  cd "$runtime"
+else
+  export ESTIVA_AGENT_SOURCE=checkout
+  echo "estiva mcp: no pinned worktree at $runtime, running from $repo — run scripts/pin-server.sh" >&2
+  cd "$repo"
+fi
 
 if ! command -v node >/dev/null 2>&1; then
   echo "estiva mcp: no node on PATH, and nvm did not provide one (NVM_DIR=$NVM_DIR)" >&2

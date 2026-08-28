@@ -14,6 +14,7 @@
     "test": "tsx scripts/nip19.test.ts && tsx scripts/signer.test.ts && tsx scripts/conformance.test.ts && tsx scripts/agent-cli.test.ts && tsx scripts/owner-attestation.test.ts && tsx scripts/mcp-server.test.ts && tsx scripts/extension.test.ts && tsx scripts/plugin.test.ts && tsx scripts/manifest-reader.test.ts",
     "test:signer:agent": "tsx scripts/agent-signer.test.ts",
     "soak:renewal": "tsx scripts/agent-renewal-soak.ts",
+    "server:pin": "bash scripts/pin-server.sh",
     "plugin:validate": "node scripts/build-extension.mjs && tsx scripts/plugin.test.ts"
   },
   "dependencies": {

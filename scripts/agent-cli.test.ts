@@ -13,7 +13,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BadRequest, flagValue, parseArgs } from '../lib/agent/cli'
-import { isWslKernel, parseGitHead, refuseUnsignable } from '../lib/agent/cli'
+import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
 import { archivedRemoved, findIssue, findProject, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
@@ -413,6 +413,21 @@ try {
   check('a detached HEAD has no branch', parseGitHead('b'.repeat(40)).branch === undefined)
   check('a short hash is not mistaken for a commit', parseGitHead('abc123').commit === undefined)
   check('a tag ref is neither', Object.keys(parseGitHead('ref: refs/tags/v1')).length === 0)
+}
+
+{
+  /*
+    The launcher's choice of tree, reported so a diagnosis is one call.
+
+    Anything unrecognised is dropped rather than passed through: this field
+    exists to be trusted, and a stray value in the environment reported as fact
+    is worse than no field at all.
+  */
+  check('pinned is reported', runtimeSource('pinned') === 'pinned')
+  check('dev is reported', runtimeSource('dev') === 'dev')
+  check('the fallback is reported', runtimeSource('checkout') === 'checkout')
+  check('an unknown value is dropped', runtimeSource('production') === undefined)
+  check('an unset variable is dropped', runtimeSource(undefined) === undefined)
 }
 
 console.log(failures === 0 ? '\nAll agent CLI checks passed.' : `\n${failures} failed.`)
