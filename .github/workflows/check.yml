@@ -52,3 +52,69 @@ jobs:
           name: estiva-agent-mcpb
           path: extension/estiva-agent.mcpb
           retention-days: 30
+
+  # AGE-1: a stale bundle on `main` fixes itself.
+  #
+  # The check above already runs on `main` and already went red the moment a
+  # stale bundle landed (2026-08-24, #7). Detection was never the gap — the gap
+  # is that a red `main` produced no consequence. Nobody watched the line,
+  # including the person who merged it, and `main` shipped a plugin a version
+  # behind for a night. A plugin runs **no install step**, so whatever is in the
+  # repository is what a person installing it runs.
+  #
+  # How it goes stale is worth understanding, because it is a property of any
+  # generated file kept in the tree rather than a one-off. A `pull_request`
+  # check validates the merge of the branch into `main` *at the time it runs*.
+  # #7 was checked against a `main` where `plugin/` did not exist yet, so the
+  # diff had nothing to compare and passed vacuously; #8 added `plugin/`; #7
+  # then merged without being re-checked. Any two open PRs where only one
+  # regenerates reproduce this exactly.
+  #
+  # So this rebuilds on `main` and pushes the result back rather than reporting
+  # it. Self-correcting beats loud: the alternative that *prevents* it is branch
+  # protection's "require branches to be up to date before merging", which costs
+  # every open PR a rebase on every merge — a real price for a fast-merging team,
+  # and a team decision rather than a workflow's.
+  #
+  # A push made with GITHUB_TOKEN does not trigger workflows, so this cannot
+  # loop. If the push races another merge it fails loudly, which is exactly the
+  # behaviour that exists today.
+  #
+  # If branch protection is ever turned on, this job needs an exemption or it
+  # will start failing on every heal — the failure would be honest, but it will
+  # look like this job is broken rather than newly forbidden.
+  bundle:
+    name: The plugin bundle on main stays current
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Rebuild it
+        run: node scripts/build-extension.mjs
+
+      - name: Push it back if main merged it stale
+        run: |
+          if [ -z "$(git status --porcelain -- plugin/)" ]; then
+            echo "The committed bundle matches its source."
+            exit 0
+          fi
+          echo "::warning::main merged a stale plugin bundle; rebuilding it"
+          git diff --stat -- plugin/
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add plugin/
+          git commit -m 'Rebuild the plugin bundle, which main merged stale (AGE-1)'
+          if ! git push origin HEAD:main; then
+            echo "::error::could not push the rebuilt bundle — main is stale and needs a manual rebuild"
+            exit 1
+          fi
