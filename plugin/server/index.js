@@ -15867,6 +15867,22 @@ var KIND = {
   COMMENT: 1111,
   /** NIP-84 highlight. */
   HIGHLIGHT: 9802,
+  /**
+   * NIP-78 arbitrary custom app data — and **it is not reserved for read state**,
+   * despite the relay naming its own constant `KIND_READ_STATE`.
+   *
+   * The relay's NIP-RS handling is a narrow predicate: kind 30078, exactly one
+   * `d` matching `read-state:<32 lowercase hex>`, and exactly one
+   * `["t","read-state"]`. Ingest performs no other `d`-tag validation on the
+   * kind, so anything outside that predicate is an ordinary addressable event
+   * with ordinary replaceable semantics.
+   *
+   * Two uses in the suite, and the constant is here so neither invents its own
+   * number: NIP-RS read state (SPEC §11.6) and app-private user-owned storage
+   * (SPEC §12). A `d` beginning `read-state:` brings hard-deletion of superseded
+   * blobs with it, which is a property app data must not acquire by accident.
+   */
+  APP_DATA: 30078,
   /** NIP-FC File — see docs/buzz-compat/nips/NIP-FC.md in the Peek repo. */
   FILE: 30840,
   /** NIP-FC Component. */
@@ -16140,6 +16156,7 @@ async function authorizationHeader(signer, args2) {
 }
 
 // node_modules/@estiva-app/protocol/dist/bridge.js
+var RELAY_PAGE_CEILING = 1e3;
 function parsePublishResponse(status2, text2) {
   let parsed;
   try {
@@ -16224,6 +16241,66 @@ var Relay = class {
     if (!result.ok)
       throw new Error(`query failed: ${result.reason}`);
     return result.events;
+  }
+  /**
+   * Every event matching `filters`, paged, rather than the first page.
+   *
+   * `query` returns whatever one request yielded, which is a trap the moment a
+   * kind grows past the relay's ceiling: the caller cannot distinguish "that is
+   * all of them" from "that is as many as I will give you".
+   *
+   * **Why this does not stop at a short page.** The obvious loop — page until a
+   * page comes back smaller than the page size — is wrong, because it trusts
+   * {@link RELAY_PAGE_CEILING} to equal the relay's real limit. If the relay's
+   * were ever *lower*, every page would look short and the first one would be
+   * mistaken for the whole set: the original bug, reintroduced. So the rule is
+   * **whether the `until` cursor still advances**, which holds whatever the true
+   * ceiling is, at the cost of one extra round trip at the end.
+   *
+   * `until` is inclusive in NIP-01, so the boundary event repeats on the next
+   * page; dedup by id absorbs that. Dedup is deliberately *not* the termination
+   * signal — under two filters matching the same events, a page of already-seen
+   * ids means "this filter overlaps the last one", not "stop".
+   *
+   * **Throws rather than truncating** when the cursor cannot advance and the
+   * page is full: more than `pageSize` events then share one `created_at`, no
+   * value of `until` reaches past them without skipping some, and no correct
+   * answer exists from this API — so it says so instead of returning a
+   * plausible subset.
+   */
+  async queryAll(filters, options = {}) {
+    const pageSize = options.pageSize ?? RELAY_PAGE_CEILING;
+    const maxPages = options.maxPages ?? 100;
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const filter of filters) {
+      let until;
+      for (let page = 0; ; page++) {
+        if (page >= maxPages) {
+          throw new Error(`queryAll: gave up after ${maxPages} pages \u2014 refusing to return a partial set`);
+        }
+        const events = await this.query([
+          { ...filter, limit: pageSize, ...until === void 0 ? {} : { until } }
+        ]);
+        if (events.length === 0)
+          break;
+        for (const e of events) {
+          if (seen.has(e.id))
+            continue;
+          seen.add(e.id);
+          out.push(e);
+        }
+        const oldest = Math.min(...events.map((e) => e.created_at));
+        if (until !== void 0 && oldest >= until) {
+          if (events.length >= pageSize) {
+            throw new Error(`queryAll: more than ${pageSize} events share created_at=${until} \u2014 cannot page without skipping`);
+          }
+          break;
+        }
+        until = oldest;
+      }
+    }
+    return out;
   }
 };
 
@@ -17561,7 +17638,7 @@ async function directoryFor(context2, pubkeys) {
   return wanted.length ? store(context2).profiles(wanted) : /* @__PURE__ */ new Map();
 }
 async function coverage(context2, reachable) {
-  const events = await context2.relay.query([{ kinds: [KIND2.ISSUE], limit: 2e3 }]);
+  const events = await context2.relay.queryAll([{ kinds: [KIND2.ISSUE] }]);
   const everything = /* @__PURE__ */ new Set();
   for (const event of events) {
     const d = event.tags.find((tag2) => tag2[0] === "d")?.[1];
@@ -17848,7 +17925,7 @@ var shipApp = {
         const topic = flagValue(args2, "topic");
         let folder;
         if (topic) {
-          const events = await context2.relay.query([{ kinds: [KIND2.FOLDER], limit: 500 }]);
+          const events = await context2.relay.queryAll([{ kinds: [KIND2.FOLDER] }]);
           const channels = events.map((event) => ({
             folder: event.tags.find((tag2) => tag2[0] === "h")?.[1] ?? "",
             name: event.tags.find((tag2) => tag2[0] === "name")?.[1] ?? ""
@@ -17945,7 +18022,7 @@ function parseTopic(event) {
   };
 }
 async function loadTopics(context2) {
-  const events = await context2.relay.query([{ kinds: [KIND3.CHANNEL], limit: 500 }]);
+  const events = await context2.relay.queryAll([{ kinds: [KIND3.CHANNEL] }]);
   const topics = [];
   for (const event of events) {
     const topic = parseTopic(event);
@@ -17981,8 +18058,8 @@ function findThread(threads, reference) {
   });
 }
 async function threadsIn(context2, folder) {
-  const events = await context2.relay.query([
-    { kinds: [KIND3.MESSAGE], "#h": [folder], limit: 500 }
+  const events = await context2.relay.queryAll([
+    { kinds: [KIND3.MESSAGE], "#h": [folder] }
   ]);
   const { conversations } = foldFolder(events);
   return conversations.map((thread) => ({
@@ -18001,7 +18078,7 @@ var peekApp = {
       usage: "topics [--all]",
       async run(context2, args2) {
         const topics = await loadTopics(context2);
-        const messages = await context2.relay.query([{ kinds: [KIND3.MESSAGE], limit: 2e3 }]);
+        const messages = await context2.relay.queryAll([{ kinds: [KIND3.MESSAGE] }]);
         const counts = /* @__PURE__ */ new Map();
         for (const message of messages) {
           const folder = tagValue(message, "h");
@@ -18058,9 +18135,8 @@ var peekApp = {
         const limitFlag = flagValue(args2, "limit");
         const limit = limitFlag ? Number(limitFlag) : 200;
         if (!Number.isFinite(limit) || limit <= 0) throw new BadRequest("--limit must be a number");
-        const events = await context2.relay.query([
-          { kinds: [KIND3.MESSAGE, KIND3.ASSERTION], "#h": [topic.folder], limit }
-        ]);
+        const filter = { kinds: [KIND3.MESSAGE, KIND3.ASSERTION], "#h": [topic.folder] };
+        const events = limit > RELAY_PAGE_CEILING ? (await context2.relay.queryAll([filter])).slice(0, limit) : await context2.relay.query([{ ...filter, limit }]);
         const { conversations } = foldFolder(events);
         const speakers = conversations.flatMap((thread) => [
           thread.root.author,

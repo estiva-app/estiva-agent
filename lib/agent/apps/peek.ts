@@ -36,7 +36,7 @@
  * accurate about the data and wrong about the question.
  */
 import { foldFolder } from '../../../src/fold'
-import { buildCreateChannel, type SignedEvent } from '@estiva-app/protocol'
+import { buildCreateChannel, RELAY_PAGE_CEILING, type SignedEvent } from '@estiva-app/protocol'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { resolveOne } from '../resolve'
 import { Store } from '../../../src/store'
@@ -80,7 +80,7 @@ function parseTopic(event: SignedEvent): Topic | null {
 }
 
 async function loadTopics(context: AgentContext): Promise<Topic[]> {
-  const events = await context.relay.query([{ kinds: [KIND.CHANNEL], limit: 500 }])
+  const events = await context.relay.queryAll([{ kinds: [KIND.CHANNEL] }])
   const topics: Topic[] = []
   for (const event of events) {
     const topic = parseTopic(event)
@@ -180,8 +180,8 @@ function findThread<T extends { id: string; opening: string }>(threads: T[], ref
 
 /** The conversations in one topic, in the shape `findThread` resolves over. */
 async function threadsIn(context: AgentContext, folder: string) {
-  const events = await context.relay.query([
-    { kinds: [KIND.MESSAGE], '#h': [folder], limit: 500 },
+  const events = await context.relay.queryAll([
+    { kinds: [KIND.MESSAGE], '#h': [folder] },
   ])
   const { conversations } = foldFolder(events)
   return conversations.map((thread) => ({
@@ -204,7 +204,7 @@ export const peekApp: AgentApp = {
 
         // One query for every message, counted per Folder. A query per topic
         // would be 40 round trips for one list.
-        const messages = await context.relay.query([{ kinds: [KIND.MESSAGE], limit: 2000 }])
+        const messages = await context.relay.queryAll([{ kinds: [KIND.MESSAGE] }])
         const counts = new Map<string, number>()
         for (const message of messages) {
           const folder = tagValue(message, 'h')
@@ -268,9 +268,14 @@ export const peekApp: AgentApp = {
         const limit = limitFlag ? Number(limitFlag) : 200
         if (!Number.isFinite(limit) || limit <= 0) throw new BadRequest('--limit must be a number')
 
-        const events = await context.relay.query([
-          { kinds: [KIND.MESSAGE, KIND.ASSERTION], '#h': [topic.folder], limit },
-        ])
+        // A `--limit` above the relay's page ceiling would be clamped and the
+        // caller told nothing, so ask for what they asked for: one request when
+        // it fits, paged and trimmed when it does not.
+        const filter = { kinds: [KIND.MESSAGE, KIND.ASSERTION], '#h': [topic.folder] }
+        const events =
+          limit > RELAY_PAGE_CEILING
+            ? (await context.relay.queryAll([filter])).slice(0, limit)
+            : await context.relay.query([{ ...filter, limit }])
 
         /*
           Ship's fold, on Peek's events, deliberately — see the note at the top.

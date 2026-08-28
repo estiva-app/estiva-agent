@@ -110,7 +110,7 @@ async function main() {
   console.log(`\n2. Fetch every object of every declared kind`)
   const byKind = new Map<number, SignedEvent[]>()
   for (const kind of handled) {
-    const events = await relay.query([{ kinds: [kind], limit: 2000 }])
+    const events = await relay.queryAll([{ kinds: [kind] }])
     byKind.set(kind, events)
     console.log(`   kind:${kind} → ${events.length} event(s)`)
   }
@@ -122,7 +122,7 @@ async function main() {
     return
   }
   console.log(`\n3. Fold changes — rule "${records.rule}"`)
-  const changes = await relay.query([{ kinds: [records.changeKind], limit: 2000 }])
+  const changes = await relay.queryAll([{ kinds: [records.changeKind] }])
   console.log(`   kind:${records.changeKind} → ${changes.length} change event(s)`)
 
   /**
@@ -166,7 +166,7 @@ async function main() {
       if (/^[0-9a-f]{64}$/i.test(value)) keys.add(value.toLowerCase())
     }
   }
-  const profiles = await relay.query([{ kinds: [0], authors: [...keys], limit: 500 }])
+  const profiles = await relay.queryAll([{ kinds: [0], authors: [...keys] }])
   const names = new Map<string, string>()
   for (const profile of profiles) {
     try {
