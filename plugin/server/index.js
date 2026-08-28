@@ -16528,6 +16528,9 @@ function relayUrl() {
   const configured = process.env.RELAY_URL?.trim();
   return (configured || DEFAULT_RELAY_URL).replace(/\/+$/, "");
 }
+function runtimeSource(value) {
+  return value === "pinned" || value === "dev" || value === "checkout" ? value : void 0;
+}
 function isWslKernel(procVersion) {
   return /microsoft|wsl/i.test(procVersion);
 }
@@ -16614,7 +16617,8 @@ function detectRuntime(client) {
     node: process.version,
     entry,
     client,
-    revision: revisionFor(entry)
+    revision: revisionFor(entry),
+    source: runtimeSource(process.env.ESTIVA_AGENT_SOURCE)
   };
 }
 async function connectionStatus(app, { client } = {}) {
@@ -18536,7 +18540,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "estiva_ping",
-      description: 'Check the Estiva connection and report which hop is broken, without reading any workspace data. Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, runtime, summary }`. `runtime` says where this server is actually running \u2014 platform, whether it is inside WSL, which client opened the session, and **which revision is answering** (`runtime.revision`: commit, branch, and whether the tree is dirty) \u2014 and the credentials hop names where the credential came from. Check the revision when a listing looks short or a fix seems absent: this server is launched from a shared checkout that is routinely parked on somebody else\'s branch, so it can answer from code days behind `origin/main` while every other signal looks correct. That matters when one application runs this server twice: a Desktop extension on the host and a Code session inside WSL are separate installs with separate configuration, so "it works in one place and not the other" is answered by asking both and comparing, not by assuming they share anything. Use it when a read fails, and when a person asks why this is not working: "the connection is down" and "there is nothing to report" look identical in an empty answer, and the causes \u2014 an unconfigured credential, a replaced secret, an identity never admitted to the relay \u2014 have completely different fixes. Several of those fixes are administrative actions in Estiva ID that nobody can carry out from inside this conversation; report the state and say who has to act.',
+      description: 'Check the Estiva connection and report which hop is broken, without reading any workspace data. Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, runtime, summary }`. `runtime` says where this server is actually running \u2014 platform, whether it is inside WSL, which client opened the session, and **which revision is answering** (`runtime.revision`: commit, branch, and whether the tree is dirty) \u2014 and the credentials hop names where the credential came from. Check `runtime.revision` and `runtime.source` when a listing looks short or a fix seems absent. The server normally runs from a worktree pinned to a commit (`source: "pinned"`); a `source` of `"checkout"` means nothing was pinned and it fell back to a shared working tree that is routinely parked on somebody else\'s branch, which is how a session ends up answering from code days old while every other signal looks correct. That matters when one application runs this server twice: a Desktop extension on the host and a Code session inside WSL are separate installs with separate configuration, so "it works in one place and not the other" is answered by asking both and comparing, not by assuming they share anything. Use it when a read fails, and when a person asks why this is not working: "the connection is down" and "there is nothing to report" look identical in an empty answer, and the causes \u2014 an unconfigured credential, a replaced secret, an identity never admitted to the relay \u2014 have completely different fixes. Several of those fixes are administrative actions in Estiva ID that nobody can carry out from inside this conversation; report the state and say who has to act.',
       inputSchema: { type: "object", properties: {}, additionalProperties: false }
     }
   ]

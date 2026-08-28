@@ -258,6 +258,35 @@ export interface Runtime {
    * answer carried no revision. Now it does.
    */
   revision?: RuntimeRevision
+  /**
+   * Which tree the launcher chose, when it was launched by one.
+   *
+   * `revision` says *what* is running; this says *why that one*. Together they
+   * turn "the answer looks wrong" into one call: a `checkout` source with an
+   * old commit is the AGE-6 failure exactly, and a `dev` source explains a
+   * revision that matches no published commit.
+   */
+  source?: RuntimeSource
+}
+
+/**
+ * How the launcher picked the tree.
+ *
+ * `pinned` — a worktree pinned to a commit, the default.
+ * `dev`    — this checkout, on purpose, to test a local edit.
+ * `checkout` — this checkout, as a fallback, because nothing was pinned yet.
+ */
+export type RuntimeSource = 'pinned' | 'dev' | 'checkout'
+
+/**
+ * The launcher's choice, or nothing when it was not launched by the script.
+ *
+ * Pure and narrow because an unknown value must not be reported as fact: this
+ * field exists to be trusted in a diagnosis, so anything it does not recognise
+ * is dropped rather than passed through.
+ */
+export function runtimeSource(value: string | undefined): RuntimeSource | undefined {
+  return value === 'pinned' || value === 'dev' || value === 'checkout' ? value : undefined
 }
 
 /** The commit answering, and whether its tree has uncommitted changes. */
@@ -418,6 +447,7 @@ function detectRuntime(client?: string): Runtime {
     entry,
     client,
     revision: revisionFor(entry),
+    source: runtimeSource(process.env.ESTIVA_AGENT_SOURCE),
   }
 }
 

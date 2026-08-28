@@ -196,6 +196,36 @@ npm run probe:agent
 The probe walks the same four hops `estiva_ping` does and prints them. Expect
 four ticks and a count of events.
 
+### Pin the tree the server runs from
+
+```bash
+npm run server:pin
+```
+
+Do this once. It creates a worktree at `~/.estiva-agent-runtime`, **detached at a
+commit**, and installs its dependencies there; the launcher runs the server from
+it rather than from this checkout.
+
+The reason is AGE-6. This checkout is shared and routinely parked on somebody's
+branch, so without a pin a session answers from whatever happens to be checked
+out — on 2026-08-28 that was ten commits old, and it reported the resulting
+shortfall as a limit of the *workspace*: `unreachable: 13` where the same
+identity on `origin/main` saw `0`. Nothing said which code was answering.
+
+Detached is the point: `git pull` here cannot move it, and neither can somebody
+switching branches. Move it deliberately by re-running the command, optionally
+naming a ref — `npm run server:pin -- origin/main`.
+
+**Testing a local edit still works.** Set `ESTIVA_AGENT_DEV=1` in the client's
+config and the server runs from this checkout again, which is what restarting a
+session to try a change has always meant.
+
+If nothing is pinned the launcher falls back to this checkout rather than
+failing — a hard failure here removes Desktop's tools with an error nobody is
+watching for. It says so on stderr, and `estiva_ping` reports
+`runtime.source: "checkout"`, so the fallback is visible in the answer instead
+of being inferred.
+
 Then point Desktop at `scripts/mcp-server.sh` in `claude_desktop_config.json`:
 
 | Platform | Path |
