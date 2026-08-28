@@ -117,7 +117,7 @@ async function coverage(
   context: AgentContext,
   reachable: Issue[],
 ): Promise<{ reachable: number; unreachable: number; total: number; note?: string }> {
-  const events = await context.relay.query([{ kinds: [KIND.ISSUE], limit: 2000 }])
+  const events = await context.relay.queryAll([{ kinds: [KIND.ISSUE] }])
 
   const everything = new Set<string>()
   for (const event of events) {
@@ -527,7 +527,7 @@ export const shipApp: AgentApp = {
         const topic = flagValue(args, 'topic')
         let folder: string | undefined
         if (topic) {
-          const events = await context.relay.query([{ kinds: [KIND.FOLDER], limit: 500 }])
+          const events = await context.relay.queryAll([{ kinds: [KIND.FOLDER] }])
           const channels = events.map((event) => ({
             folder: event.tags.find((tag) => tag[0] === 'h')?.[1] ?? '',
             name: event.tags.find((tag) => tag[0] === 'name')?.[1] ?? '',
