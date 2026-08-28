@@ -113,6 +113,17 @@ async function directoryFor(
  * the same unscoped query shape `resolveObject` already relies on. One extra
  * round trip per listing, which is cheap next to answering for half a workspace.
  */
+/**
+ * Archived projects removed — the default view of `ship projects`.
+ *
+ * Extracted so the rule can be tested without a relay. `archived` is folded
+ * from a `kind:1851` change and is never a tag on the project record, which is
+ * what made AGE-7 look like a discovery bug rather than a filter.
+ */
+export function archivedRemoved<T extends { archived?: boolean }>(projects: T[]): T[] {
+  return projects.filter((project) => !project.archived)
+}
+
 async function coverage(
   context: AgentContext,
   reachable: Issue[],
@@ -266,16 +277,41 @@ export const shipApp: AgentApp = {
         const state = await store(context).loadAll()
         const directory = await directoryFor(context, state.projects.map((p) => p.lead))
 
-        const wanted = args.flags.archived
-          ? state.projects
-          : state.projects.filter((project) => !project.archived)
+        const archived = state.projects.filter((project) => project.archived)
+        const wanted = args.flags.archived ? state.projects : archivedRemoved(state.projects)
 
-        return wanted.map((project) => ({
-          ...projectSummary(project, directory),
-          // Counted here rather than in the summary so the shape stays the same
-          // whether or not issues were loaded alongside.
-          issues: state.issues.filter((issue) => issue.projectAddr === project.addr).length,
-        }))
+        return {
+          projects: wanted.map((project) => ({
+            ...projectSummary(project, directory),
+            // Counted here rather than in the summary so the shape stays the same
+            // whether or not issues were loaded alongside.
+            issues: state.issues.filter((issue) => issue.projectAddr === project.addr).length,
+          })),
+          /*
+            The same argument `coverage` makes for issues, for the same reason.
+
+            This listing hides archived projects, and an array carries no hint
+            that it did. A person browsing sees a list and never forms the
+            belief that it is everything; an agent asked "what projects are
+            there?" answers from whatever came back. AGE-7 is that failure
+            happening: `ship projects` returned 11 and then 9 an hour later,
+            because two tracks finished and were archived in between, and the
+            list said nothing.
+
+            It cost a filed ticket and a diagnosis to find out nothing was
+            wrong. The trap that made it expensive is worth stating: a project
+            is archived by a `kind:1851` change, not by a tag on its record —
+            so reading the record event, which is the obvious check, shows no
+            `archived` tag on a project that is archived.
+          */
+          hidden: {
+            archived: args.flags.archived ? 0 : archived.length,
+            note:
+              !args.flags.archived && archived.length > 0
+                ? `${archived.length} archived project(s) are not listed — pass --archived to include them. Do not describe this list as every project.`
+                : undefined,
+          },
+        }
       },
     },
     {

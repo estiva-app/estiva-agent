@@ -16,7 +16,7 @@ import { BadRequest, flagValue, parseArgs } from '../lib/agent/cli'
 import { isWslKernel, refuseUnsignable } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { findIssue, findProject, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
+import { archivedRemoved, findIssue, findProject, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
 import { findTopic, type Topic } from '../lib/agent/apps/peek'
 import type { Issue } from '../src/fold'
@@ -369,6 +369,32 @@ try {
   */
   check('an unknown ceiling permits everything', refuseUnsignable(createTopic, undefined) === undefined)
   check('mayPublish agrees', mayPublish(undefined, 9007) && !mayPublish([9], 9007))
+}
+
+{
+  /*
+    AGE-7: `ship projects` returned 11 projects and then 9 an hour later, and a
+    ticket was filed against discovery. Nothing was wrong with discovery — two
+    tracks finished and were archived in between, and the listing hid them
+    without saying so.
+
+    The expensive part was the diagnosis, because the obvious check misleads: a
+    project is archived by a `kind:1851` change, so the record event carries no
+    `archived` tag and reading it "rules out" an archive that has happened.
+  */
+  const projects = [
+    { title: 'live one', archived: false },
+    { title: 'finished track', archived: true },
+    { title: 'never set', archived: undefined },
+  ]
+
+  check('archived projects are hidden by default', archivedRemoved(projects).length === 2)
+  check(
+    'a project that never set the flag is not treated as archived',
+    archivedRemoved(projects).some((p) => p.title === 'never set'),
+  )
+  check('the hidden one is the archived one', !archivedRemoved(projects).some((p) => p.archived))
+  check('nothing is hidden when none are archived', archivedRemoved([{ archived: false }]).length === 1)
 }
 
 console.log(failures === 0 ? '\nAll agent CLI checks passed.' : `\n${failures} failed.`)
