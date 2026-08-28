@@ -17644,6 +17644,9 @@ async function directoryFor(context2, pubkeys) {
   const wanted = [...new Set(pubkeys.filter((key) => Boolean(key)))];
   return wanted.length ? store(context2).profiles(wanted) : /* @__PURE__ */ new Map();
 }
+function archivedRemoved(projects) {
+  return projects.filter((project) => !project.archived);
+}
 async function coverage(context2, reachable) {
   const events = await context2.relay.queryAll([{ kinds: [KIND2.ISSUE] }]);
   const everything = /* @__PURE__ */ new Set();
@@ -17718,13 +17721,37 @@ var shipApp = {
       async run(context2, args2) {
         const state = await store(context2).loadAll();
         const directory = await directoryFor(context2, state.projects.map((p) => p.lead));
-        const wanted = args2.flags.archived ? state.projects : state.projects.filter((project) => !project.archived);
-        return wanted.map((project) => ({
-          ...projectSummary(project, directory),
-          // Counted here rather than in the summary so the shape stays the same
-          // whether or not issues were loaded alongside.
-          issues: state.issues.filter((issue2) => issue2.projectAddr === project.addr).length
-        }));
+        const archived = state.projects.filter((project) => project.archived);
+        const wanted = args2.flags.archived ? state.projects : archivedRemoved(state.projects);
+        return {
+          projects: wanted.map((project) => ({
+            ...projectSummary(project, directory),
+            // Counted here rather than in the summary so the shape stays the same
+            // whether or not issues were loaded alongside.
+            issues: state.issues.filter((issue2) => issue2.projectAddr === project.addr).length
+          })),
+          /*
+                      The same argument `coverage` makes for issues, for the same reason.
+          
+                      This listing hides archived projects, and an array carries no hint
+                      that it did. A person browsing sees a list and never forms the
+                      belief that it is everything; an agent asked "what projects are
+                      there?" answers from whatever came back. AGE-7 is that failure
+                      happening: `ship projects` returned 11 and then 9 an hour later,
+                      because two tracks finished and were archived in between, and the
+                      list said nothing.
+          
+                      It cost a filed ticket and a diagnosis to find out nothing was
+                      wrong. The trap that made it expensive is worth stating: a project
+                      is archived by a `kind:1851` change, not by a tag on its record —
+                      so reading the record event, which is the obvious check, shows no
+                      `archived` tag on a project that is archived.
+                    */
+          hidden: {
+            archived: args2.flags.archived ? 0 : archived.length,
+            note: !args2.flags.archived && archived.length > 0 ? `${archived.length} archived project(s) are not listed \u2014 pass --archived to include them. Do not describe this list as every project.` : void 0
+          }
+        };
       }
     },
     {
