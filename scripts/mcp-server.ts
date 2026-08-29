@@ -231,7 +231,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ship_edit_project',
       description:
-        'Change one Estiva Ship project: its title, description, status or lead. Pass only the fields to change \u2014 anything omitted is left alone. Each field is published as its own change, so a partial failure leaves the earlier ones standing and the answer says which landed. ' +
+        'Change one Estiva Ship project: its title, description, status or lead. Pass only the fields to change — anything omitted is left alone. Each field is published as its own change, so a partial failure leaves the earlier ones standing and the answer says which landed. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
@@ -431,7 +431,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'ship_edit_project': {
         /*
-          Not `flagsFrom`, which drops an empty string \u2014 and an empty string is
+          Not `flagsFrom`, which drops an empty string — and an empty string is
           the only way to say "clear this project's description". Absent and
           explicitly empty have to stay distinguishable here, because the
           command reads the difference as "leave alone" versus "clear".

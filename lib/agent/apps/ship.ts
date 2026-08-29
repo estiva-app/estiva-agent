@@ -242,7 +242,7 @@ export function projectEdits(project: Project, args: ParsedArgs, self: string): 
         `Unknown project status "${status}". Try: ${PROJECT_STATUSES.map((entry) => entry.value).join(', ')}`,
       )
     }
-    edits.push({ field: 'status', from: project.status, value: wanted, note: `Status \u2192 ${wanted}` })
+    edits.push({ field: 'status', from: project.status, value: wanted, note: `Status → ${wanted}` })
   }
 
   const lead = flagValue(args, 'lead')
@@ -619,7 +619,7 @@ export const shipApp: AgentApp = {
     {
       name: 'edit-project',
       signs: [KIND.CHANGE],
-      summary: 'change a project\u2019s title, description, status or lead',
+      summary: 'change a project’s title, description, status or lead',
       usage: 'edit-project <ref> [--title "..."] [--description "..."] [--status <s>] [--lead <key|me|none>]',
       async run(context, args) {
         const reference = args.positional[0]
@@ -632,21 +632,34 @@ export const shipApp: AgentApp = {
         /*
           A change to the project *record* carries the Folder that record is in,
           not the Folder its issues are in. The two are the same until somebody
-          re-links a project to an existing Peek topic, and after that a change
-          published against the content Folder is rejected at ingest \u2014 the rule
-          `apps/ship/views/project.ts` states for the web UI, which is where
-          this command's field names and notes come from too.
+          re-links a project to an existing Peek topic — 3 of the 14 projects on
+          production — and `--project` reports the *content* Folder, so the
+          reachable-looking choice is the wrong one.
+
+          `apps/ship/views/project.ts` says the wrong Folder is “rejected at
+          ingest”. **Measured against production, it is not.** The relay accepts
+          a project change published against the content Folder: ok:true, no
+          reason given. What actually happens is quieter than a rejection and
+          worse than one. The fold keys changes by target address, so `loadAll`
+          applies it and everything looks correct — but `loadFolder` and
+          `loadFolders` filter by `#h`, so a reader scoped to the record's own
+          Folder never sees it. The edit lands for whoever reads the whole
+          workspace and silently does not exist for whoever reads the project.
+
+          So the rule holds and the stated reason does not. Use the record's
+          Folder because that is where readers of this project look, not because
+          anything would stop you writing elsewhere.
         */
         const folder = project.originFolder
         if (!folder) {
           throw new BadRequest(
-            `\u201c${project.title}\u201d names no Folder for its record, so a change to it has nowhere to be published.`,
+            `“${project.title}” names no Folder for its record, so a change to it has nowhere to be published.`,
           )
         }
 
         /*
           One event per field, because `buildChange` carries a single
-          `field`/`value` pair \u2014 that is what makes the stream replayable and
+          `field`/`value` pair — that is what makes the stream replayable and
           the activity feed readable, and it is not worth breaking so four edits
           can share a publish. Still one *object* per call, which is the rule
           that actually bounds this CLI (CLAUDE.md: no verb selects by matching
@@ -668,7 +681,7 @@ export const shipApp: AgentApp = {
           })
           if (!result.ok) {
             throw new BadRequest(
-              `The relay refused ${edit.field} on \u201c${project.title}\u201d: ${result.reason ?? 'no reason given'}. ` +
+              `The relay refused ${edit.field} on “${project.title}”: ${result.reason ?? 'no reason given'}. ` +
                 `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
             )
           }
