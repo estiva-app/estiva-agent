@@ -74,6 +74,26 @@ const built = readFileSync(committed, 'utf8')
 const secret = process.env.ESTIVA_ID_CLIENT_SECRET?.trim()
 check('no credential is built into the committed bundle', !secret || !built.includes(secret))
 
+/*
+  esbuild writes each module's resolved path into the bundle as a comment. Build
+  with a `node_modules` that lives outside the tree — a symlink into another
+  checkout, which is an easy thing to do in a worktree — and those become
+  absolute paths pointing at the builder's home directory. The bundle still
+  works, so nothing downstream complains; it just no longer matches what a clean
+  checkout produces, and it ships somebody's username to everyone who installs it.
+
+  The rebuild-and-compare above cannot catch this on its own: it rebuilds under
+  the same conditions, so both sides are wrong identically and agree. CI catches
+  it, having no symlink, which makes this the one failure that reliably passes
+  locally and fails there. Checked here so it fails where it was caused.
+*/
+const escaped = [...built.matchAll(/^\/\/ (\.\.\/|\/home\/|\/Users\/|[A-Za-z]:\\).*$/gm)].map((m) => m[0])
+check(
+  'the committed bundle names no path outside this repository',
+  escaped.length === 0,
+  escaped[0]?.slice(0, 90) ?? '',
+)
+
 // ── The manifests ───────────────────────────────────────────────────────────
 
 const marketplace = JSON.parse(readFileSync(join(root, '.claude-plugin/marketplace.json'), 'utf8'))
@@ -88,6 +108,23 @@ check(
   'the marketplace entry and the manifest agree on the name',
   entry.name === manifest.name,
   `${entry.name} vs ${manifest.name}`,
+)
+
+/*
+  Both artefacts are the same server, so both have to claim the same version —
+  and the version is the *only* thing an installed copy compares against to
+  notice a newer one exists. Left to drift, one client offers an update and the
+  other silently keeps running last month's tools.
+
+  Read from the Desktop manifest rather than from `package.json`, which is
+  `private` and carries no version at all: these two files are the whole of what
+  ships.
+*/
+const desktop = JSON.parse(readFileSync(join(root, 'extension/manifest.json'), 'utf8'))
+check(
+  'the plugin and the extension agree on the version',
+  manifest.version === desktop.version,
+  `${manifest.version} vs ${desktop.version}`,
 )
 
 /*

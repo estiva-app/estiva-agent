@@ -16,7 +16,7 @@ import { BadRequest, flagValue, parseArgs } from '../lib/agent/cli'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { archivedRemoved, findIssue, findProject, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
+import { archivedRemoved, findIssue, findProject, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
 import { findTopic, type Topic } from '../lib/agent/apps/peek'
 import type { Issue } from '../src/fold'
@@ -395,6 +395,70 @@ try {
   )
   check('the hidden one is the archived one', !archivedRemoved(projects).some((p) => p.archived))
   check('nothing is hidden when none are archived', archivedRemoved([{ archived: false }]).length === 1)
+}
+
+console.log('\u2014 editing a project \u2014')
+
+{
+  /*
+    AGE-8: the agent could create a project and then never change one. The
+    decisions worth pinning are the ones that look right and are not: a project
+    status is a *different* vocabulary from an issue status, and clearing a lead
+    has to be expressible at all \u2014 an append-only stream has no undo, so
+    "nobody" is written as a value rather than by removing something.
+  */
+  const self = 'a'.repeat(64)
+  const other = 'b'.repeat(64)
+  const project = (over: Partial<Project> = {}): Project => ({
+    addr: '30850:abc:p1',
+    id: 'p1',
+    author: 'abc',
+    createdAt: 0,
+    title: 'Cross-app read state',
+    description: 'the old blurb',
+    contentFolder: 'f',
+    originFolder: 'f',
+    status: 'planned',
+    archived: false,
+    fields: {},
+    ...over,
+  })
+
+  const plan = (flags: Record<string, string | true>, over: Partial<Project> = {}) =>
+    projectEdits(project(over), { positional: [], flags }, self)
+
+  const rename = plan({ title: 'Read state, everywhere' })
+  check('a rename is one change to title', rename.length === 1 && rename[0].field === 'title')
+  check('and it carries the value it is coming from', rename[0].from === 'Cross-app read state')
+  check('with the note the web UI writes', rename[0].note === 'Rename')
+
+  const many = plan({ title: 'New name', description: 'new blurb', status: 'completed' })
+  check('several fields are several changes', many.length === 3, many.map((e) => e.field).join(','))
+  check('in the order they are declared', many.map((e) => e.field).join(',') === 'title,description,status')
+
+  check('a project status comes from the project vocabulary', plan({ status: 'completed' })[0].value === 'completed')
+  check('and is case-insensitive', plan({ status: 'In_Progress' })[0].value === 'in_progress')
+  refuses('an issue status is refused on a project', () => plan({ status: 'done' }), 'planned')
+  refuses('and the refusal lists the real vocabulary', () => plan({ status: 'done' }), 'completed')
+
+  const lead = plan({ lead: 'me' })
+  check('\u201cme\u201d resolves to the signing identity', lead[0].value === self)
+  check('and reads as an assignment', lead[0].note === 'Assign project')
+  check('another person is taken by pubkey', plan({ lead: other })[0].value === other)
+  check('a pubkey is lowercased', plan({ lead: other.toUpperCase() })[0].value === other)
+  refuses('a display name is refused as a lead', () => plan({ lead: 'Miky' }), 'not unique')
+
+  const cleared = plan({ lead: 'none' })
+  check('\u201cnone\u201d clears the lead', cleared[0].value === '')
+  check('by writing an empty value rather than removing anything', cleared[0].field === 'lead')
+  check('and reads as an unassignment', cleared[0].note === 'Unassign project')
+  check('an empty string clears it too', plan({ lead: '' })[0].value === '')
+  check('clearing reports who it was', plan({ lead: 'none' }, { lead: other })[0].from === other)
+
+  check('a description can be cleared', plan({ description: '' })[0].value === '')
+  refuses('an empty title is refused', () => plan({ title: '   ' }), 'cannot be empty')
+  refuses('a call that changes nothing is refused', () => plan({}), 'at least one')
+  refuses('a bare flag with no value is refused', () => plan({ status: true }), 'needs a value')
 }
 
 {

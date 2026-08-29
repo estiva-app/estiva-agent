@@ -17758,6 +17758,46 @@ function findProject(projects, reference) {
     hint: "Pass a project name or part of one."
   });
 }
+function projectEdits(project, args2, self) {
+  const edits = [];
+  const title = flagValue(args2, "title");
+  if (title !== void 0) {
+    if (!title.trim()) throw new BadRequest("--title cannot be empty. A project nobody can name is a project nobody finds.");
+    edits.push({ field: "title", from: project.title, value: title, note: "Rename" });
+  }
+  const description = flagValue(args2, "description");
+  if (description !== void 0) {
+    edits.push({ field: "description", from: project.description, value: description, note: "Description" });
+  }
+  const status2 = flagValue(args2, "status");
+  if (status2 !== void 0) {
+    const wanted = status2.toLowerCase();
+    if (!PROJECT_STATUSES.some((entry) => entry.value === wanted)) {
+      throw new BadRequest(
+        `Unknown project status "${status2}". Try: ${PROJECT_STATUSES.map((entry) => entry.value).join(", ")}`
+      );
+    }
+    edits.push({ field: "status", from: project.status, value: wanted, note: `Status \u2192 ${wanted}` });
+  }
+  const lead = flagValue(args2, "lead");
+  if (lead !== void 0) {
+    const cleared = lead === "none" || lead === "";
+    const wanted = cleared ? "" : lead === "me" ? self : lead;
+    if (!cleared && !/^[0-9a-f]{64}$/i.test(wanted)) {
+      throw new BadRequest('--lead takes a 64-character hex pubkey, "me", or "none". Names are not unique.');
+    }
+    edits.push({
+      field: "lead",
+      from: project.lead ?? "",
+      value: wanted.toLowerCase(),
+      note: cleared ? "Unassign project" : "Assign project"
+    });
+  }
+  if (edits.length === 0) {
+    throw new BadRequest("edit-project needs at least one of --title, --description, --status or --lead.");
+  }
+  return edits;
+}
 var OPEN_STATUSES = ["todo", "in_progress"];
 var STATUS_ALIASES = { open: OPEN_STATUSES };
 function statusesFor(requested) {
@@ -18011,6 +18051,42 @@ var shipApp = {
           to: assignee.toLowerCase(),
           eventId: result.eventId
         };
+      }
+    },
+    {
+      name: "edit-project",
+      signs: [KIND2.CHANGE],
+      summary: "change a project\u2019s title, description, status or lead",
+      usage: 'edit-project <ref> [--title "..."] [--description "..."] [--status <s>] [--lead <key|me|none>]',
+      async run(context2, args2) {
+        const reference = args2.positional[0];
+        if (!reference) throw new BadRequest("edit-project needs a project reference.");
+        const state = await store(context2).loadAll();
+        const project = findProject(state.projects, reference);
+        const edits = projectEdits(project, args2, context2.signer.pubkey);
+        const folder = project.originFolder;
+        if (!folder) {
+          throw new BadRequest(
+            `\u201C${project.title}\u201D names no Folder for its record, so a change to it has nowhere to be published.`
+          );
+        }
+        const applied = [];
+        for (const edit of edits) {
+          const result = await store(context2).setField({
+            folder,
+            target: project.addr,
+            field: edit.field,
+            value: edit.value,
+            note: edit.note
+          });
+          if (!result.ok) {
+            throw new BadRequest(
+              `The relay refused ${edit.field} on \u201C${project.title}\u201D: ${result.reason ?? "no reason given"}. Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`
+            );
+          }
+          applied.push({ field: edit.field, from: edit.from, to: edit.value, eventId: result.eventId });
+        }
+        return { changed: { title: project.title, addr: project.addr, folder }, applied };
       }
     },
     {
@@ -18369,6 +18445,7 @@ var TOOL_COMMANDS = {
   ship_comment: { app: shipApp, command: "comment" },
   ship_set_status: { app: shipApp, command: "set-status" },
   ship_assign: { app: shipApp, command: "assign" },
+  ship_edit_project: { app: shipApp, command: "edit-project" },
   ship_create_issue: { app: shipApp, command: "create-issue" },
   ship_create_project: { app: shipApp, command: "create-project" },
   peek_reply: { app: peekApp, command: "reply" },
@@ -18460,6 +18537,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           pubkey: { type: "string", description: '64-character hex public key, or "me" for this agent.' }
         },
         required: ["ref", "pubkey"],
+        additionalProperties: false
+      }
+    },
+    {
+      name: "ship_edit_project",
+      description: "Change one Estiva Ship project: its title, description, status or lead. Pass only the fields to change \u2014 anything omitted is left alone. Each field is published as its own change, so a partial failure leaves the earlier ones standing and the answer says which landed. " + WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: "Project name, part of one, or its address. Refuses if it matches more than one."
+          },
+          title: { type: "string", description: "Optional. A new name for the project." },
+          description: {
+            type: "string",
+            description: "Optional. What the project is for. An empty string clears it."
+          },
+          status: {
+            type: "string",
+            enum: ["planned", "in_progress", "completed", "cancelled"],
+            description: "Optional. Projects have their own vocabulary; these are not the issue statuses."
+          },
+          lead: {
+            type: "string",
+            description: 'Optional. 64-character hex public key, "me" for this agent, or "none" to clear. Names are not accepted: they are self-set and not unique.'
+          }
+        },
+        required: ["ref"],
         additionalProperties: false
       }
     },
@@ -18592,6 +18698,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text(
           await command("assign").run(await context(), args({}, [str(input.ref), str(input.pubkey)]))
         );
+      case "ship_edit_project": {
+        const flags = {};
+        for (const name of ["title", "description", "status", "lead"]) {
+          const value = input[name];
+          if (typeof value === "string") flags[name] = value;
+        }
+        return text(await command("edit-project").run(await context(), args(flags, [str(input.ref)])));
+      }
       case "ship_create_project":
         return text(
           await command("create-project").run(

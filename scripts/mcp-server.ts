@@ -102,6 +102,7 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   ship_comment: { app: shipApp, command: 'comment' },
   ship_set_status: { app: shipApp, command: 'set-status' },
   ship_assign: { app: shipApp, command: 'assign' },
+  ship_edit_project: { app: shipApp, command: 'edit-project' },
   ship_create_issue: { app: shipApp, command: 'create-issue' },
   ship_create_project: { app: shipApp, command: 'create-project' },
   peek_reply: { app: peekApp, command: 'reply' },
@@ -224,6 +225,38 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           pubkey: { type: 'string', description: '64-character hex public key, or "me" for this agent.' },
         },
         required: ['ref', 'pubkey'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'ship_edit_project',
+      description:
+        'Change one Estiva Ship project: its title, description, status or lead. Pass only the fields to change \u2014 anything omitted is left alone. Each field is published as its own change, so a partial failure leaves the earlier ones standing and the answer says which landed. ' +
+        WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ref: {
+            type: 'string',
+            description: 'Project name, part of one, or its address. Refuses if it matches more than one.',
+          },
+          title: { type: 'string', description: 'Optional. A new name for the project.' },
+          description: {
+            type: 'string',
+            description: 'Optional. What the project is for. An empty string clears it.',
+          },
+          status: {
+            type: 'string',
+            enum: ['planned', 'in_progress', 'completed', 'cancelled'],
+            description: 'Optional. Projects have their own vocabulary; these are not the issue statuses.',
+          },
+          lead: {
+            type: 'string',
+            description:
+              'Optional. 64-character hex public key, "me" for this agent, or "none" to clear. Names are not accepted: they are self-set and not unique.',
+          },
+        },
+        required: ['ref'],
         additionalProperties: false,
       },
     },
@@ -395,6 +428,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text(
           await command('assign').run(await context(), args({}, [str(input.ref), str(input.pubkey)])),
         )
+
+      case 'ship_edit_project': {
+        /*
+          Not `flagsFrom`, which drops an empty string \u2014 and an empty string is
+          the only way to say "clear this project's description". Absent and
+          explicitly empty have to stay distinguishable here, because the
+          command reads the difference as "leave alone" versus "clear".
+        */
+        const flags: Record<string, string | true> = {}
+        for (const name of ['title', 'description', 'status', 'lead']) {
+          const value = input[name]
+          if (typeof value === 'string') flags[name] = value
+        }
+        return text(await command('edit-project').run(await context(), args(flags, [str(input.ref)])))
+      }
 
       case 'ship_create_project':
         return text(
