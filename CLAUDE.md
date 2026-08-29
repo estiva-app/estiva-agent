@@ -48,7 +48,16 @@ npx tsx scripts/agent.ts ship comment PEE-1 --body "..."
 npx tsx scripts/agent.ts ship set-status PEE-1 in_progress
 npx tsx scripts/agent.ts ship assign PEE-1 me
 npx tsx scripts/agent.ts ship create-issue --project "Peek: Feedback" --title "..."
+npx tsx scripts/agent.ts ship edit-project "Cross-app read state" --status completed
 ```
+
+`edit-project` takes any of `--title`, `--description`, `--status` and `--lead`,
+and touches only the ones passed. **Project statuses are their own vocabulary** —
+`planned`, `in_progress`, `completed`, `cancelled` — not the issue ones, and an
+issue status is refused rather than written. `--lead` takes a hex pubkey, `me`,
+or `none` to clear it; a display name is refused for the reason `assign` refuses
+one. Each field is a separate change event, so a refusal part-way leaves the
+earlier fields standing and the answer says which those were.
 
 **These write to production immediately.** There is no draft and no undo —
 other people and other apps read the result as fact, and NIP-09 deletion is a

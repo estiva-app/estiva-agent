@@ -23,7 +23,7 @@ import {
   lookupStatus,
 } from '../../../src/kinds'
 import type { Directory } from '../../../src/profiles'
-import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
+import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { resolveOne } from '../resolve'
 
 const store = (context: AgentContext) => new Store(context.relay, context.signer)
@@ -187,6 +187,94 @@ export function findProject(projects: Project[], reference: string): Project {
     label: (project) => project.title,
     hint: 'Pass a project name or part of one.',
   })
+}
+
+/** One field of one project, and what it is being changed from. */
+export interface ProjectEdit {
+  field: string
+  from: string
+  value: string
+  /** The human note that makes the activity feed readable. */
+  note: string
+}
+
+/**
+ * What an `edit-project` call is asking to change, validated.
+ *
+ * Pure and exported for the same reason `findProject` is: the decisions here —
+ * which vocabulary a project status comes from, what `me` and `none` mean, and
+ * refusing a call that changes nothing — are exactly the ones an agent gets
+ * quietly wrong, and none of them needs a relay to be wrong.
+ *
+ * The field names and notes are the ones `apps/ship/views/project.ts` writes
+ * from the web UI. Matching them is not cosmetic: the activity feed is the
+ * change stream itself, so an edit made here and one made in the app have to
+ * read as the same act rather than as two dialects.
+ */
+export function projectEdits(project: Project, args: ParsedArgs, self: string): ProjectEdit[] {
+  const edits: ProjectEdit[] = []
+
+  const title = flagValue(args, 'title')
+  if (title !== undefined) {
+    if (!title.trim()) throw new BadRequest('--title cannot be empty. A project nobody can name is a project nobody finds.')
+    edits.push({ field: 'title', from: project.title, value: title, note: 'Rename' })
+  }
+
+  const description = flagValue(args, 'description')
+  if (description !== undefined) {
+    edits.push({ field: 'description', from: project.description, value: description, note: 'Description' })
+  }
+
+  const status = flagValue(args, 'status')
+  if (status !== undefined) {
+    /*
+      Projects have their own vocabulary — planned/completed where an issue has
+      todo/done — so this cannot share `set-status`'s check, and reusing it
+      would validate the wrong words while looking correct.
+
+      Checked for the reason that one is checked: an unknown value is
+      *displayed* rather than swallowed (`lookupStatus`), so a typo would become
+      a visible bogus status on a real project instead of an error.
+    */
+    const wanted = status.toLowerCase()
+    if (!PROJECT_STATUSES.some((entry) => entry.value === wanted)) {
+      throw new BadRequest(
+        `Unknown project status "${status}". Try: ${PROJECT_STATUSES.map((entry) => entry.value).join(', ')}`,
+      )
+    }
+    edits.push({ field: 'status', from: project.status, value: wanted, note: `Status \u2192 ${wanted}` })
+  }
+
+  const lead = flagValue(args, 'lead')
+  if (lead !== undefined) {
+    /*
+      `me` is the signing identity. Anybody else is named by pubkey rather than
+      by display name, for the reason `assign` gives: names are self-set
+      (docs/untrusted-content.md), so leading by one would let a person redirect
+      who work lands on by renaming themselves.
+
+      `none` clears it, and clearing writes an empty string rather than deleting
+      the change — an append-only stream has no undo, and "set to nobody" is a
+      fact like any other. It is the shape `archived` already uses to unarchive.
+    */
+    const cleared = lead === 'none' || lead === ''
+    const wanted = cleared ? '' : lead === 'me' ? self : lead
+    if (!cleared && !/^[0-9a-f]{64}$/i.test(wanted)) {
+      throw new BadRequest('--lead takes a 64-character hex pubkey, "me", or "none". Names are not unique.')
+    }
+    edits.push({
+      field: 'lead',
+      from: project.lead ?? '',
+      value: wanted.toLowerCase(),
+      note: cleared ? 'Unassign project' : 'Assign project',
+    })
+  }
+
+  if (edits.length === 0) {
+    throw new BadRequest('edit-project needs at least one of --title, --description, --status or --lead.')
+  }
+
+  return edits
 }
 
 /**
@@ -526,6 +614,68 @@ export const shipApp: AgentApp = {
           to: assignee.toLowerCase(),
           eventId: result.eventId,
         }
+      },
+    },
+    {
+      name: 'edit-project',
+      signs: [KIND.CHANGE],
+      summary: 'change a project\u2019s title, description, status or lead',
+      usage: 'edit-project <ref> [--title "..."] [--description "..."] [--status <s>] [--lead <key|me|none>]',
+      async run(context, args) {
+        const reference = args.positional[0]
+        if (!reference) throw new BadRequest('edit-project needs a project reference.')
+
+        const state = await store(context).loadAll()
+        const project = findProject(state.projects, reference)
+        const edits = projectEdits(project, args, context.signer.pubkey)
+
+        /*
+          A change to the project *record* carries the Folder that record is in,
+          not the Folder its issues are in. The two are the same until somebody
+          re-links a project to an existing Peek topic, and after that a change
+          published against the content Folder is rejected at ingest \u2014 the rule
+          `apps/ship/views/project.ts` states for the web UI, which is where
+          this command's field names and notes come from too.
+        */
+        const folder = project.originFolder
+        if (!folder) {
+          throw new BadRequest(
+            `\u201c${project.title}\u201d names no Folder for its record, so a change to it has nowhere to be published.`,
+          )
+        }
+
+        /*
+          One event per field, because `buildChange` carries a single
+          `field`/`value` pair \u2014 that is what makes the stream replayable and
+          the activity feed readable, and it is not worth breaking so four edits
+          can share a publish. Still one *object* per call, which is the rule
+          that actually bounds this CLI (CLAUDE.md: no verb selects by matching
+          text).
+
+          A refusal stops the rest. There is no transaction on a relay, so a
+          later field failing cannot roll the earlier ones back; the honest
+          answer names the ones that landed rather than reporting the whole call
+          as failed and leaving a person guessing about half of it.
+        */
+        const applied: { field: string; from: string; to: string; eventId?: string }[] = []
+        for (const edit of edits) {
+          const result = await store(context).setField({
+            folder,
+            target: project.addr,
+            field: edit.field,
+            value: edit.value,
+            note: edit.note,
+          })
+          if (!result.ok) {
+            throw new BadRequest(
+              `The relay refused ${edit.field} on \u201c${project.title}\u201d: ${result.reason ?? 'no reason given'}. ` +
+                `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
+            )
+          }
+          applied.push({ field: edit.field, from: edit.from, to: edit.value, eventId: result.eventId })
+        }
+
+        return { changed: { title: project.title, addr: project.addr, folder }, applied }
       },
     },
     {

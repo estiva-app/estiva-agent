@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "estiva-agent",
   "display_name": "Estiva Agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Read and act on the Estiva workspace \u2014 Ship issues, over a Nostr relay.",
   "long_description": "Gives Claude Desktop tools for the team's Estiva workspace: list and read Ship issues, and \u2014 where the credential allows it \u2014 comment, set a status, assign, and file an issue.\n\nNo signing key is stored on this machine. The extension holds a client credential, exchanges it for a short-lived token, and asks Estiva ID to sign each request. A lost laptop leaks a credential an admin can revoke in one action, not a key.\n\nThe identity itself is created by an Estiva ID admin, who also decides what it may sign and admits it to the relay. Entering a credential here does not grant access on its own.",
   "author": {
@@ -51,6 +51,10 @@
     {
       "name": "ship_assign",
       "description": "Assign one issue, by public key"
+    },
+    {
+      "name": "ship_edit_project",
+      "description": "Change one project's title, description, status or lead"
     },
     {
       "name": "ship_create_issue",

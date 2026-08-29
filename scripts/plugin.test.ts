@@ -91,6 +91,23 @@ check(
 )
 
 /*
+  Both artefacts are the same server, so both have to claim the same version —
+  and the version is the *only* thing an installed copy compares against to
+  notice a newer one exists. Left to drift, one client offers an update and the
+  other silently keeps running last month's tools.
+
+  Read from the Desktop manifest rather than from `package.json`, which is
+  `private` and carries no version at all: these two files are the whole of what
+  ships.
+*/
+const desktop = JSON.parse(readFileSync(join(root, 'extension/manifest.json'), 'utf8'))
+check(
+  'the plugin and the extension agree on the version',
+  manifest.version === desktop.version,
+  `${manifest.version} vs ${desktop.version}`,
+)
+
+/*
   Only `plugin.json` may live in `.claude-plugin/`. Everything else — `.mcp.json`
   included — belongs at the plugin root, and a file in the wrong place is not an
   error: it is silently ignored, which presents as a plugin that installs
