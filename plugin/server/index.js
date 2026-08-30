@@ -18314,6 +18314,65 @@ Pass an address to say which.`
       }
     },
     {
+      name: "archive-project",
+      signs: [KIND2.CHANGE],
+      summary: "hide a project from the lists, or bring it back",
+      usage: "archive-project <ref> [--unarchive]",
+      async run(context2, args2) {
+        const reference = args2.positional[0];
+        if (!reference) throw new BadRequest("archive-project needs a project reference.");
+        const state = await store(context2).loadAll();
+        const project = findProject(state.projects, reference);
+        const archived = !args2.flags.unarchive;
+        const folder = project.originFolder;
+        if (!folder) {
+          throw new BadRequest(
+            `\u201C${project.title}\u201D names no Folder for its record, so a change to it has nowhere to be published.`
+          );
+        }
+        if (archived && project.archived) {
+          return {
+            unchanged: { title: project.title, addr: project.addr },
+            note: "That project is already archived. Pass --unarchive to bring it back."
+          };
+        }
+        if (!archived && !project.archived) {
+          return {
+            unchanged: { title: project.title, addr: project.addr },
+            note: "That project is not archived, so there is nothing to bring back."
+          };
+        }
+        const result = await store(context2).archiveProject({
+          recordFolder: folder,
+          project: project.addr,
+          archived
+        });
+        published(result, `${archived ? "archiving" : "unarchiving"} \u201C${project.title}\u201D`);
+        const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
+        return {
+          changed: { title: project.title, addr: project.addr, folder },
+          archived,
+          eventId: result.eventId,
+          /*
+                      Exactly what archiving does, because the obvious guess is wrong and
+                      it is wrong in the direction that matters.
+          
+                      Archiving hides the project from `ship projects`. It does **not**
+                      hide the project's issues: `ship issues` lists `state.issues` with
+                      no archived filter at all, so all of them keep appearing in the
+                      default listing, attributed to a project that listing no longer
+                      shows. Measured on production — 12 issues of an archived project,
+                      all still listed.
+          
+                      So this is not a way to tidy issues away, and saying so here is
+                      cheaper than somebody archiving a project for that purpose and only
+                      later noticing it did nothing.
+                    */
+          note: archived ? `Hidden from \`ship projects\` unless --archived. Its ${issues} issue(s) are NOT hidden \u2014 \`ship issues\` has no archived filter and keeps listing them. Reverse with --unarchive; nothing is deleted.` : "Back in the default project listing."
+        };
+      }
+    },
+    {
       name: "create-project",
       /*
               Two kinds, because creating a project usually creates its container
@@ -18671,6 +18730,7 @@ var TOOL_COMMANDS = {
   ship_assign: { app: shipApp, command: "assign" },
   ship_edit_issue: { app: shipApp, command: "edit-issue" },
   ship_edit_project: { app: shipApp, command: "edit-project" },
+  ship_archive_project: { app: shipApp, command: "archive-project" },
   ship_create_issue: { app: shipApp, command: "create-issue" },
   ship_create_project: { app: shipApp, command: "create-project" },
   peek_reply: { app: peekApp, command: "reply" },
@@ -18797,6 +18857,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           project: {
             type: "string",
             description: 'Optional. Project name, part of one, or its address \u2014 refuses if it matches more than one. "none" detaches the issue from every project.'
+          }
+        },
+        required: ["ref"],
+        additionalProperties: false
+      }
+    },
+    {
+      name: "ship_archive_project",
+      description: "Hide one Estiva Ship project from the project list, or bring it back with `unarchive`. Reversible: it is a change event, not a deletion, and nothing is removed. This is the cleanup operation to reach for \u2014 this identity cannot delete anything, so an unwanted project that is not archived stays in everyone's list permanently. It hides the project only. The project's issues keep appearing in the issue listing, which has no archived filter \u2014 archiving is not a way to tidy issues away. " + WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: "Project name, part of one, or its address. Refuses if it matches more than one."
+          },
+          unarchive: {
+            type: "boolean",
+            description: "Optional. Bring an archived project back into the listings instead."
           }
         },
         required: ["ref"],
@@ -18973,6 +19052,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         return text(await command("edit-issue").run(await context(), args(flags, [str(input.ref)])));
       }
+      case "ship_archive_project":
+        return text(
+          await command("archive-project").run(
+            await context(),
+            args(input.unarchive === true ? { unarchive: true } : {}, [str(input.ref)])
+          )
+        );
       case "ship_edit_project": {
         const flags = {};
         for (const name of ["title", "description", "status", "lead"]) {
