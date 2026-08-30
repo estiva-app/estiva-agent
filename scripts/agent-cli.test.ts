@@ -17,7 +17,7 @@ import { resolveMaybe } from '../lib/agent/resolve'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { archivedRemoved, assigneeFor, findIssue, findProject, issueEdits, participants, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
+import { archivedRemoved, assigneeFor, findIssue, findProject, issueEdits, participants, parseSince, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
 import { findTopic, type Topic } from '../lib/agent/apps/peek'
 import type { Issue } from '../src/fold'
@@ -505,6 +505,36 @@ console.log('— editing an issue —')
 
   const several = plan({ title: 'T', description: 'D', project: 'Ship: Feedback' })
   check('several fields are several changes', several.length === 3, several.map((e) => e.field).join(','))
+}
+
+console.log('— since, for the activity feed —')
+
+{
+  /*
+    AGE-12. `--since` has to accept both shapes the question comes in — "what
+    happened while I was away" is a duration, "what happened on the day it
+    broke" is a date — and refuse anything else rather than defaulting.
+
+    Defaulting is the failure worth preventing: a `--since` that quietly meant
+    "everything" answers a narrow question with the whole workspace, and the
+    answer looks exactly like a correct one.
+  */
+  const now = Date.parse('2026-08-30T12:00:00.000Z')
+  const iso = (at: number) => new Date(at).toISOString()
+
+  check('hours', iso(parseSince('12h', now)) === '2026-08-30T00:00:00.000Z', iso(parseSince('12h', now)))
+  check('days', iso(parseSince('2d', now)) === '2026-08-28T12:00:00.000Z', iso(parseSince('2d', now)))
+  check('minutes', iso(parseSince('30m', now)) === '2026-08-30T11:30:00.000Z')
+  check('case does not matter', parseSince('12H', now) === parseSince('12h', now))
+  check('spacing does not matter', parseSince('12 h', now) === parseSince('12h', now))
+
+  check('a bare date is midnight UTC', iso(parseSince('2026-08-29', now)) === '2026-08-29T00:00:00.000Z')
+  check('a full timestamp is taken as written', iso(parseSince('2026-08-29T06:30:00Z', now)) === '2026-08-29T06:30:00.000Z')
+
+  refuses('a word is refused, not treated as everything', () => parseSince('yesterday', now), 'neither')
+  refuses('and the refusal shows the forms', () => parseSince('yesterday', now), '2d')
+  refuses('an empty value is refused', () => parseSince('', now))
+  refuses('a bare number is refused', () => parseSince('7', now))
 }
 
 console.log('— assigning, and unassigning —')

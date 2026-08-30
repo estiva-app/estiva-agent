@@ -168,6 +168,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'ship_activity',
+      description:
+        'What changed in Estiva Ship, newest first — every status change, reassignment, rename, move and archive, with who made it and the note they left. ' +
+        'This is the read for "what happened since I was last here". A status listing cannot answer it: a rename, a reassignment, a move, or anything changed and changed back leaves no trace in the current state, and this is the stream that state was folded from. ' +
+        'Filter with `since` (a duration like 2d/12h/30m, or a date), `project`, and `by` (a public key, or "me"). ' +
+        'Older lines may carry no note: the two oldest write commands omitted it until recently, so a blank note means it was never written rather than that nothing was said.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          since: {
+            type: 'string',
+            description: 'Optional. A duration — 2d, 12h, 30m — or a date like 2026-08-29. Refused if it is neither.',
+          },
+          project: {
+            type: 'string',
+            description: 'Optional. Limit to one project and the issues filed under it. Name, part of one, or address.',
+          },
+          by: { type: 'string', description: 'Optional. 64-character hex public key, or "me" for this agent.' },
+          limit: { type: 'string', description: 'Optional. How many to return. Defaults to 50, newest first.' },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'ship_get_issue',
       description:
         'Read one Estiva Ship issue or project in full: for an issue its description, status, assignee, change history and conversation; for a project its description, status, lead, both of its Folders, its issues and its conversation. ' +
@@ -481,6 +505,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'ship_list_issues':
         return text(
           await command('issues').run(await context(), args(flagsFrom(input, ['project', 'status']))),
+        )
+
+      case 'ship_activity':
+        return text(
+          await command('activity').run(
+            await context(),
+            args(flagsFrom(input, ['since', 'project', 'by', 'limit'])),
+          ),
         )
 
       case 'ship_get_issue': {

@@ -17699,6 +17699,7 @@ function resolvePubkeys(directory, value) {
   return profile?.name ?? value;
 }
 var status = (vocab, value) => lookupStatus(vocab, value).label;
+var DEFAULT_ACTIVITY = 50;
 var BLURB = 200;
 function projectSummary(project, directory) {
   return {
@@ -17821,6 +17822,21 @@ function projectEdits(project, args2, self) {
     throw new BadRequest("edit-project needs at least one of --title, --description, --status or --lead.");
   }
   return edits;
+}
+function parseSince(value, now) {
+  const duration3 = /^(\d+)\s*([dhm])$/i.exec(value.trim());
+  if (duration3) {
+    const scale = { d: 864e5, h: 36e5, m: 6e4 }[duration3[2].toLowerCase()];
+    return now - Number(duration3[1]) * scale;
+  }
+  const looksLikeADate = /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(value.trim());
+  if (looksLikeADate) {
+    const parsed = Date.parse(value.trim());
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  throw new BadRequest(
+    `--since "${value}" is neither a duration nor a date. Try 2d, 12h, 30m, or 2026-08-29.`
+  );
 }
 function assigneeFor(who3, self) {
   if (who3 === "none" || who3 === "") return "";
@@ -18062,6 +18078,79 @@ var shipApp = {
             exactly the narrow queries somebody trusts most.
           */
           coverage: await coverage(context2, state.issues)
+        };
+      }
+    },
+    {
+      name: "activity",
+      summary: "what changed, newest first",
+      usage: "activity [--since <2d|2026-08-29>] [--project <ref>] [--by <pubkey|me>] [--limit <n>]",
+      async run(context2, args2) {
+        const state = await store(context2).loadAll();
+        const since = flagValue(args2, "since");
+        const cutoff = since ? parseSince(since, Date.now()) : void 0;
+        const limit = Number(flagValue(args2, "limit") ?? DEFAULT_ACTIVITY);
+        if (!Number.isFinite(limit) || limit < 1) throw new BadRequest("--limit must be a positive number.");
+        const labels = /* @__PURE__ */ new Map();
+        for (const project2 of state.projects) labels.set(project2.addr, { label: project2.title });
+        for (const issue2 of state.issues) {
+          labels.set(issue2.addr, {
+            label: `${issue2.ref ? `${issue2.ref} \u2014 ` : ""}${issue2.title}`,
+            project: issue2.projectAddr
+          });
+        }
+        const wantedProject = flagValue(args2, "project");
+        const project = wantedProject ? findProject(state.projects, wantedProject) : void 0;
+        const by = flagValue(args2, "by");
+        const author = by === "me" ? context2.signer.pubkey : by;
+        let changes = state.activity;
+        if (cutoff !== void 0) {
+          changes = changes.filter((change) => (change.ts ?? change.createdAt * 1e3) >= cutoff);
+        }
+        if (project) {
+          changes = changes.filter(
+            (change) => change.target === project.addr || labels.get(change.target)?.project === project.addr
+          );
+        }
+        if (author) {
+          if (!/^[0-9a-f]{64}$/i.test(author)) {
+            throw new BadRequest('--by takes a 64-character hex pubkey, or "me". Try `ship people`.');
+          }
+          changes = changes.filter((change) => change.author.toLowerCase() === author.toLowerCase());
+        }
+        const matched = changes.length;
+        const shown = changes.slice(-limit).reverse();
+        const directory = await directoryFor(context2, [
+          ...shown.map((change) => change.author),
+          ...shown.map((change) => change.value)
+        ]);
+        return {
+          activity: shown.map((change) => ({
+            at: new Date(change.ts ?? change.createdAt * 1e3).toISOString(),
+            by: who(directory, change.author),
+            field: change.field,
+            // Resolved by shape, the same rule `show` uses: any 64-character
+            // hex value is a key somebody may have a name for.
+            value: resolvePubkeys(directory, change.value),
+            /*
+              The human note, which is what makes a feed readable rather than a
+              list of field names. Empty for changes written before the note was
+              being set — `assign` and `set-status` omitted it until AGE-16, so
+              older lines are genuinely blank rather than rendered wrong.
+            */
+            note: change.note || void 0,
+            on: labels.get(change.target)?.label ?? change.target,
+            target: change.target
+          })),
+          shown: shown.length,
+          matched,
+          /*
+            The same honesty `issues` owes about discovery, for the same reason.
+            A change to an object this read cannot reach is not in `activity` at
+            all, and a feed is exactly where somebody concludes "nothing
+            happened" from a short list.
+          */
+          note: matched > shown.length ? `${matched} changes matched; showing the ${shown.length} most recent. Pass --limit for more.` : void 0
         };
       }
     },
@@ -18791,6 +18880,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: "ship_activity",
+      description: 'What changed in Estiva Ship, newest first \u2014 every status change, reassignment, rename, move and archive, with who made it and the note they left. This is the read for "what happened since I was last here". A status listing cannot answer it: a rename, a reassignment, a move, or anything changed and changed back leaves no trace in the current state, and this is the stream that state was folded from. Filter with `since` (a duration like 2d/12h/30m, or a date), `project`, and `by` (a public key, or "me"). Older lines may carry no note: the two oldest write commands omitted it until recently, so a blank note means it was never written rather than that nothing was said.',
+      inputSchema: {
+        type: "object",
+        properties: {
+          since: {
+            type: "string",
+            description: "Optional. A duration \u2014 2d, 12h, 30m \u2014 or a date like 2026-08-29. Refused if it is neither."
+          },
+          project: {
+            type: "string",
+            description: "Optional. Limit to one project and the issues filed under it. Name, part of one, or address."
+          },
+          by: { type: "string", description: 'Optional. 64-character hex public key, or "me" for this agent.' },
+          limit: { type: "string", description: "Optional. How many to return. Defaults to 50, newest first." }
+        },
+        additionalProperties: false
+      }
+    },
+    {
       name: "ship_get_issue",
       description: "Read one Estiva Ship issue or project in full: for an issue its description, status, assignee, change history and conversation; for a project its description, status, lead, both of its Folders, its issues and its conversation. Use it before editing anything \u2014 a project description in particular is returned nowhere else in full, and overwriting one that was never read is how a brief gets lost. Accepts a display ref (PEE-1), a project name, a full address, or part of a title. The answer says which kind it found. If the reference matches more than one issue, more than one project, or one of each, this returns the candidates instead of choosing \u2014 pick one and ask again rather than guessing, because the wrong object is indistinguishable from the right one once reported.",
       inputSchema: {
@@ -19045,6 +19154,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "ship_list_issues":
         return text(
           await command("issues").run(await context(), args(flagsFrom(input, ["project", "status"])))
+        );
+      case "ship_activity":
+        return text(
+          await command("activity").run(
+            await context(),
+            args(flagsFrom(input, ["since", "project", "by", "limit"]))
+          )
         );
       case "ship_get_issue": {
         const ref = typeof input.ref === "string" ? input.ref : "";
