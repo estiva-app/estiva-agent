@@ -188,7 +188,61 @@ async function threadsIn(context: AgentContext, folder: string) {
     id: thread.id,
     opening: thread.root.body,
     replies: thread.replies.length,
+    // Every message in the thread, root included, so `--to` can name one.
+    // Carried here rather than re-queried: the fold already threaded them.
+    messages: [thread.root, ...thread.replies].map((message) => ({
+      id: message.id,
+      body: message.body,
+    })),
   }))
+}
+
+/** A reply's `e` tags: which conversation it joins, and which message it answers. */
+export interface ReplyTarget {
+  rootId: string
+  parentId: string
+}
+
+/**
+ * Where a reply attaches.
+ *
+ * Without `--to` this is the thread root, which is what `reply` has always
+ * done: `rootId === parentId` is Buzz's shape for a direct reply to a
+ * conversation.
+ *
+ * With `--to` it is one message inside that conversation, which is the thing
+ * this command could not express. In a thread with several people, a reply
+ * attached to the opening message reads as answering whoever started it rather
+ * than whoever was actually being answered — and there was no way to say
+ * otherwise, because `rootId` and `parentId` were hardcoded equal.
+ *
+ * `--to` resolves within the conversation already chosen rather than across the
+ * topic. A narrow candidate set is not a convenience here: matching a phrase
+ * against every message in a busy topic is how a reply lands under the wrong
+ * one, and `resolve.ts` exists because that failure is invisible afterwards.
+ */
+export function replyTarget(
+  thread: { id: string; messages: { id: string; body: string }[] },
+  to: string | undefined,
+): ReplyTarget {
+  if (to === undefined) return { rootId: thread.id, parentId: thread.id }
+
+  const message = resolveOne(thread.messages, to, {
+    noun: 'message',
+    exact: (candidate) => [candidate.id],
+    text: (candidate) => `${candidate.id} ${candidate.body}`,
+    label: (candidate) => `${candidate.id.slice(0, 12)}… — ${candidate.body.slice(0, 60)}`,
+    hint: 'Pass a message id from `peek topic`, or a distinctive phrase from it.',
+  })
+
+  /*
+    Answering the root through `--to` is the same event as answering the
+    conversation, and is left as `rootId === parentId` rather than made into a
+    self-referencing parent. A reader that sees a root/reply pair treats it as a
+    reply to a reply; naming the root twice would claim a nesting level that is
+    not there.
+  */
+  return { rootId: thread.id, parentId: message.id }
 }
 
 export const peekApp: AgentApp = {
@@ -309,8 +363,15 @@ export const peekApp: AgentApp = {
             // Said on the wire by a kind:9101, never inferred from the text.
             resolved: resolved.has(thread.id) || undefined,
             messages: [thread.root, ...thread.replies].map((message) => ({
+              // The id is what `reply --to` takes. Without it printed here the
+              // flag would be unsatisfiable from inside the tool — the same
+              // shape of gap AGE-15 fixed for assignees.
+              id: message.id,
               by: who(directory, message.author),
               at: new Date(message.ts ?? message.createdAt * 1000).toISOString(),
+              // Which message this one answers, so the shape of the thread is
+              // legible rather than a flat list under a root.
+              inReplyTo: message.parentId !== message.rootId ? message.parentId : undefined,
               body: message.body,
             })),
           })),
@@ -341,8 +402,8 @@ export const peekApp: AgentApp = {
     {
       name: 'reply',
       signs: [KIND.MESSAGE],
-      summary: 'reply in one conversation',
-      usage: 'reply <topic> <conversation> --body "..."',
+      summary: 'reply in one conversation, or to one message in it',
+      usage: 'reply <topic> <conversation> --body "..." [--to <message>]',
       async run(context, args) {
         const [topicRef, threadRef] = args.positional
         if (!topicRef || !threadRef) {
@@ -355,21 +416,41 @@ export const peekApp: AgentApp = {
         const thread = findThread(await threadsIn(context, topic.folder), threadRef)
 
         /*
-          A direct reply, so `rootId === parentId` and `threadTags` emits the
-          single `e` tag marked "reply" that Buzz's own builder emits. The
-          ticket flagged this as the thing to get wrong: without an `e` tag the
-          message is not a reply at all, it is a new conversation at the top of
-          everybody's app.
+          Without `--to` this stays `rootId === parentId`, which is Buzz's shape
+          for a direct reply and what `threadTags` emits as a single `e` tag
+          marked "reply". That was flagged as the thing to get wrong and still
+          is: without an `e` tag the message is not a reply at all, it is a new
+          conversation at the top of everybody's app.
+
+          With `--to` the two differ, which is Buzz's shape for a reply to a
+          reply. `threadTags` already emits the root/reply pair for that case;
+          nothing new is being invented on the wire.
         */
+        const target = replyTarget(thread, flagValue(args, 'to'))
         const result = await new Store(context.relay, context.signer).postMessage({
           folder: topic.folder,
           body,
-          replyTo: { rootId: thread.id, parentId: thread.id },
+          replyTo: target,
         })
         published(result, `a reply in ${topic.name}`)
 
+        const answered = thread.messages.find((message) => message.id === target.parentId)
+
         return {
-          repliedTo: { topic: topic.name, conversation: thread.id, opening: thread.opening.slice(0, 80) },
+          repliedTo: {
+            topic: topic.name,
+            conversation: thread.id,
+            opening: thread.opening.slice(0, 80),
+            /*
+              Which message this actually landed under, said back rather than
+              assumed. `--to` takes a phrase as well as an id, and "it matched
+              the message I meant" is the one thing the caller cannot check
+              afterwards without re-reading the topic.
+            */
+            ...(target.parentId === thread.id
+              ? { attachedTo: 'the conversation' as const }
+              : { attachedTo: answered?.body.slice(0, 80), messageId: target.parentId }),
+          },
           eventId: result.eventId,
         }
       },

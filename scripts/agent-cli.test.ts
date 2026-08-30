@@ -19,7 +19,7 @@ import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
 import { archivedRemoved, assigneeFor, findIssue, findProject, issueEdits, participants, parseSince, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
-import { findTopic, type Topic } from '../lib/agent/apps/peek'
+import { findTopic, replyTarget, type Topic } from '../lib/agent/apps/peek'
 import type { Issue } from '../src/fold'
 import type { Directory } from '../src/profiles'
 
@@ -505,6 +505,51 @@ console.log('— editing an issue —')
 
   const several = plan({ title: 'T', description: 'D', project: 'Ship: Feedback' })
   check('several fields are several changes', several.length === 3, several.map((e) => e.field).join(','))
+}
+
+console.log('— where a reply attaches —')
+
+{
+  /*
+    AGE-13. `reply` hardcoded `rootId === parentId`, so the agent could join a
+    conversation but never answer a particular person in it — in a thread with
+    several people its reply attached to the opening message, reading as an
+    answer to whoever started the thread.
+
+    The rule worth pinning is that `--to` resolves inside the chosen
+    conversation only. Matching a phrase across a whole topic is how a reply
+    lands under the wrong message, and that is invisible once posted.
+  */
+  const thread = {
+    id: 'root-id',
+    messages: [
+      { id: 'root-id', body: 'Some improvements to the agent' },
+      { id: 'reply-1', body: 'Weird that it cannot reply to its own message' },
+      { id: 'reply-2', body: 'Edit is a good one' },
+    ],
+  }
+
+  const plain = replyTarget(thread, undefined)
+  check('without --to it answers the conversation', plain.rootId === plain.parentId)
+  check('and that is the thread root', plain.rootId === 'root-id')
+
+  const nested = replyTarget(thread, 'reply-1')
+  check('--to answers one message', nested.parentId === 'reply-1')
+  check('while staying in the same conversation', nested.rootId === 'root-id')
+  check('which is the root/reply pair Buzz reads as a nested reply', nested.rootId !== nested.parentId)
+
+  const byPhrase = replyTarget(thread, 'Edit is a good')
+  check('--to takes a phrase as well as an id', byPhrase.parentId === 'reply-2')
+
+  const atRoot = replyTarget(thread, 'root-id')
+  check(
+    'naming the root through --to stays a direct reply',
+    atRoot.rootId === atRoot.parentId,
+    'rather than claiming a nesting level that is not there',
+  )
+
+  refuses('an ambiguous phrase is refused, not guessed', () => replyTarget(thread, 'to'), 'matches')
+  refuses('a phrase matching nothing is refused', () => replyTarget(thread, 'nonexistent'))
 }
 
 console.log('— since, for the activity feed —')
