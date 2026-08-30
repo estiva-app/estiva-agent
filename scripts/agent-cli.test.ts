@@ -16,7 +16,7 @@ import { BadRequest, flagValue, parseArgs } from '../lib/agent/cli'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { archivedRemoved, findIssue, findProject, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
+import { archivedRemoved, findIssue, findProject, issueEdits, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
 import { findTopic, type Topic } from '../lib/agent/apps/peek'
 import type { Issue } from '../src/fold'
@@ -459,6 +459,51 @@ console.log('— editing a project —')
   refuses('an empty title is refused', () => plan({ title: '   ' }), 'cannot be empty')
   refuses('a call that changes nothing is refused', () => plan({}), 'at least one')
   refuses('a bare flag with no value is refused', () => plan({ status: true }), 'needs a value')
+}
+
+console.log('— editing an issue —')
+
+{
+  /*
+    AGE-9. The decision worth pinning is the move: an issue's parent was
+    believed to be fixed for the life of the issue, and it is not — it is a
+    `project` change carrying the target's *address*, which is why the
+    reference has to resolve before anything is published. Passing a project
+    name straight through as the value would produce an issue parented to a
+    string that matches no project, and no reader would report it.
+  */
+  const projects: Project[] = [
+    { addr: '30850:abc:p1', id: 'p1', author: 'abc', createdAt: 0, title: 'Peek: Feedback & Bugs', description: '', contentFolder: 'f1', originFolder: 'f1', status: 'planned', archived: false, fields: {} },
+    { addr: '30850:abc:p2', id: 'p2', author: 'abc', createdAt: 0, title: 'Ship: Feedback & Bugs', description: '', contentFolder: 'f2', originFolder: 'f2', status: 'planned', archived: false, fields: {} },
+  ]
+
+  const subject = issue({ addr: '30851:abc:9', title: 'Old title', description: 'old body', projectAddr: '30850:abc:p1' })
+  const plan = (flags: Record<string, string | true>) => issueEdits(subject, { positional: [], flags }, projects)
+
+  const renamed = plan({ title: 'New title' })
+  check('a rename is one change to title', renamed.length === 1 && renamed[0].field === 'title')
+  check('carrying what it came from', renamed[0].from === 'Old title')
+  check('with the note the app writes', renamed[0].note === 'Rename')
+
+  const moved = plan({ project: 'Ship: Feedback' })
+  check('a move resolves the project to an address', moved[0].value === '30850:abc:p2', moved[0].value)
+  check('not to the name it was given', moved[0].value !== 'Ship: Feedback')
+  check('and says where it came from', moved[0].from === '30850:abc:p1')
+  check('with the note the app writes', moved[0].note === 'Move to Ship: Feedback & Bugs', moved[0].note)
+
+  const detached = plan({ project: 'none' })
+  check('“none” detaches the issue', detached[0].value === '')
+  check('and reads as such', detached[0].note === 'Move to No project', detached[0].note)
+
+  refuses('an ambiguous project is refused rather than guessed', () => plan({ project: 'Feedback' }), 'Feedback')
+  refuses('a project that matches nothing is refused', () => plan({ project: 'nonexistent' }))
+
+  check('a description can be cleared', plan({ description: '' })[0].value === '')
+  refuses('an empty title is refused', () => plan({ title: '  ' }), 'cannot be empty')
+  refuses('a call that changes nothing is refused', () => plan({}), 'at least one')
+
+  const several = plan({ title: 'T', description: 'D', project: 'Ship: Feedback' })
+  check('several fields are several changes', several.length === 3, several.map((e) => e.field).join(','))
 }
 
 {

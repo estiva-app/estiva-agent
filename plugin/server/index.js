@@ -17798,6 +17798,33 @@ function projectEdits(project, args2, self) {
   }
   return edits;
 }
+function issueEdits(issue2, args2, projects) {
+  const edits = [];
+  const title = flagValue(args2, "title");
+  if (title !== void 0) {
+    if (!title.trim()) throw new BadRequest("--title cannot be empty. An issue nobody can name is an issue nobody finds.");
+    edits.push({ field: "title", from: issue2.title, value: title, note: "Rename" });
+  }
+  const description = flagValue(args2, "description");
+  if (description !== void 0) {
+    edits.push({ field: "description", from: issue2.description, value: description, note: "Description" });
+  }
+  const project = flagValue(args2, "project");
+  if (project !== void 0) {
+    const detached = project === "none" || project === "";
+    const target = detached ? void 0 : findProject(projects, project);
+    edits.push({
+      field: "project",
+      from: issue2.projectAddr ?? "",
+      value: target?.addr ?? "",
+      note: `Move to ${target?.title ?? "No project"}`
+    });
+  }
+  if (edits.length === 0) {
+    throw new BadRequest("edit-issue needs at least one of --title, --description or --project.");
+  }
+  return edits;
+}
 var OPEN_STATUSES = ["todo", "in_progress"];
 var STATUS_ALIASES = { open: OPEN_STATUSES };
 function statusesFor(requested) {
@@ -18050,6 +18077,49 @@ var shipApp = {
           from: issue2.assignee,
           to: assignee.toLowerCase(),
           eventId: result.eventId
+        };
+      }
+    },
+    {
+      name: "edit-issue",
+      signs: [KIND2.CHANGE],
+      summary: "change an issue\u2019s title, description, or which project it is in",
+      usage: 'edit-issue <ref> [--title "..."] [--description "..."] [--project <ref|none>]',
+      async run(context2, args2) {
+        const reference = args2.positional[0];
+        if (!reference) throw new BadRequest("edit-issue needs an issue reference.");
+        const state = await store(context2).loadAll();
+        const issue2 = findIssue(state.issues, reference);
+        const edits = issueEdits(issue2, args2, state.projects);
+        const folder = issue2.folder;
+        if (!folder) {
+          throw new BadRequest(
+            `${issue2.ref ?? issue2.addr} names no Folder, so a change to it has nowhere to be published.`
+          );
+        }
+        const applied = [];
+        for (const edit of edits) {
+          const result = await store(context2).setField({
+            folder,
+            target: issue2.addr,
+            field: edit.field,
+            value: edit.value,
+            note: edit.note
+          });
+          if (!result.ok) {
+            throw new BadRequest(
+              `The relay refused ${edit.field} on ${issue2.ref ?? issue2.addr}: ${result.reason ?? "no reason given"}. Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`
+            );
+          }
+          applied.push({ field: edit.field, from: edit.from, to: edit.value, eventId: result.eventId });
+        }
+        const moved = applied.find((entry) => entry.field === "project" && entry.to);
+        const destination = moved && state.projects.find((candidate) => candidate.addr === moved.to);
+        const conversationStaysBehind = destination && destination.contentFolder !== folder ? `The issue's conversation stays in Folder ${folder}, which is not ${destination.title}'s (${destination.contentFolder}). Moving an issue cannot move its messages: an event's Folder is immutable.` : void 0;
+        return {
+          changed: { ref: issue2.ref, addr: issue2.addr, title: issue2.title, folder },
+          applied,
+          ...conversationStaysBehind ? { note: conversationStaysBehind } : {}
         };
       }
     },
@@ -18445,6 +18515,7 @@ var TOOL_COMMANDS = {
   ship_comment: { app: shipApp, command: "comment" },
   ship_set_status: { app: shipApp, command: "set-status" },
   ship_assign: { app: shipApp, command: "assign" },
+  ship_edit_issue: { app: shipApp, command: "edit-issue" },
   ship_edit_project: { app: shipApp, command: "edit-project" },
   ship_create_issue: { app: shipApp, command: "create-issue" },
   ship_create_project: { app: shipApp, command: "create-project" },
@@ -18537,6 +18608,30 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           pubkey: { type: "string", description: '64-character hex public key, or "me" for this agent.' }
         },
         required: ["ref", "pubkey"],
+        additionalProperties: false
+      }
+    },
+    {
+      name: "ship_edit_issue",
+      description: 'Change one Estiva Ship issue: its title, its description, or which project it belongs to. Pass only the fields to change \u2014 anything omitted is left alone. An issue can be moved between projects: pass `project`, or "none" to detach it from every project. Moving re-parents the issue and nothing else \u2014 its conversation stays in the Folder it was filed in, because an event\'s Folder cannot change. ' + WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: "Display ref, address, or a distinctive fragment of the title."
+          },
+          title: { type: "string", description: "Optional. A new title for the issue." },
+          description: {
+            type: "string",
+            description: "Optional. The issue body. An empty string clears it."
+          },
+          project: {
+            type: "string",
+            description: 'Optional. Project name, part of one, or its address \u2014 refuses if it matches more than one. "none" detaches the issue from every project.'
+          }
+        },
+        required: ["ref"],
         additionalProperties: false
       }
     },
@@ -18698,6 +18793,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text(
           await command("assign").run(await context(), args({}, [str(input.ref), str(input.pubkey)]))
         );
+      case "ship_edit_issue": {
+        const flags = {};
+        for (const name of ["title", "description", "project"]) {
+          const value = input[name];
+          if (typeof value === "string") flags[name] = value;
+        }
+        return text(await command("edit-issue").run(await context(), args(flags, [str(input.ref)])));
+      }
       case "ship_edit_project": {
         const flags = {};
         for (const name of ["title", "description", "status", "lead"]) {

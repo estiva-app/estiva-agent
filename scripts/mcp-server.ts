@@ -102,6 +102,7 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   ship_comment: { app: shipApp, command: 'comment' },
   ship_set_status: { app: shipApp, command: 'set-status' },
   ship_assign: { app: shipApp, command: 'assign' },
+  ship_edit_issue: { app: shipApp, command: 'edit-issue' },
   ship_edit_project: { app: shipApp, command: 'edit-project' },
   ship_create_issue: { app: shipApp, command: 'create-issue' },
   ship_create_project: { app: shipApp, command: 'create-project' },
@@ -225,6 +226,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           pubkey: { type: 'string', description: '64-character hex public key, or "me" for this agent.' },
         },
         required: ['ref', 'pubkey'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'ship_edit_issue',
+      description:
+        'Change one Estiva Ship issue: its title, its description, or which project it belongs to. Pass only the fields to change — anything omitted is left alone. ' +
+        'An issue can be moved between projects: pass `project`, or "none" to detach it from every project. Moving re-parents the issue and nothing else — its conversation stays in the Folder it was filed in, because an event\'s Folder cannot change. ' +
+        WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ref: {
+            type: 'string',
+            description: 'Display ref, address, or a distinctive fragment of the title.',
+          },
+          title: { type: 'string', description: 'Optional. A new title for the issue.' },
+          description: {
+            type: 'string',
+            description: 'Optional. The issue body. An empty string clears it.',
+          },
+          project: {
+            type: 'string',
+            description:
+              'Optional. Project name, part of one, or its address — refuses if it matches more than one. "none" detaches the issue from every project.',
+          },
+        },
+        required: ['ref'],
         additionalProperties: false,
       },
     },
@@ -428,6 +457,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text(
           await command('assign').run(await context(), args({}, [str(input.ref), str(input.pubkey)])),
         )
+
+      case 'ship_edit_issue': {
+        // Same reason as `ship_edit_project` below: an empty string is how a
+        // description is cleared, and `flagsFrom` would drop it.
+        const flags: Record<string, string | true> = {}
+        for (const name of ['title', 'description', 'project']) {
+          const value = input[name]
+          if (typeof value === 'string') flags[name] = value
+        }
+        return text(await command('edit-issue').run(await context(), args(flags, [str(input.ref)])))
+      }
 
       case 'ship_edit_project': {
         /*
