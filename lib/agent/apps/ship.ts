@@ -13,7 +13,7 @@
  * `ship.estiva.app` agree.
  */
 import { Store, nextRef, refPrefix } from '../../../src/store'
-import type { Issue, Project } from '../../../src/fold'
+import type { FolderState, Issue, Project } from '../../../src/fold'
 import { conversationsAbout } from '../../../src/fold'
 import {
   DEFAULT_ISSUE_STATUS,
@@ -24,7 +24,7 @@ import {
 } from '../../../src/kinds'
 import type { Directory } from '../../../src/profiles'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
-import { resolveOne } from '../resolve'
+import { resolveMaybe, resolveOne } from '../resolve'
 
 const store = (context: AgentContext) => new Store(context.relay, context.signer)
 
@@ -62,6 +62,9 @@ export function resolvePubkeys(directory: Directory, value: string): string {
  */
 const status = (vocab: typeof ISSUE_STATUSES, value: string) => lookupStatus(vocab, value).label
 
+/** Long enough to tell one project from another, short enough to list 14. */
+const BLURB = 200
+
 function projectSummary(project: Project, directory: Directory) {
   return {
     ref: project.addr,
@@ -70,6 +73,24 @@ function projectSummary(project: Project, directory: Directory) {
     lead: who(directory, project.lead),
     archived: project.archived || undefined,
     folder: project.contentFolder,
+    /*
+      Present even when empty, and that is the point of including it at all.
+
+      This listing omitted the field entirely, so a project with an 8000-word
+      brief and one with no description at all came back identical — and on
+      2026-08-29 that read as "empty", and an `edit-project --description`
+      overwrote a real brief that nothing else could have shown first. A field
+      that is absent from every answer cannot be checked before it is
+      overwritten.
+
+      Truncated rather than whole because the full text belongs in `show`: 14
+      projects of that size is not a listing anybody wants back. Empty and
+      truncated are both visibly different from a value, which is the property
+      that was missing.
+    */
+    description:
+      project.description.length > BLURB ? `${project.description.slice(0, BLURB)}…` : project.description,
+    descriptionTruncated: project.description.length > BLURB || undefined,
     issues: undefined as number | undefined,
   }
 }
@@ -160,14 +181,30 @@ async function coverage(
  * first of two matching issues is how an agent confidently reports on the wrong
  * ticket, and that mistake is invisible afterwards.
  */
+/*
+  The matching rules, named so `show` can ask them of both kinds without
+  restating either. `resolve.ts` exists because this rule was reimplemented once
+  and quietly got it wrong; a descriptor written twice is the same hazard one
+  step further down.
+*/
+const ISSUE_BY = {
+  noun: 'issue',
+  exact: (issue: Issue) => [issue.addr, issue.id, issue.ref],
+  text: (issue: Issue) => issue.title,
+  label: (issue: Issue) => `${issue.ref ?? issue.addr} — ${issue.title}`,
+  hint: 'Pass a ref, an address or part of a title.',
+}
+
+const PROJECT_BY = {
+  noun: 'project',
+  exact: (project: Project) => [project.addr, project.id, project.title],
+  text: (project: Project) => project.title,
+  label: (project: Project) => project.title,
+  hint: 'Pass a project name or part of one.',
+}
+
 export function findIssue(issues: Issue[], reference: string): Issue {
-  return resolveOne(issues, reference, {
-    noun: 'issue',
-    exact: (issue) => [issue.addr, issue.id, issue.ref],
-    text: (issue) => issue.title,
-    label: (issue) => `${issue.ref ?? issue.addr} — ${issue.title}`,
-    hint: 'Pass a ref, an address or part of a title.',
-  })
+  return resolveOne(issues, reference, ISSUE_BY)
 }
 
 /**
@@ -180,13 +217,7 @@ export function findIssue(issues: Issue[], reference: string): Issue {
  * actually types — keeps working.
  */
 export function findProject(projects: Project[], reference: string): Project {
-  return resolveOne(projects, reference, {
-    noun: 'project',
-    exact: (project) => [project.addr, project.id, project.title],
-    text: (project) => project.title,
-    label: (project) => project.title,
-    hint: 'Pass a project name or part of one.',
-  })
+  return resolveOne(projects, reference, PROJECT_BY)
 }
 
 /** One field of one object, and what it is being changed from. */
@@ -399,6 +430,106 @@ function published<T extends { ok: boolean; reason?: string; duplicate?: boolean
   if (!result.ok) throw new BadRequest(`The relay refused ${what}: ${result.reason ?? 'no reason given'}`)
 }
 
+/**
+ * The activity and conversation on one object, rendered the way `show` renders
+ * them for an issue.
+ *
+ * Shared rather than written twice, because the two would drift and the drift
+ * would be invisible: a project's history rendering a pubkey where an issue's
+ * renders a name is exactly the half-fixed line PEEK-165 was, and nothing fails
+ * when it happens.
+ */
+async function timelineFor(
+  context: AgentContext,
+  state: FolderState,
+  addr: string,
+  extraPubkeys: (string | undefined)[],
+) {
+  const conversations = conversationsAbout(state.conversations, addr)
+  const history = state.activity.filter((change) => change.target === addr)
+
+  const directory = await directoryFor(context, [
+    ...extraPubkeys,
+    ...history.map((change) => change.author),
+    // The values too, not just the actors — a `lead` or `assignee` change names
+    // somebody in `value`, and asking for the actors alone leaves half the line
+    // unresolved.
+    ...history.map((change) => change.value),
+    ...conversations.flatMap((thread) => [
+      thread.root.author,
+      ...thread.replies.map((reply) => reply.author),
+    ]),
+  ])
+
+  return {
+    directory,
+    history: history.map((change) => ({
+      field: change.field,
+      // Resolved by shape rather than by field name: any 64-character hex value
+      // is a key somebody may have a name for, and matching on the field name
+      // would silently miss the next field that carries one.
+      value: resolvePubkeys(directory, change.value),
+      by: who(directory, change.author),
+      // `ts` when the change carried one, `created_at` otherwise — the same
+      // precedence the fold uses, because second-resolution timestamps tie for
+      // changes made in one burst.
+      at: new Date(change.ts ?? change.createdAt * 1000).toISOString(),
+    })),
+    conversation: conversations.map((thread) => ({
+      id: thread.id,
+      messages: [thread.root, ...thread.replies].map((message) => ({
+        by: who(directory, message.author),
+        at: new Date(message.ts ?? message.createdAt * 1000).toISOString(),
+        body: message.body,
+      })),
+    })),
+  }
+}
+
+/**
+ * One project, folded.
+ *
+ * The description is returned whole here — this is the read that AGE-11 was
+ * filed for, and a truncated one would not let anybody check a description
+ * before replacing it.
+ *
+ * Both Folders are named, not just the content one. They differ for every
+ * project that was re-linked to a Peek topic, and which of the two an event
+ * carries decides whether anyone reading the project ever sees it.
+ */
+async function showProject(context: AgentContext, state: FolderState, project: Project) {
+  const issues = state.issues.filter((issue) => issue.projectAddr === project.addr)
+  const { directory, history, conversation } = await timelineFor(context, state, project.addr, [
+    project.author,
+    project.lead,
+    ...issues.map((issue) => issue.assignee),
+    ...issues.map((issue) => issue.author),
+  ])
+
+  return {
+    kind: 'project' as const,
+    addr: project.addr,
+    title: project.title,
+    status: status(PROJECT_STATUSES, project.status),
+    lead: who(directory, project.lead),
+    author: who(directory, project.author),
+    archived: project.archived || undefined,
+    description: project.description,
+    createdAt: new Date(project.createdAt * 1000).toISOString(),
+    folders: {
+      content: project.contentFolder,
+      record: project.originFolder,
+      // Worth saying out loud rather than leaving to be compared: a change to
+      // the record published into the content Folder is accepted by the relay
+      // and then invisible to anything reading the record's own Folder.
+      relinked: project.contentFolder !== project.originFolder || undefined,
+    },
+    issues: issues.map((issue) => issueSummary(issue, directory)),
+    history,
+    conversation,
+  }
+}
+
 export const shipApp: AgentApp = {
   name: 'ship',
   summary: 'projects and issues in Estiva Ship',
@@ -504,33 +635,51 @@ export const shipApp: AgentApp = {
     },
     {
       name: 'show',
-      summary: 'one issue, folded, with its conversation and history',
+      summary: 'one issue or project, folded, with its conversation and history',
       usage: 'show <ref>',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('show needs a reference — try `ship issues` first.')
 
         const state = await store(context).loadAll()
-        const issue = findIssue(state.issues, reference)
 
-        const conversations = conversationsAbout(state.conversations, issue.addr)
-        const history = state.activity.filter((change) => change.target === issue.addr)
+        /*
+          Asked of both kinds, then decided — rather than issues first with
+          projects as a fallback. A fallback would resolve a reference that
+          names both to whichever kind was tried first, silently, and the whole
+          argument of `resolve.ts` is that a reference matching two things is a
+          question rather than an answer.
+        */
+        const asIssue = resolveMaybe(state.issues, reference, ISSUE_BY)
+        const asProject = resolveMaybe(state.projects, reference, PROJECT_BY)
 
-        const directory = await directoryFor(context, [
+        if ('found' in asIssue && 'found' in asProject) {
+          throw new BadRequest(
+            `"${reference}" names both an issue and a project:\n` +
+              `  issue   ${asIssue.found.ref ?? asIssue.found.addr} — ${asIssue.found.title}\n` +
+              `  project ${asProject.found.title}\n` +
+              'Pass an address to say which.',
+          )
+        }
+
+        if ('found' in asProject) return showProject(context, state, asProject.found)
+
+        if (!('found' in asIssue)) {
+          // Whichever attempt had something to say says it. An ambiguity is a
+          // real finding — "three issues match" — where a miss is just a miss.
+          if ('ambiguous' in asIssue) throw new BadRequest(asIssue.ambiguous)
+          if ('ambiguous' in asProject) throw new BadRequest(asProject.ambiguous)
+          throw new BadRequest(`No issue or project matches "${reference}".`)
+        }
+
+        const issue = asIssue.found
+        const { directory, history, conversation } = await timelineFor(context, state, issue.addr, [
           issue.author,
           issue.assignee,
-          ...history.map((change) => change.author),
-          // The values too, not just the actors — an assignee change names
-          // somebody in `value`, and asking for the actors alone is what left
-          // that half of the line unresolved.
-          ...history.map((change) => change.value),
-          ...conversations.flatMap((thread) => [
-            thread.root.author,
-            ...thread.replies.map((reply) => reply.author),
-          ]),
         ])
 
         return {
+          kind: 'issue' as const,
           ...issueSummary(issue, directory),
           description: issue.description,
           createdAt: new Date(issue.createdAt * 1000).toISOString(),
@@ -541,34 +690,8 @@ export const shipApp: AgentApp = {
             that somebody other than the author acted — which is the whole
             reason the model is event-sourced rather than a mutable row.
           */
-          history: history.map((change) => ({
-            field: change.field,
-            /*
-              A change's *value* can be a pubkey too — `assignee` is one — and
-              resolving only the actor produced the half-fixed line
-              "Claude set assignee to b38fd268…", where the reader can see who
-              acted and not who it landed on.
-
-              Resolved by shape rather than by field name: any 64-character hex
-              value is a key somebody may have a name for, and matching on
-              `field === 'assignee'` would silently miss the next field that
-              carries one.
-            */
-            value: resolvePubkeys(directory, change.value),
-            // `ts` when the change carried one, `created_at` otherwise — the
-            // same precedence the fold uses, because second-resolution
-            // timestamps tie for changes made in one burst.
-            by: who(directory, change.author),
-            at: new Date(change.ts ?? change.createdAt * 1000).toISOString(),
-          })),
-          conversation: conversations.map((thread) => ({
-            id: thread.id,
-            messages: [thread.root, ...thread.replies].map((message) => ({
-              by: who(directory, message.author),
-              at: new Date((message.ts ?? message.createdAt * 1000)).toISOString(),
-              body: message.body,
-            })),
-          })),
+          history,
+          conversation,
         }
       },
     },

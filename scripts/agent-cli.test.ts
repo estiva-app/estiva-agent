@@ -13,6 +13,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BadRequest, flagValue, parseArgs } from '../lib/agent/cli'
+import { resolveMaybe } from '../lib/agent/resolve'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
@@ -504,6 +505,50 @@ console.log('— editing an issue —')
 
   const several = plan({ title: 'T', description: 'D', project: 'Ship: Feedback' })
   check('several fields are several changes', several.length === 3, several.map((e) => e.field).join(','))
+}
+
+console.log('— resolving across two kinds —')
+
+{
+  /*
+    AGE-11. `show` now asks the same question of issues and of projects, which
+    is only safe because the matching rule stayed in one place. The distinction
+    worth pinning is between "nothing matched" and "several matched": a
+    fallback that treats them alike would answer about a project when three
+    issues matched, and there would be nothing in the answer to say so.
+  */
+  const by = {
+    noun: 'thing',
+    exact: (item: { id: string }) => [item.id],
+    text: (item: { id: string }) => item.id,
+    label: (item: { id: string }) => item.id,
+  }
+  const items = [{ id: 'alpha' }, { id: 'alphabet' }, { id: 'beta' }]
+
+  const one = resolveMaybe(items, 'beta', by)
+  check('a single match is found', 'found' in one && one.found.id === 'beta')
+
+  const exact = resolveMaybe(items, 'alpha', by)
+  check('an exact match still beats a substring', 'found' in exact && exact.found.id === 'alpha')
+
+  const many = resolveMaybe(items, 'alph', by)
+  check('several matches are reported as ambiguous', 'ambiguous' in many)
+  check('and the candidates are listed', 'ambiguous' in many && many.ambiguous.includes('alphabet'))
+
+  const none = resolveMaybe(items, 'gamma', by)
+  check('no match is its own answer, not an ambiguity', 'none' in none)
+  check(
+    'which is the distinction show depends on',
+    'none' in none && !('ambiguous' in none) && !('found' in none),
+  )
+
+  refuses('resolveOne still throws on ambiguity', () => findProject(
+    [
+      { title: 'Peek: Feedback' } as never,
+      { title: 'Ship: Feedback' } as never,
+    ],
+    'Feedback',
+  ), 'matches 2')
 }
 
 {

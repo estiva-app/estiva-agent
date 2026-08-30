@@ -17659,26 +17659,30 @@ function refPrefix(title) {
 
 // lib/agent/resolve.ts
 var MAX_CANDIDATES = 8;
-function resolveOne(items, reference, how) {
+function resolveMaybe(items, reference, how) {
   const needle = reference.trim().toLowerCase();
-  if (!needle) {
-    throw new BadRequest(`Which ${how.noun}?${how.hint ? ` ${how.hint}` : ""}`);
-  }
+  if (!needle) return { ambiguous: `Which ${how.noun}?${how.hint ? ` ${how.hint}` : ""}` };
   const exact = items.filter(
     (item) => how.exact(item).some((value) => value?.toLowerCase() === needle)
   );
-  if (exact.length === 1) return exact[0];
+  if (exact.length === 1) return { found: exact[0] };
   const partial2 = items.filter((item) => how.text(item).toLowerCase().includes(needle));
-  if (partial2.length === 1) return partial2[0];
+  if (partial2.length === 1) return { found: partial2[0] };
   if (partial2.length > 1 || exact.length > 1) {
     const candidates = (exact.length > 1 ? exact : partial2).slice(0, MAX_CANDIDATES);
     const shown = candidates.map((item) => `  ${how.label(item)}`).join("\n");
     const total = exact.length > 1 ? exact.length : partial2.length;
     const more = total > candidates.length ? `
   \u2026and ${total - candidates.length} more` : "";
-    throw new BadRequest(`"${reference}" matches ${total} ${how.noun}s:
-${shown}${more}`);
+    return { ambiguous: `"${reference}" matches ${total} ${how.noun}s:
+${shown}${more}` };
   }
+  return { none: true };
+}
+function resolveOne(items, reference, how) {
+  const resolved = resolveMaybe(items, reference, how);
+  if ("found" in resolved) return resolved.found;
+  if ("ambiguous" in resolved) throw new BadRequest(resolved.ambiguous);
   throw new BadRequest(`No ${how.noun} matches "${reference}".`);
 }
 
@@ -17695,6 +17699,7 @@ function resolvePubkeys(directory, value) {
   return profile?.name ?? value;
 }
 var status = (vocab, value) => lookupStatus(vocab, value).label;
+var BLURB = 200;
 function projectSummary(project, directory) {
   return {
     ref: project.addr,
@@ -17703,6 +17708,23 @@ function projectSummary(project, directory) {
     lead: who(directory, project.lead),
     archived: project.archived || void 0,
     folder: project.contentFolder,
+    /*
+          Present even when empty, and that is the point of including it at all.
+    
+          This listing omitted the field entirely, so a project with an 8000-word
+          brief and one with no description at all came back identical — and on
+          2026-08-29 that read as "empty", and an `edit-project --description`
+          overwrote a real brief that nothing else could have shown first. A field
+          that is absent from every answer cannot be checked before it is
+          overwritten.
+    
+          Truncated rather than whole because the full text belongs in `show`: 14
+          projects of that size is not a listing anybody wants back. Empty and
+          truncated are both visibly different from a value, which is the property
+          that was missing.
+        */
+    description: project.description.length > BLURB ? `${project.description.slice(0, BLURB)}\u2026` : project.description,
+    descriptionTruncated: project.description.length > BLURB || void 0,
     issues: void 0
   };
 }
@@ -17740,23 +17762,25 @@ async function coverage(context2, reachable) {
     note: unreachable > 0 ? `${unreachable} issue(s) exist that discovery cannot reach, because the project they belong to no longer resolves. They are invisible to ship.estiva.app too. Do not describe this list as complete.` : void 0
   };
 }
+var ISSUE_BY = {
+  noun: "issue",
+  exact: (issue2) => [issue2.addr, issue2.id, issue2.ref],
+  text: (issue2) => issue2.title,
+  label: (issue2) => `${issue2.ref ?? issue2.addr} \u2014 ${issue2.title}`,
+  hint: "Pass a ref, an address or part of a title."
+};
+var PROJECT_BY = {
+  noun: "project",
+  exact: (project) => [project.addr, project.id, project.title],
+  text: (project) => project.title,
+  label: (project) => project.title,
+  hint: "Pass a project name or part of one."
+};
 function findIssue(issues, reference) {
-  return resolveOne(issues, reference, {
-    noun: "issue",
-    exact: (issue2) => [issue2.addr, issue2.id, issue2.ref],
-    text: (issue2) => issue2.title,
-    label: (issue2) => `${issue2.ref ?? issue2.addr} \u2014 ${issue2.title}`,
-    hint: "Pass a ref, an address or part of a title."
-  });
+  return resolveOne(issues, reference, ISSUE_BY);
 }
 function findProject(projects, reference) {
-  return resolveOne(projects, reference, {
-    noun: "project",
-    exact: (project) => [project.addr, project.id, project.title],
-    text: (project) => project.title,
-    label: (project) => project.title,
-    hint: "Pass a project name or part of one."
-  });
+  return resolveOne(projects, reference, PROJECT_BY);
 }
 function projectEdits(project, args2, self) {
   const edits = [];
@@ -17842,6 +17866,76 @@ async function resolveIssueFor(context2, reference) {
 }
 function published(result, what) {
   if (!result.ok) throw new BadRequest(`The relay refused ${what}: ${result.reason ?? "no reason given"}`);
+}
+async function timelineFor(context2, state, addr2, extraPubkeys) {
+  const conversations = conversationsAbout(state.conversations, addr2);
+  const history = state.activity.filter((change) => change.target === addr2);
+  const directory = await directoryFor(context2, [
+    ...extraPubkeys,
+    ...history.map((change) => change.author),
+    // The values too, not just the actors — a `lead` or `assignee` change names
+    // somebody in `value`, and asking for the actors alone leaves half the line
+    // unresolved.
+    ...history.map((change) => change.value),
+    ...conversations.flatMap((thread) => [
+      thread.root.author,
+      ...thread.replies.map((reply) => reply.author)
+    ])
+  ]);
+  return {
+    directory,
+    history: history.map((change) => ({
+      field: change.field,
+      // Resolved by shape rather than by field name: any 64-character hex value
+      // is a key somebody may have a name for, and matching on the field name
+      // would silently miss the next field that carries one.
+      value: resolvePubkeys(directory, change.value),
+      by: who(directory, change.author),
+      // `ts` when the change carried one, `created_at` otherwise — the same
+      // precedence the fold uses, because second-resolution timestamps tie for
+      // changes made in one burst.
+      at: new Date(change.ts ?? change.createdAt * 1e3).toISOString()
+    })),
+    conversation: conversations.map((thread) => ({
+      id: thread.id,
+      messages: [thread.root, ...thread.replies].map((message) => ({
+        by: who(directory, message.author),
+        at: new Date(message.ts ?? message.createdAt * 1e3).toISOString(),
+        body: message.body
+      }))
+    }))
+  };
+}
+async function showProject(context2, state, project) {
+  const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr);
+  const { directory, history, conversation } = await timelineFor(context2, state, project.addr, [
+    project.author,
+    project.lead,
+    ...issues.map((issue2) => issue2.assignee),
+    ...issues.map((issue2) => issue2.author)
+  ]);
+  return {
+    kind: "project",
+    addr: project.addr,
+    title: project.title,
+    status: status(PROJECT_STATUSES, project.status),
+    lead: who(directory, project.lead),
+    author: who(directory, project.author),
+    archived: project.archived || void 0,
+    description: project.description,
+    createdAt: new Date(project.createdAt * 1e3).toISOString(),
+    folders: {
+      content: project.contentFolder,
+      record: project.originFolder,
+      // Worth saying out loud rather than leaving to be compared: a change to
+      // the record published into the content Folder is accepted by the relay
+      // and then invisible to anything reading the record's own Folder.
+      relinked: project.contentFolder !== project.originFolder || void 0
+    },
+    issues: issues.map((issue2) => issueSummary(issue2, directory)),
+    history,
+    conversation
+  };
 }
 var shipApp = {
   name: "ship",
@@ -17936,29 +18030,35 @@ var shipApp = {
     },
     {
       name: "show",
-      summary: "one issue, folded, with its conversation and history",
+      summary: "one issue or project, folded, with its conversation and history",
       usage: "show <ref>",
       async run(context2, args2) {
         const reference = args2.positional[0];
         if (!reference) throw new BadRequest("show needs a reference \u2014 try `ship issues` first.");
         const state = await store(context2).loadAll();
-        const issue2 = findIssue(state.issues, reference);
-        const conversations = conversationsAbout(state.conversations, issue2.addr);
-        const history = state.activity.filter((change) => change.target === issue2.addr);
-        const directory = await directoryFor(context2, [
+        const asIssue = resolveMaybe(state.issues, reference, ISSUE_BY);
+        const asProject = resolveMaybe(state.projects, reference, PROJECT_BY);
+        if ("found" in asIssue && "found" in asProject) {
+          throw new BadRequest(
+            `"${reference}" names both an issue and a project:
+  issue   ${asIssue.found.ref ?? asIssue.found.addr} \u2014 ${asIssue.found.title}
+  project ${asProject.found.title}
+Pass an address to say which.`
+          );
+        }
+        if ("found" in asProject) return showProject(context2, state, asProject.found);
+        if (!("found" in asIssue)) {
+          if ("ambiguous" in asIssue) throw new BadRequest(asIssue.ambiguous);
+          if ("ambiguous" in asProject) throw new BadRequest(asProject.ambiguous);
+          throw new BadRequest(`No issue or project matches "${reference}".`);
+        }
+        const issue2 = asIssue.found;
+        const { directory, history, conversation } = await timelineFor(context2, state, issue2.addr, [
           issue2.author,
-          issue2.assignee,
-          ...history.map((change) => change.author),
-          // The values too, not just the actors — an assignee change names
-          // somebody in `value`, and asking for the actors alone is what left
-          // that half of the line unresolved.
-          ...history.map((change) => change.value),
-          ...conversations.flatMap((thread) => [
-            thread.root.author,
-            ...thread.replies.map((reply) => reply.author)
-          ])
+          issue2.assignee
         ]);
         return {
+          kind: "issue",
           ...issueSummary(issue2, directory),
           description: issue2.description,
           createdAt: new Date(issue2.createdAt * 1e3).toISOString(),
@@ -17969,34 +18069,8 @@ var shipApp = {
             that somebody other than the author acted — which is the whole
             reason the model is event-sourced rather than a mutable row.
           */
-          history: history.map((change) => ({
-            field: change.field,
-            /*
-                          A change's *value* can be a pubkey too — `assignee` is one — and
-                          resolving only the actor produced the half-fixed line
-                          "Claude set assignee to b38fd268…", where the reader can see who
-                          acted and not who it landed on.
-            
-                          Resolved by shape rather than by field name: any 64-character hex
-                          value is a key somebody may have a name for, and matching on
-                          `field === 'assignee'` would silently miss the next field that
-                          carries one.
-                        */
-            value: resolvePubkeys(directory, change.value),
-            // `ts` when the change carried one, `created_at` otherwise — the
-            // same precedence the fold uses, because second-resolution
-            // timestamps tie for changes made in one burst.
-            by: who(directory, change.author),
-            at: new Date(change.ts ?? change.createdAt * 1e3).toISOString()
-          })),
-          conversation: conversations.map((thread) => ({
-            id: thread.id,
-            messages: [thread.root, ...thread.replies].map((message) => ({
-              by: who(directory, message.author),
-              at: new Date(message.ts ?? message.createdAt * 1e3).toISOString(),
-              body: message.body
-            }))
-          }))
+          history,
+          conversation
         };
       }
     },
@@ -18559,13 +18633,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_get_issue",
-      description: "Read one Estiva Ship issue in full: description, status, assignee, the change history showing who altered what and when, and any conversation on it. Accepts a display ref (PEE-1), a full address, or part of a title. If the reference matches more than one issue this returns the candidates instead of choosing \u2014 pick one and ask again rather than guessing, because the wrong issue is indistinguishable from the right one once reported.",
+      description: "Read one Estiva Ship issue or project in full: for an issue its description, status, assignee, change history and conversation; for a project its description, status, lead, both of its Folders, its issues and its conversation. Use it before editing anything \u2014 a project description in particular is returned nowhere else in full, and overwriting one that was never read is how a brief gets lost. Accepts a display ref (PEE-1), a project name, a full address, or part of a title. The answer says which kind it found. If the reference matches more than one issue, more than one project, or one of each, this returns the candidates instead of choosing \u2014 pick one and ask again rather than guessing, because the wrong object is indistinguishable from the right one once reported.",
       inputSchema: {
         type: "object",
         properties: {
           ref: {
             type: "string",
-            description: "Display ref, address, or a distinctive fragment of the title."
+            description: "Display ref, project name, address, or a distinctive fragment of a title."
           }
         },
         required: ["ref"],

@@ -169,15 +169,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ship_get_issue',
       description:
-        'Read one Estiva Ship issue in full: description, status, assignee, the change history showing who altered what and when, and any conversation on it. ' +
-        'Accepts a display ref (PEE-1), a full address, or part of a title. ' +
-        'If the reference matches more than one issue this returns the candidates instead of choosing — pick one and ask again rather than guessing, because the wrong issue is indistinguishable from the right one once reported.',
+        'Read one Estiva Ship issue or project in full: for an issue its description, status, assignee, change history and conversation; for a project its description, status, lead, both of its Folders, its issues and its conversation. ' +
+        'Use it before editing anything — a project description in particular is returned nowhere else in full, and overwriting one that was never read is how a brief gets lost. ' +
+        'Accepts a display ref (PEE-1), a project name, a full address, or part of a title. The answer says which kind it found. ' +
+        'If the reference matches more than one issue, more than one project, or one of each, this returns the candidates instead of choosing — pick one and ask again rather than guessing, because the wrong object is indistinguishable from the right one once reported.',
       inputSchema: {
         type: 'object',
         properties: {
           ref: {
             type: 'string',
-            description: 'Display ref, address, or a distinctive fragment of the title.',
+            description: 'Display ref, project name, address, or a distinctive fragment of a title.',
           },
         },
         required: ['ref'],
