@@ -189,14 +189,17 @@ export function findProject(projects: Project[], reference: string): Project {
   })
 }
 
-/** One field of one project, and what it is being changed from. */
-export interface ProjectEdit {
+/** One field of one object, and what it is being changed from. */
+export interface FieldEdit {
   field: string
   from: string
   value: string
   /** The human note that makes the activity feed readable. */
   note: string
 }
+
+/** The project planner's original name for the shape above. */
+export type ProjectEdit = FieldEdit
 
 /**
  * What an `edit-project` call is asking to change, validated.
@@ -211,8 +214,8 @@ export interface ProjectEdit {
  * change stream itself, so an edit made here and one made in the app have to
  * read as the same act rather than as two dialects.
  */
-export function projectEdits(project: Project, args: ParsedArgs, self: string): ProjectEdit[] {
-  const edits: ProjectEdit[] = []
+export function projectEdits(project: Project, args: ParsedArgs, self: string): FieldEdit[] {
+  const edits: FieldEdit[] = []
 
   const title = flagValue(args, 'title')
   if (title !== undefined) {
@@ -272,6 +275,60 @@ export function projectEdits(project: Project, args: ParsedArgs, self: string): 
 
   if (edits.length === 0) {
     throw new BadRequest('edit-project needs at least one of --title, --description, --status or --lead.')
+  }
+
+  return edits
+}
+
+/**
+ * What an `edit-issue` call is asking to change, validated.
+ *
+ * The issue counterpart of `projectEdits`, and pure for the same reason. It
+ * takes the project list because `--project` is the one field whose value is
+ * another object: a move is a `project` change carrying the target's *address*,
+ * so the reference has to resolve before anything is published.
+ *
+ * Field names and notes are the ones `web/src/pages/IssuePage.tsx` writes, so a
+ * move made here and one made in the app are the same act in the activity feed.
+ */
+export function issueEdits(issue: Issue, args: ParsedArgs, projects: Project[]): FieldEdit[] {
+  const edits: FieldEdit[] = []
+
+  const title = flagValue(args, 'title')
+  if (title !== undefined) {
+    if (!title.trim()) throw new BadRequest('--title cannot be empty. An issue nobody can name is an issue nobody finds.')
+    edits.push({ field: 'title', from: issue.title, value: title, note: 'Rename' })
+  }
+
+  const description = flagValue(args, 'description')
+  if (description !== undefined) {
+    edits.push({ field: 'description', from: issue.description, value: description, note: 'Description' })
+  }
+
+  const project = flagValue(args, 'project')
+  if (project !== undefined) {
+    /*
+      An issue's parent *can* change. It was believed it could not — that a
+      mis-filed issue had to be archived and refiled — and both folds have read
+      `fields.project?.value ?? parent` the whole time, with Ship shipping a
+      move control on top of it.
+
+      `none` detaches the issue from every project, which the app calls
+      “No project” and lists as an inbox. Written as an empty value rather than
+      by removing anything, the way every other cleared field is.
+    */
+    const detached = project === 'none' || project === ''
+    const target = detached ? undefined : findProject(projects, project)
+    edits.push({
+      field: 'project',
+      from: issue.projectAddr ?? '',
+      value: target?.addr ?? '',
+      note: `Move to ${target?.title ?? 'No project'}`,
+    })
+  }
+
+  if (edits.length === 0) {
+    throw new BadRequest('edit-issue needs at least one of --title, --description or --project.')
   }
 
   return edits
@@ -613,6 +670,72 @@ export const shipApp: AgentApp = {
           from: issue.assignee,
           to: assignee.toLowerCase(),
           eventId: result.eventId,
+        }
+      },
+    },
+    {
+      name: 'edit-issue',
+      signs: [KIND.CHANGE],
+      summary: 'change an issue’s title, description, or which project it is in',
+      usage: 'edit-issue <ref> [--title "..."] [--description "..."] [--project <ref|none>]',
+      async run(context, args) {
+        const reference = args.positional[0]
+        if (!reference) throw new BadRequest('edit-issue needs an issue reference.')
+
+        const state = await store(context).loadAll()
+        const issue = findIssue(state.issues, reference)
+        const edits = issueEdits(issue, args, state.projects)
+
+        /*
+          An issue's changes carry the issue's own Folder — not its project's,
+          and deliberately not the rule `edit-project` follows. After a project
+          is re-linked, the issues filed before the move still carry the old
+          `h`, so “the project's Folder” is the wrong answer for any issue
+          older than the re-link. `web/src/api/writes.ts` states the same split.
+        */
+        const folder = issue.folder
+        if (!folder) {
+          throw new BadRequest(
+            `${issue.ref ?? issue.addr} names no Folder, so a change to it has nowhere to be published.`,
+          )
+        }
+
+        const applied: { field: string; from: string; to: string; eventId?: string }[] = []
+        for (const edit of edits) {
+          const result = await store(context).setField({
+            folder,
+            target: issue.addr,
+            field: edit.field,
+            value: edit.value,
+            note: edit.note,
+          })
+          if (!result.ok) {
+            throw new BadRequest(
+              `The relay refused ${edit.field} on ${issue.ref ?? issue.addr}: ${result.reason ?? 'no reason given'}. ` +
+                `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
+            )
+          }
+          applied.push({ field: edit.field, from: edit.from, to: edit.value, eventId: result.eventId })
+        }
+
+        /*
+          A move re-parents the issue and moves nothing else. The issue event's
+          `h` is immutable, so its conversation stays in the Folder it was filed
+          in — which is the Folder somebody reading the *new* project in Peek is
+          not looking at. Said out loud rather than left for them to notice,
+          because nothing else reports it.
+        */
+        const moved = applied.find((entry) => entry.field === 'project' && entry.to)
+        const destination = moved && state.projects.find((candidate) => candidate.addr === moved.to)
+        const conversationStaysBehind =
+          destination && destination.contentFolder !== folder
+            ? `The issue's conversation stays in Folder ${folder}, which is not ${destination.title}'s (${destination.contentFolder}). Moving an issue cannot move its messages: an event's Folder is immutable.`
+            : undefined
+
+        return {
+          changed: { ref: issue.ref, addr: issue.addr, title: issue.title, folder },
+          applied,
+          ...(conversationStaysBehind ? { note: conversationStaysBehind } : {}),
         }
       },
     },
