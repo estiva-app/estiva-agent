@@ -530,6 +530,72 @@ async function showProject(context: AgentContext, state: FolderState, project: P
   }
 }
 
+/** What one key has been seen doing, which is the only evidence this list has. */
+export interface Participant {
+  pubkey: string
+  filed: number
+  assigned: number
+  leads: number
+  /** Changes and messages authored — acting without necessarily owning anything. */
+  acted: number
+}
+
+/**
+ * Every key the workspace has seen, and what it was seen doing.
+ *
+ * Pure, and exported so the counting is testable without a relay. It is the
+ * inverse of the lookup `show` already does: that turns keys into names for
+ * display, this lists the keys so somebody can find the one they need.
+ *
+ * **The set is "everyone who has touched something readable", not "the team".**
+ * There is no roster on the relay to ask — membership is an Estiva ID concern
+ * and this identity cannot read it — so a person who has never filed, been
+ * assigned, led or commented does not appear here at all. The command says so
+ * rather than letting an empty-looking answer read as "they are not on the
+ * team".
+ */
+export function participants(state: FolderState): Participant[] {
+  const seen = new Map<string, Participant>()
+  const touch = (key: string | undefined, field: keyof Omit<Participant, 'pubkey'>) => {
+    if (!key || !/^[0-9a-f]{64}$/i.test(key)) return
+    const at = key.toLowerCase()
+    const entry = seen.get(at) ?? { pubkey: at, filed: 0, assigned: 0, leads: 0, acted: 0 }
+    entry[field] += 1
+    seen.set(at, entry)
+  }
+
+  for (const issue of state.issues) {
+    touch(issue.author, 'filed')
+    touch(issue.assignee, 'assigned')
+  }
+  for (const project of state.projects) {
+    touch(project.author, 'acted')
+    touch(project.lead, 'leads')
+  }
+  for (const change of state.activity) {
+    touch(change.author, 'acted')
+    /*
+      A change's *value* can be a key — `assignee` and `lead` both are — so a
+      person who has only ever been assigned something by somebody else still
+      appears. Matched by shape rather than by field name, the same rule `show`
+      uses, so the next field carrying a key is not silently missed.
+    */
+    touch(change.value, 'assigned')
+  }
+  for (const conversation of state.conversations) {
+    touch(conversation.root.author, 'acted')
+    for (const reply of conversation.replies) touch(reply.author, 'acted')
+  }
+
+  // Busiest first: the person somebody is looking for is usually the person
+  // doing things, and a stable order beats map insertion order.
+  return [...seen.values()].sort(
+    (a, b) =>
+      b.filed + b.assigned + b.leads + b.acted - (a.filed + a.assigned + a.leads + a.acted) ||
+      a.pubkey.localeCompare(b.pubkey),
+  )
+}
+
 export const shipApp: AgentApp = {
   name: 'ship',
   summary: 'projects and issues in Estiva Ship',
@@ -692,6 +758,67 @@ export const shipApp: AgentApp = {
           */
           history,
           conversation,
+        }
+      },
+    },
+    {
+      name: 'people',
+      summary: 'every key the workspace has seen, with the name it publishes',
+      usage: 'people [--named]',
+      async run(context, args) {
+        const state = await store(context).loadAll()
+        const found = participants(state)
+        const directory = await directoryFor(context, found.map((person) => person.pubkey))
+
+        const listed = found
+          .map((person) => {
+            const profile = directory.get(person.pubkey)
+            return {
+              /*
+                The key first and unabbreviated, because it is the identity and
+                the thing a caller has to copy. `assign` and `edit-project
+                --lead` take this and refuse a name, deliberately: names are
+                self-set (docs/untrusted-content.md), so assigning by one would
+                let a person redirect work by renaming themselves.
+
+                This command exists to make that refusal survivable, not to
+                route around it. Nothing here should be passed to a write as a
+                name.
+              */
+              pubkey: person.pubkey,
+              name: profile?.name,
+              nip05: profile?.nip05,
+              filed: person.filed || undefined,
+              assigned: person.assigned || undefined,
+              leads: person.leads || undefined,
+              acted: person.acted || undefined,
+            }
+          })
+          .filter((person) => (args.flags.named ? Boolean(person.name) : true))
+
+        const anonymous = listed.filter((person) => !person.name).length
+
+        return {
+          people: listed,
+          /*
+            Two limits, both of which make a short list look like a complete
+            one.
+
+            There is no roster to read: relay membership is an Estiva ID
+            concern this identity cannot query, so somebody who has never filed,
+            been assigned, led or commented does not appear at all. Absence here
+            is not evidence they are not on the team.
+
+            And a key with no `kind:0` stays a key. Estiva ID is the only writer
+            of profiles (PEEK-48), so an unnamed participant is un-named rather
+            than un-real — still a valid target for `assign`.
+          */
+          note:
+            'Everyone who has touched something this identity can read — not a roster. ' +
+            'A person who has never filed, been assigned, led or commented does not appear. ' +
+            (anonymous > 0
+              ? `${anonymous} of these publish no profile and stay a key; they can still be assigned.`
+              : 'Every one of them publishes a profile.'),
         }
       },
     },

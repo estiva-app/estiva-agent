@@ -47,6 +47,7 @@ This reads **production**, `estiva.estiva.app`. There is no staging workspace.
 npx tsx scripts/agent.ts ship comment PEE-1 --body "..."
 npx tsx scripts/agent.ts ship set-status PEE-1 in_progress
 npx tsx scripts/agent.ts ship assign PEE-1 me
+npx tsx scripts/agent.ts ship people          # the keys assign and --lead require
 npx tsx scripts/agent.ts ship create-issue --project "Peek: Feedback" --title "..."
 npx tsx scripts/agent.ts ship edit-project "Cross-app read state" --status completed
 ```

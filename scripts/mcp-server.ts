@@ -186,6 +186,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'ship_people',
+      description:
+        'List everyone the Estiva workspace has seen, with the public key each one is identified by and the display name they publish. ' +
+        'Use it to find the key for `ship_assign` or the `lead` of `ship_edit_project`, both of which take a key and refuse a name — names are chosen by their owner and are not unique, so assigning by one would let somebody redirect work by renaming themselves. This read is what makes that refusal survivable; it is not a way around it. Pass the `pubkey` from here verbatim, never the `name`. ' +
+        'The list is everyone who has filed, been assigned, led or commented on something readable — not a roster. Relay membership lives in Estiva ID and cannot be read here, so somebody absent from this list may still be on the team.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          named: {
+            type: 'boolean',
+            description: 'Optional. List only people who publish a profile. Unnamed keys are still valid assignees.',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'ship_comment',
       description:
         'Add a comment to one Estiva Ship issue. The comment appears in the issue\'s conversation and in Peek, attributed to this agent. ' +
@@ -443,6 +460,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const ref = typeof input.ref === 'string' ? input.ref : ''
         return text(await command('show').run(await context(), args({}, [ref])))
       }
+
+      case 'ship_people':
+        return text(
+          await command('people').run(await context(), args(input.named === true ? { named: true } : {})),
+        )
 
       case 'ship_comment':
         return text(
