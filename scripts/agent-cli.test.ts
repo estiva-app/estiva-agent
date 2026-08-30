@@ -397,14 +397,14 @@ try {
   check('nothing is hidden when none are archived', archivedRemoved([{ archived: false }]).length === 1)
 }
 
-console.log('\u2014 editing a project \u2014')
+console.log('— editing a project —')
 
 {
   /*
     AGE-8: the agent could create a project and then never change one. The
     decisions worth pinning are the ones that look right and are not: a project
     status is a *different* vocabulary from an issue status, and clearing a lead
-    has to be expressible at all \u2014 an append-only stream has no undo, so
+    has to be expressible at all — an append-only stream has no undo, so
     "nobody" is written as a value rather than by removing something.
   */
   const self = 'a'.repeat(64)
@@ -442,14 +442,14 @@ console.log('\u2014 editing a project \u2014')
   refuses('and the refusal lists the real vocabulary', () => plan({ status: 'done' }), 'completed')
 
   const lead = plan({ lead: 'me' })
-  check('\u201cme\u201d resolves to the signing identity', lead[0].value === self)
+  check('“me” resolves to the signing identity', lead[0].value === self)
   check('and reads as an assignment', lead[0].note === 'Assign project')
   check('another person is taken by pubkey', plan({ lead: other })[0].value === other)
   check('a pubkey is lowercased', plan({ lead: other.toUpperCase() })[0].value === other)
   refuses('a display name is refused as a lead', () => plan({ lead: 'Miky' }), 'not unique')
 
   const cleared = plan({ lead: 'none' })
-  check('\u201cnone\u201d clears the lead', cleared[0].value === '')
+  check('“none” clears the lead', cleared[0].value === '')
   check('by writing an empty value rather than removing anything', cleared[0].field === 'lead')
   check('and reads as an unassignment', cleared[0].note === 'Unassign project')
   check('an empty string clears it too', plan({ lead: '' })[0].value === '')
