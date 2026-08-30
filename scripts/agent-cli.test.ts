@@ -17,7 +17,7 @@ import { resolveMaybe } from '../lib/agent/resolve'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { archivedRemoved, findIssue, findProject, issueEdits, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
+import { archivedRemoved, findIssue, findProject, issueEdits, participants, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
 import { findTopic, type Topic } from '../lib/agent/apps/peek'
 import type { Issue } from '../src/fold'
@@ -505,6 +505,58 @@ console.log('— editing an issue —')
 
   const several = plan({ title: 'T', description: 'D', project: 'Ship: Feedback' })
   check('several fields are several changes', several.length === 3, several.map((e) => e.field).join(','))
+}
+
+console.log('— who the workspace has seen —')
+
+{
+  /*
+    AGE-15. `assign` and `edit-project --lead` take a key and refuse a name,
+    correctly — but nothing exposed the keys, so the only assignment the agent
+    could make was to itself.
+
+    The counting rule worth pinning is that a change's *value* can be a key:
+    somebody who has only ever been assigned work by other people has authored
+    nothing, and a naive pass over authors would leave them out of the one list
+    that exists to find them.
+  */
+  const a = 'a'.repeat(64)
+  const b = 'b'.repeat(64)
+  const c = 'c'.repeat(64)
+
+  const state = {
+    issues: [
+      { author: a, assignee: undefined },
+      { author: a, assignee: b },
+    ],
+    projects: [{ author: a, lead: c }],
+    activity: [
+      { author: a, field: 'assignee', value: b },
+      { author: a, field: 'status', value: 'done' },
+    ],
+    conversations: [{ root: { author: c }, replies: [{ author: b }] }],
+  } as never
+
+  const found = participants(state)
+  const of = (key: string) => found.find((person) => person.pubkey === key)
+
+  check('everyone who touched anything appears', found.length === 3, found.map((p) => p.pubkey[0]).join(','))
+  check('an author is counted as filing', of(a)?.filed === 2)
+  check('an assignee is counted', (of(b)?.assigned ?? 0) >= 1)
+  check(
+    'somebody named only in a change value still appears',
+    Boolean(of(b)),
+    'assigned by others, authored nothing',
+  )
+  check('a project lead is counted', of(c)?.leads === 1)
+  check('a commenter is counted as acting', (of(c)?.acted ?? 0) >= 1)
+
+  check('a non-key value is not mistaken for a person', !found.some((p) => p.pubkey === 'done'))
+  check('the busiest is first', found[0].pubkey === a, found[0].pubkey[0])
+  check('keys are lowercased', found.every((p) => p.pubkey === p.pubkey.toLowerCase()))
+
+  const upper = participants({ issues: [{ author: a.toUpperCase(), assignee: undefined }], projects: [], activity: [], conversations: [] } as never)
+  check('an uppercase key is the same person', upper[0].pubkey === a)
 }
 
 console.log('— resolving across two kinds —')

@@ -17937,6 +17937,35 @@ async function showProject(context2, state, project) {
     conversation
   };
 }
+function participants(state) {
+  const seen = /* @__PURE__ */ new Map();
+  const touch = (key, field) => {
+    if (!key || !/^[0-9a-f]{64}$/i.test(key)) return;
+    const at = key.toLowerCase();
+    const entry = seen.get(at) ?? { pubkey: at, filed: 0, assigned: 0, leads: 0, acted: 0 };
+    entry[field] += 1;
+    seen.set(at, entry);
+  };
+  for (const issue2 of state.issues) {
+    touch(issue2.author, "filed");
+    touch(issue2.assignee, "assigned");
+  }
+  for (const project of state.projects) {
+    touch(project.author, "acted");
+    touch(project.lead, "leads");
+  }
+  for (const change of state.activity) {
+    touch(change.author, "acted");
+    touch(change.value, "assigned");
+  }
+  for (const conversation of state.conversations) {
+    touch(conversation.root.author, "acted");
+    for (const reply of conversation.replies) touch(reply.author, "acted");
+  }
+  return [...seen.values()].sort(
+    (a, b) => b.filed + b.assigned + b.leads + b.acted - (a.filed + a.assigned + a.leads + a.acted) || a.pubkey.localeCompare(b.pubkey)
+  );
+}
 var shipApp = {
   name: "ship",
   summary: "projects and issues in Estiva Ship",
@@ -18071,6 +18100,57 @@ Pass an address to say which.`
           */
           history,
           conversation
+        };
+      }
+    },
+    {
+      name: "people",
+      summary: "every key the workspace has seen, with the name it publishes",
+      usage: "people [--named]",
+      async run(context2, args2) {
+        const state = await store(context2).loadAll();
+        const found = participants(state);
+        const directory = await directoryFor(context2, found.map((person) => person.pubkey));
+        const listed = found.map((person) => {
+          const profile = directory.get(person.pubkey);
+          return {
+            /*
+                            The key first and unabbreviated, because it is the identity and
+                            the thing a caller has to copy. `assign` and `edit-project
+                            --lead` take this and refuse a name, deliberately: names are
+                            self-set (docs/untrusted-content.md), so assigning by one would
+                            let a person redirect work by renaming themselves.
+            
+                            This command exists to make that refusal survivable, not to
+                            route around it. Nothing here should be passed to a write as a
+                            name.
+                          */
+            pubkey: person.pubkey,
+            name: profile?.name,
+            nip05: profile?.nip05,
+            filed: person.filed || void 0,
+            assigned: person.assigned || void 0,
+            leads: person.leads || void 0,
+            acted: person.acted || void 0
+          };
+        }).filter((person) => args2.flags.named ? Boolean(person.name) : true);
+        const anonymous = listed.filter((person) => !person.name).length;
+        return {
+          people: listed,
+          /*
+                      Two limits, both of which make a short list look like a complete
+                      one.
+          
+                      There is no roster to read: relay membership is an Estiva ID
+                      concern this identity cannot query, so somebody who has never filed,
+                      been assigned, led or commented does not appear at all. Absence here
+                      is not evidence they are not on the team.
+          
+                      And a key with no `kind:0` stays a key. Estiva ID is the only writer
+                      of profiles (PEEK-48), so an unnamed participant is un-named rather
+                      than un-real — still a valid target for `assign`.
+                    */
+          note: "Everyone who has touched something this identity can read \u2014 not a roster. A person who has never filed, been assigned, led or commented does not appear. " + (anonymous > 0 ? `${anonymous} of these publish no profile and stay a key; they can still be assigned.` : "Every one of them publishes a profile.")
         };
       }
     },
@@ -18647,6 +18727,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: "ship_people",
+      description: "List everyone the Estiva workspace has seen, with the public key each one is identified by and the display name they publish. Use it to find the key for `ship_assign` or the `lead` of `ship_edit_project`, both of which take a key and refuse a name \u2014 names are chosen by their owner and are not unique, so assigning by one would let somebody redirect work by renaming themselves. This read is what makes that refusal survivable; it is not a way around it. Pass the `pubkey` from here verbatim, never the `name`. The list is everyone who has filed, been assigned, led or commented on something readable \u2014 not a roster. Relay membership lives in Estiva ID and cannot be read here, so somebody absent from this list may still be on the team.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          named: {
+            type: "boolean",
+            description: "Optional. List only people who publish a profile. Unnamed keys are still valid assignees."
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
       name: "ship_comment",
       description: "Add a comment to one Estiva Ship issue. The comment appears in the issue's conversation and in Peek, attributed to this agent. " + WRITE_NOTE,
       inputSchema: {
@@ -18855,6 +18949,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const ref = typeof input.ref === "string" ? input.ref : "";
         return text(await command("show").run(await context(), args({}, [ref])));
       }
+      case "ship_people":
+        return text(
+          await command("people").run(await context(), args(input.named === true ? { named: true } : {}))
+        );
       case "ship_comment":
         return text(
           await command("comment").run(await context(), args(flagsFrom(input, ["body"]), [str(input.ref)]))
