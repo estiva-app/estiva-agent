@@ -104,6 +104,7 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   ship_assign: { app: shipApp, command: 'assign' },
   ship_edit_issue: { app: shipApp, command: 'edit-issue' },
   ship_edit_project: { app: shipApp, command: 'edit-project' },
+  ship_archive_project: { app: shipApp, command: 'archive-project' },
   ship_create_issue: { app: shipApp, command: 'create-issue' },
   ship_create_project: { app: shipApp, command: 'create-project' },
   peek_reply: { app: peekApp, command: 'reply' },
@@ -269,6 +270,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description:
               'Optional. Project name, part of one, or its address — refuses if it matches more than one. "none" detaches the issue from every project.',
+          },
+        },
+        required: ['ref'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'ship_archive_project',
+      description:
+        'Hide one Estiva Ship project from the project list, or bring it back with `unarchive`. Reversible: it is a change event, not a deletion, and nothing is removed. ' +
+        'This is the cleanup operation to reach for — this identity cannot delete anything, so an unwanted project that is not archived stays in everyone\'s list permanently. ' +
+        'It hides the project only. The project\'s issues keep appearing in the issue listing, which has no archived filter — archiving is not a way to tidy issues away. ' +
+        WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ref: {
+            type: 'string',
+            description: 'Project name, part of one, or its address. Refuses if it matches more than one.',
+          },
+          unarchive: {
+            type: 'boolean',
+            description: 'Optional. Bring an archived project back into the listings instead.',
           },
         },
         required: ['ref'],
@@ -491,6 +515,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         return text(await command('edit-issue').run(await context(), args(flags, [str(input.ref)])))
       }
+
+      case 'ship_archive_project':
+        return text(
+          await command('archive-project').run(
+            await context(),
+            args(input.unarchive === true ? { unarchive: true } : {}, [str(input.ref)]),
+          ),
+        )
 
       case 'ship_edit_project': {
         /*

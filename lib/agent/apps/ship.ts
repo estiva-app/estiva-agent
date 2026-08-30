@@ -1065,6 +1065,86 @@ export const shipApp: AgentApp = {
       },
     },
     {
+      name: 'archive-project',
+      signs: [KIND.CHANGE],
+      summary: 'hide a project from the lists, or bring it back',
+      usage: 'archive-project <ref> [--unarchive]',
+      async run(context, args) {
+        const reference = args.positional[0]
+        if (!reference) throw new BadRequest('archive-project needs a project reference.')
+
+        const state = await store(context).loadAll()
+        const project = findProject(state.projects, reference)
+        const archived = !args.flags.unarchive
+
+        /*
+          The record's Folder, for the reason `edit-project` gives at length:
+          publishing against the content Folder is *accepted* by the relay and
+          then invisible to anything reading the record's own Folder. An archive
+          that half of the readers cannot see is worse than no archive.
+        */
+        const folder = project.originFolder
+        if (!folder) {
+          throw new BadRequest(
+            `“${project.title}” names no Folder for its record, so a change to it has nowhere to be published.`,
+          )
+        }
+
+        /*
+          Said rather than silently done. Archiving is reversible and this
+          command reports how, because the reverse is the thing somebody needs
+          at the moment they realise they archived the wrong one — and
+          `ship projects` hides the result, so the project they are looking for
+          has just disappeared from the listing they would check.
+        */
+        if (archived && project.archived) {
+          return {
+            unchanged: { title: project.title, addr: project.addr },
+            note: 'That project is already archived. Pass --unarchive to bring it back.',
+          }
+        }
+        if (!archived && !project.archived) {
+          return {
+            unchanged: { title: project.title, addr: project.addr },
+            note: 'That project is not archived, so there is nothing to bring back.',
+          }
+        }
+
+        const result = await store(context).archiveProject({
+          recordFolder: folder,
+          project: project.addr,
+          archived,
+        })
+        published(result, `${archived ? 'archiving' : 'unarchiving'} “${project.title}”`)
+
+        const issues = state.issues.filter((issue) => issue.projectAddr === project.addr).length
+
+        return {
+          changed: { title: project.title, addr: project.addr, folder },
+          archived,
+          eventId: result.eventId,
+          /*
+            Exactly what archiving does, because the obvious guess is wrong and
+            it is wrong in the direction that matters.
+
+            Archiving hides the project from `ship projects`. It does **not**
+            hide the project's issues: `ship issues` lists `state.issues` with
+            no archived filter at all, so all of them keep appearing in the
+            default listing, attributed to a project that listing no longer
+            shows. Measured on production — 12 issues of an archived project,
+            all still listed.
+
+            So this is not a way to tidy issues away, and saying so here is
+            cheaper than somebody archiving a project for that purpose and only
+            later noticing it did nothing.
+          */
+          note: archived
+            ? `Hidden from \`ship projects\` unless --archived. Its ${issues} issue(s) are NOT hidden — \`ship issues\` has no archived filter and keeps listing them. Reverse with --unarchive; nothing is deleted.`
+            : 'Back in the default project listing.',
+        }
+      },
+    },
+    {
       name: 'create-project',
       /*
         Two kinds, because creating a project usually creates its container
