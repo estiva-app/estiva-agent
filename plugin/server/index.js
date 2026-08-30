@@ -17822,6 +17822,14 @@ function projectEdits(project, args2, self) {
   }
   return edits;
 }
+function assigneeFor(who3, self) {
+  if (who3 === "none" || who3 === "") return "";
+  const wanted = who3 === "me" ? self : who3;
+  if (!/^[0-9a-f]{64}$/i.test(wanted)) {
+    throw new BadRequest('assign takes a 64-character hex pubkey, "me", or "none". Names are not unique.');
+  }
+  return wanted.toLowerCase();
+}
 function issueEdits(issue2, args2, projects) {
   const edits = [];
   const title = flagValue(args2, "title");
@@ -18193,7 +18201,10 @@ Pass an address to say which.`
           folder: issue2.folder,
           target: issue2.addr,
           field: "status",
-          value: wanted
+          value: wanted,
+          // Same omission as `assign` had, and the same fix: 115 status changes
+          // by this identity carried no note. The vocabulary is the app's.
+          note: `Status \u2192 ${wanted}`
         });
         published(result, `a status change on ${issue2.ref ?? issue2.addr}`);
         return {
@@ -18208,21 +18219,29 @@ Pass an address to say which.`
     {
       name: "assign",
       signs: [KIND2.CHANGE],
-      summary: "assign one issue to somebody",
-      usage: "assign <ref> <pubkey|me>",
+      summary: "assign one issue to somebody, or clear it",
+      usage: "assign <ref> <pubkey|me|none>",
       async run(context2, args2) {
         const [reference, who3] = args2.positional;
-        if (!reference || !who3) throw new BadRequest('assign needs a reference and a pubkey, or "me".');
-        const assignee = who3 === "me" ? context2.signer.pubkey : who3;
-        if (!/^[0-9a-f]{64}$/i.test(assignee)) {
-          throw new BadRequest('assign takes a 64-character hex pubkey, or "me". Names are not unique.');
-        }
+        if (!reference || !who3) throw new BadRequest('assign needs a reference and a pubkey, "me", or "none".');
+        const assignee = assigneeFor(who3, context2.signer.pubkey);
         const { issue: issue2 } = await resolveIssueFor(context2, reference);
         const result = await store(context2).setField({
           folder: issue2.folder,
           target: issue2.addr,
           field: "assignee",
-          value: assignee.toLowerCase()
+          value: assignee,
+          /*
+                      The note the web UI writes for the same act. Without one the change
+                      carries an empty `.content`, and the activity feed — which is not
+                      derived from the state, it *is* the change stream — renders the
+                      agent's assignments as a blank line where a person's read
+                      "Assign".
+          
+                      Measured on production before this: 66 assignee changes by this
+                      identity, 0 with a note.
+                    */
+          note: assignee ? "Assign" : "Unassign"
         });
         published(result, `an assignment on ${issue2.ref ?? issue2.addr}`);
         return {
@@ -18828,12 +18847,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_assign",
-      description: 'Assign one Estiva Ship issue to somebody, by public key. Names are deliberately not accepted: display names are chosen by their owner and are not unique, so assigning by name would let somebody redirect work by renaming themselves. Use "me" for this agent. ' + WRITE_NOTE,
+      description: 'Assign one Estiva Ship issue to somebody, by public key, or clear the assignment with "none". Names are deliberately not accepted: display names are chosen by their owner and are not unique, so assigning by name would let somebody redirect work by renaming themselves. Use "me" for this agent, and `ship_people` to find somebody else\'s key. ' + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
           ref: { type: "string", description: "Display ref, address, or a distinctive fragment of the title." },
-          pubkey: { type: "string", description: '64-character hex public key, or "me" for this agent.' }
+          pubkey: {
+            type: "string",
+            description: '64-character hex public key, "me" for this agent, or "none" to clear the assignment.'
+          }
         },
         required: ["ref", "pubkey"],
         additionalProperties: false

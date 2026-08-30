@@ -236,13 +236,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ship_assign',
       description:
-        'Assign one Estiva Ship issue to somebody, by public key. Names are deliberately not accepted: display names are chosen by their owner and are not unique, so assigning by name would let somebody redirect work by renaming themselves. Use "me" for this agent. ' +
+        'Assign one Estiva Ship issue to somebody, by public key, or clear the assignment with "none". Names are deliberately not accepted: display names are chosen by their owner and are not unique, so assigning by name would let somebody redirect work by renaming themselves. Use "me" for this agent, and `ship_people` to find somebody else\'s key. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
         properties: {
           ref: { type: 'string', description: 'Display ref, address, or a distinctive fragment of the title.' },
-          pubkey: { type: 'string', description: '64-character hex public key, or "me" for this agent.' },
+          pubkey: {
+            type: 'string',
+            description: '64-character hex public key, "me" for this agent, or "none" to clear the assignment.',
+          },
         },
         required: ['ref', 'pubkey'],
         additionalProperties: false,
