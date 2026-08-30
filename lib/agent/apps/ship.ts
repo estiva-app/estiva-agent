@@ -322,6 +322,37 @@ export function projectEdits(project: Project, args: ParsedArgs, self: string): 
  * Field names and notes are the ones `web/src/pages/IssuePage.tsx` writes, so a
  * move made here and one made in the app are the same act in the activity feed.
  */
+/**
+ * The key `assign` should write, or the empty string that clears it.
+ *
+ * Pure and exported for the same reason the other planners are. The rule it
+ * carries is the one that made this command lopsided: it could set an assignee
+ * and never clear one, so an assignment was the only irreversible write in the
+ * CLI — while `edit-project --lead none` had cleared a lead all along.
+ */
+export function assigneeFor(who: string, self: string): string {
+  /*
+    `none` and the empty string clear it, written as an empty value rather than
+    by removing anything: an append-only stream has no undo, and "assigned to
+    nobody" is a fact like any other. The same shape `archived` uses to
+    unarchive and `--lead` uses to unassign a project.
+  */
+  if (who === 'none' || who === '') return ''
+
+  /*
+    `me` is the signing identity. Anybody else is named by public key rather
+    than by display name, because display names are self-set
+    (docs/untrusted-content.md) — assigning by one would let a person redirect
+    who work lands on by renaming themselves. `ship people` exists so that
+    refusal is survivable.
+  */
+  const wanted = who === 'me' ? self : who
+  if (!/^[0-9a-f]{64}$/i.test(wanted)) {
+    throw new BadRequest('assign takes a 64-character hex pubkey, "me", or "none". Names are not unique.')
+  }
+  return wanted.toLowerCase()
+}
+
 export function issueEdits(issue: Issue, args: ParsedArgs, projects: Project[]): FieldEdit[] {
   const edits: FieldEdit[] = []
 
@@ -875,6 +906,9 @@ export const shipApp: AgentApp = {
           target: issue.addr,
           field: 'status',
           value: wanted,
+          // Same omission as `assign` had, and the same fix: 115 status changes
+          // by this identity carried no note. The vocabulary is the app's.
+          note: `Status → ${wanted}`,
         })
         published(result, `a status change on ${issue.ref ?? issue.addr}`)
 
@@ -890,27 +924,35 @@ export const shipApp: AgentApp = {
     {
       name: 'assign',
       signs: [KIND.CHANGE],
-      summary: 'assign one issue to somebody',
-      usage: 'assign <ref> <pubkey|me>',
+      summary: 'assign one issue to somebody, or clear it',
+      usage: 'assign <ref> <pubkey|me|none>',
       async run(context, args) {
         const [reference, who] = args.positional
-        if (!reference || !who) throw new BadRequest('assign needs a reference and a pubkey, or "me".')
+        if (!reference || !who) throw new BadRequest('assign needs a reference and a pubkey, "me", or "none".')
 
         // `me` is the signing identity — the agent itself. Anyone else has to be
         // named by pubkey rather than by display name, because display names are
         // self-set (docs/untrusted-content.md) and assigning by one would let a
         // person choose who work lands on by renaming themselves.
-        const assignee = who === 'me' ? context.signer.pubkey : who
-        if (!/^[0-9a-f]{64}$/i.test(assignee)) {
-          throw new BadRequest('assign takes a 64-character hex pubkey, or "me". Names are not unique.')
-        }
+        const assignee = assigneeFor(who, context.signer.pubkey)
 
         const { issue } = await resolveIssueFor(context, reference)
         const result = await store(context).setField({
           folder: issue.folder,
           target: issue.addr,
           field: 'assignee',
-          value: assignee.toLowerCase(),
+          value: assignee,
+          /*
+            The note the web UI writes for the same act. Without one the change
+            carries an empty `.content`, and the activity feed — which is not
+            derived from the state, it *is* the change stream — renders the
+            agent's assignments as a blank line where a person's read
+            "Assign".
+
+            Measured on production before this: 66 assignee changes by this
+            identity, 0 with a note.
+          */
+          note: assignee ? 'Assign' : 'Unassign',
         })
         published(result, `an assignment on ${issue.ref ?? issue.addr}`)
 

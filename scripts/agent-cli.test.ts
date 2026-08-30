@@ -17,7 +17,7 @@ import { resolveMaybe } from '../lib/agent/resolve'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { archivedRemoved, findIssue, findProject, issueEdits, participants, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
+import { archivedRemoved, assigneeFor, findIssue, findProject, issueEdits, participants, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
 import { findTopic, type Topic } from '../lib/agent/apps/peek'
 import type { Issue } from '../src/fold'
@@ -505,6 +505,36 @@ console.log('— editing an issue —')
 
   const several = plan({ title: 'T', description: 'D', project: 'Ship: Feedback' })
   check('several fields are several changes', several.length === 3, several.map((e) => e.field).join(','))
+}
+
+console.log('— assigning, and unassigning —')
+
+{
+  /*
+    AGE-16. `assign` could set an assignee and never clear one, which made it
+    the only irreversible write in the CLI — while `--lead none` had cleared a
+    project lead all along. The asymmetry mattered beyond tidiness: it is why
+    AGE-15's end-to-end check could not assign a key to a throwaway issue and
+    had to use an already-assigned one instead.
+  */
+  const self = 'a'.repeat(64)
+  const other = 'b'.repeat(64)
+
+  check('a key passes through', assigneeFor(other, self) === other)
+  check('“me” is the signing identity', assigneeFor('me', self) === self)
+  check('a key is lowercased', assigneeFor(other.toUpperCase(), self) === other)
+
+  check('“none” clears the assignment', assigneeFor('none', self) === '')
+  check('an empty value clears it too', assigneeFor('', self) === '')
+  check(
+    'clearing writes a value rather than removing anything',
+    assigneeFor('none', self) === '',
+    'an append-only stream has no undo',
+  )
+
+  refuses('a display name is still refused', () => assigneeFor('Katerina', self), 'not unique')
+  refuses('and the refusal names the escape hatch', () => assigneeFor('Katerina', self), 'none')
+  refuses('a truncated key is refused', () => assigneeFor(other.slice(0, 40), self))
 }
 
 console.log('— who the workspace has seen —')
