@@ -18643,8 +18643,25 @@ async function threadsIn(context2, folder) {
   return conversations.map((thread) => ({
     id: thread.id,
     opening: thread.root.body,
-    replies: thread.replies.length
+    replies: thread.replies.length,
+    // Every message in the thread, root included, so `--to` can name one.
+    // Carried here rather than re-queried: the fold already threaded them.
+    messages: [thread.root, ...thread.replies].map((message) => ({
+      id: message.id,
+      body: message.body
+    }))
   }));
+}
+function replyTarget(thread, to) {
+  if (to === void 0) return { rootId: thread.id, parentId: thread.id };
+  const message = resolveOne(thread.messages, to, {
+    noun: "message",
+    exact: (candidate) => [candidate.id],
+    text: (candidate) => `${candidate.id} ${candidate.body}`,
+    label: (candidate) => `${candidate.id.slice(0, 12)}\u2026 \u2014 ${candidate.body.slice(0, 60)}`,
+    hint: "Pass a message id from `peek topic`, or a distinctive phrase from it."
+  });
+  return { rootId: thread.id, parentId: message.id };
 }
 var peekApp = {
   name: "peek",
@@ -18733,8 +18750,15 @@ var peekApp = {
             // Said on the wire by a kind:9101, never inferred from the text.
             resolved: resolved.has(thread.id) || void 0,
             messages: [thread.root, ...thread.replies].map((message) => ({
+              // The id is what `reply --to` takes. Without it printed here the
+              // flag would be unsatisfiable from inside the tool — the same
+              // shape of gap AGE-15 fixed for assignees.
+              id: message.id,
               by: who2(directory, message.author),
               at: new Date(message.ts ?? message.createdAt * 1e3).toISOString(),
+              // Which message this one answers, so the shape of the thread is
+              // legible rather than a flat list under a root.
+              inReplyTo: message.parentId !== message.rootId ? message.parentId : void 0,
               body: message.body
             }))
           }))
@@ -18763,8 +18787,8 @@ var peekApp = {
     {
       name: "reply",
       signs: [KIND3.MESSAGE],
-      summary: "reply in one conversation",
-      usage: 'reply <topic> <conversation> --body "..."',
+      summary: "reply in one conversation, or to one message in it",
+      usage: 'reply <topic> <conversation> --body "..." [--to <message>]',
       async run(context2, args2) {
         const [topicRef, threadRef] = args2.positional;
         if (!topicRef || !threadRef) {
@@ -18774,14 +18798,27 @@ var peekApp = {
         if (!body) throw new BadRequest("reply needs --body.");
         const topic = findTopic(await loadTopics(context2), topicRef);
         const thread = findThread(await threadsIn(context2, topic.folder), threadRef);
+        const target = replyTarget(thread, flagValue(args2, "to"));
         const result = await new Store(context2.relay, context2.signer).postMessage({
           folder: topic.folder,
           body,
-          replyTo: { rootId: thread.id, parentId: thread.id }
+          replyTo: target
         });
         published2(result, `a reply in ${topic.name}`);
+        const answered = thread.messages.find((message) => message.id === target.parentId);
         return {
-          repliedTo: { topic: topic.name, conversation: thread.id, opening: thread.opening.slice(0, 80) },
+          repliedTo: {
+            topic: topic.name,
+            conversation: thread.id,
+            opening: thread.opening.slice(0, 80),
+            /*
+              Which message this actually landed under, said back rather than
+              assumed. `--to` takes a phrase as well as an id, and "it matched
+              the message I meant" is the one thing the caller cannot check
+              afterwards without re-reading the topic.
+            */
+            ...target.parentId === thread.id ? { attachedTo: "the conversation" } : { attachedTo: answered?.body.slice(0, 80), messageId: target.parentId }
+          },
           eventId: result.eventId
         };
       }
@@ -19092,13 +19129,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "peek_reply",
-      description: "Reply inside one existing Peek conversation. Read the topic first and pass the conversation you mean; if the reference matches more than one this returns the candidates instead of choosing. " + PEEK_WRITE_NOTE,
+      description: "Reply inside one existing Peek conversation, or to one message within it. Read the topic first and pass the conversation you mean; if the reference matches more than one this returns the candidates instead of choosing. Pass `to` to answer a particular message rather than the conversation as a whole \u2014 without it the reply attaches to the opening message, which in a thread with several people reads as answering whoever started it rather than whoever was being answered. " + PEEK_WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
           topic: { type: "string", description: "Topic name or part of one." },
           conversation: { type: "string", description: "Conversation id, or a distinctive phrase from its first message." },
-          body: { type: "string", description: "The reply text." }
+          body: { type: "string", description: "The reply text." },
+          to: {
+            type: "string",
+            description: "Optional. A message id from `peek_read_topic`, or a distinctive phrase from one. Resolved within the chosen conversation only; refuses if it matches more than one message."
+          }
         },
         required: ["topic", "conversation", "body"],
         additionalProperties: false
@@ -19227,7 +19268,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text(
           await command("reply", peekApp).run(
             await context(),
-            args(flagsFrom(input, ["body"]), [str(input.topic), str(input.conversation)])
+            args(flagsFrom(input, ["body", "to"]), [str(input.topic), str(input.conversation)])
           )
         );
       case "peek_say":

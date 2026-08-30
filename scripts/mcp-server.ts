@@ -418,7 +418,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'peek_reply',
       description:
-        'Reply inside one existing Peek conversation. Read the topic first and pass the conversation you mean; if the reference matches more than one this returns the candidates instead of choosing. ' +
+        'Reply inside one existing Peek conversation, or to one message within it. Read the topic first and pass the conversation you mean; if the reference matches more than one this returns the candidates instead of choosing. ' +
+        'Pass `to` to answer a particular message rather than the conversation as a whole — without it the reply attaches to the opening message, which in a thread with several people reads as answering whoever started it rather than whoever was being answered. ' +
         PEEK_WRITE_NOTE,
       inputSchema: {
         type: 'object',
@@ -426,6 +427,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           topic: { type: 'string', description: 'Topic name or part of one.' },
           conversation: { type: 'string', description: 'Conversation id, or a distinctive phrase from its first message.' },
           body: { type: 'string', description: 'The reply text.' },
+          to: {
+            type: 'string',
+            description:
+              'Optional. A message id from `peek_read_topic`, or a distinctive phrase from one. Resolved within the chosen conversation only; refuses if it matches more than one message.',
+          },
         },
         required: ['topic', 'conversation', 'body'],
         additionalProperties: false,
@@ -600,7 +606,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text(
           await command('reply', peekApp).run(
             await context(),
-            args(flagsFrom(input, ['body']), [str(input.topic), str(input.conversation)]),
+            args(flagsFrom(input, ['body', 'to']), [str(input.topic), str(input.conversation)]),
           ),
         )
 
