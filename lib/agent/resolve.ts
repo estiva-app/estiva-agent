@@ -55,19 +55,33 @@ export interface Resolvable<T> {
 /** How many candidates to name before it stops being a helpful list. */
 const MAX_CANDIDATES = 8
 
-export function resolveOne<T>(items: T[], reference: string, how: Resolvable<T>): T {
+/**
+ * What one reference resolved to, without deciding whether that is an error.
+ *
+ * `show` has to ask the same question of two different kinds of object — is
+ * this an issue, or is it a project — and only then decide. Asking with
+ * `resolveOne` cannot work: a reference that is a perfectly good project name
+ * throws on the issue attempt, and catching that would make "no issues match"
+ * indistinguishable from "three issues match", which is the one distinction
+ * this module exists to preserve.
+ *
+ * So the matching lives here once and the throwing lives in `resolveOne`. A
+ * caller that needs to look in two places gets the same generosity and the same
+ * refusals, rather than a fourth implementation of the rule.
+ */
+export type Resolution<T> = { found: T } | { ambiguous: string } | { none: true }
+
+export function resolveMaybe<T>(items: T[], reference: string, how: Resolvable<T>): Resolution<T> {
   const needle = reference.trim().toLowerCase()
-  if (!needle) {
-    throw new BadRequest(`Which ${how.noun}?${how.hint ? ` ${how.hint}` : ''}`)
-  }
+  if (!needle) return { ambiguous: `Which ${how.noun}?${how.hint ? ` ${how.hint}` : ''}` }
 
   const exact = items.filter((item) =>
     how.exact(item).some((value) => value?.toLowerCase() === needle),
   )
-  if (exact.length === 1) return exact[0]
+  if (exact.length === 1) return { found: exact[0] }
 
   const partial = items.filter((item) => how.text(item).toLowerCase().includes(needle))
-  if (partial.length === 1) return partial[0]
+  if (partial.length === 1) return { found: partial[0] }
 
   if (partial.length > 1 || exact.length > 1) {
     /*
@@ -80,8 +94,15 @@ export function resolveOne<T>(items: T[], reference: string, how: Resolvable<T>)
     const shown = candidates.map((item) => `  ${how.label(item)}`).join('\n')
     const total = exact.length > 1 ? exact.length : partial.length
     const more = total > candidates.length ? `\n  …and ${total - candidates.length} more` : ''
-    throw new BadRequest(`"${reference}" matches ${total} ${how.noun}s:\n${shown}${more}`)
+    return { ambiguous: `"${reference}" matches ${total} ${how.noun}s:\n${shown}${more}` }
   }
 
+  return { none: true }
+}
+
+export function resolveOne<T>(items: T[], reference: string, how: Resolvable<T>): T {
+  const resolved = resolveMaybe(items, reference, how)
+  if ('found' in resolved) return resolved.found
+  if ('ambiguous' in resolved) throw new BadRequest(resolved.ambiguous)
   throw new BadRequest(`No ${how.noun} matches "${reference}".`)
 }
