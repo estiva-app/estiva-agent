@@ -109,6 +109,7 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   ship_create_project: { app: shipApp, command: 'create-project' },
   peek_reply: { app: peekApp, command: 'reply' },
   peek_say: { app: peekApp, command: 'say' },
+  peek_create_topic: { app: peekApp, command: 'create-topic' },
 }
 
 /** A required string argument, or the empty string the command will refuse. */
@@ -453,6 +454,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'peek_create_topic',
+      description:
+        'Create a new Peek topic. Prefer an existing topic almost always — a new one is a container everybody sees, and the conversation that justified it usually belonged in a topic that already existed. ' +
+        'Know before using this: Peek renders its topic list from its own database and does not import topic-creation events back from the relay, so a topic created here may never appear in the Peek app. It is readable and writable through these tools, and possibly invisible to every human being. Do not tell somebody a topic is ready without confirming they can see it. ' +
+        PEEK_WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'What the topic is called.' },
+          about: { type: 'string', description: 'Optional. A line describing what it is for.' },
+        },
+        required: ['name'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'estiva_ping',
       description:
         'Check the Estiva connection and report which hop is broken, without reading any workspace data. ' +
@@ -505,6 +522,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         job is to describe a connection that may be broken, so a shared failed
         promise would make it fail in exactly the case it exists for.
       */
+      case 'peek_create_topic':
+        return text(
+          await command('create-topic', peekApp).run(
+            await context(),
+            args(flagsFrom(input, ['name', 'about'])),
+          ),
+        )
+
       case 'estiva_ping':
         return text({ at: new Date().toISOString(), ...(await connectionStatus(shipApp, { client: callingClient() })) })
 

@@ -482,7 +482,29 @@ export const peekApp: AgentApp = {
         const result = await context.relay.publish(await context.signer.sign(unsigned))
         published(result, `a new topic "${name}"`)
 
-        return { created: { topic: name, folder }, eventId: result.eventId }
+        /*
+          What was created, and where it will and will not appear.
+
+          Peek renders its topic list from Convex and does not import
+          `kind:9007` back from the relay (see `topics`, and the coverage note
+          it returns). So this topic is real, readable and writable here — and
+          may never appear in the app for anybody else. A person who asked for
+          a topic and cannot find it afterwards has been failed by a command
+          that reported success, which is the whole shape of failure this
+          repository keeps running into.
+
+          Said on every create rather than only when it matters, because
+          nothing here can tell which case this is: Peek's import rule is not
+          ours to read.
+        */
+        return {
+          created: { topic: name, folder },
+          eventId: result.eventId,
+          note:
+            'Created on the relay. Peek renders its own topic list from Convex and does not import kind:9007 back, ' +
+            'so this topic may not appear in the app — messages posted to it would be readable here and invisible to everybody else. ' +
+            'Confirm it is visible in Peek before telling anybody to use it.',
+        }
       },
     },
   ],
