@@ -62,6 +62,9 @@ export function resolvePubkeys(directory: Directory, value: string): string {
  */
 const status = (vocab: typeof ISSUE_STATUSES, value: string) => lookupStatus(vocab, value).label
 
+/** Enough to answer "what happened" without returning the workspace's whole history. */
+const DEFAULT_ACTIVITY = 50
+
 /** Long enough to tell one project from another, short enough to list 14. */
 const BLURB = 200
 
@@ -330,6 +333,46 @@ export function projectEdits(project: Project, args: ParsedArgs, self: string): 
  * and never clear one, so an assignment was the only irreversible write in the
  * CLI — while `edit-project --lead none` had cleared a lead all along.
  */
+/**
+ * `--since`, as an epoch in milliseconds.
+ *
+ * Two forms, because the question has two shapes. "What happened while I was
+ * away" wants a duration — `2d`, `12h`, `30m` — and "what happened on the day
+ * that broke" wants a date. Both are pure to parse, so the ambiguity is settled
+ * here rather than in whichever caller guessed.
+ *
+ * Rejected rather than defaulted when it is neither. A `--since` that silently
+ * meant "everything" would answer a narrow question with the whole workspace,
+ * and the answer would look the same as a correct one.
+ */
+export function parseSince(value: string, now: number): number {
+  const duration = /^(\d+)\s*([dhm])$/i.exec(value.trim())
+  if (duration) {
+    const scale = { d: 86_400_000, h: 3_600_000, m: 60_000 }[duration[2].toLowerCase() as 'd' | 'h' | 'm']
+    return now - Number(duration[1]) * scale
+  }
+
+  /*
+    Shape-checked before `Date.parse`, not after. `Date.parse` is far more
+    willing than it looks: `Date.parse('7')` is not NaN, it is the year 2001 —
+    so `--since 7`, which anybody would write meaning seven days, would silently
+    become a cutoff twenty-five years ago and return the entire workspace. The
+    answer would be indistinguishable from a correct one.
+
+    A bare `YYYY-MM-DD` is then UTC midnight, which is what "since the 29th"
+    means closely enough; a full timestamp is taken as written.
+  */
+  const looksLikeADate = /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(value.trim())
+  if (looksLikeADate) {
+    const parsed = Date.parse(value.trim())
+    if (!Number.isNaN(parsed)) return parsed
+  }
+
+  throw new BadRequest(
+    `--since "${value}" is neither a duration nor a date. Try 2d, 12h, 30m, or 2026-08-29.`,
+  )
+}
+
 export function assigneeFor(who: string, self: string): string {
   /*
     `none` and the empty string clear it, written as an empty value rather than
@@ -727,6 +770,106 @@ export const shipApp: AgentApp = {
             exactly the narrow queries somebody trusts most.
           */
           coverage: await coverage(context, state.issues),
+        }
+      },
+    },
+    {
+      name: 'activity',
+      summary: 'what changed, newest first',
+      usage: 'activity [--since <2d|2026-08-29>] [--project <ref>] [--by <pubkey|me>] [--limit <n>]',
+      async run(context, args) {
+        const state = await store(context).loadAll()
+
+        const since = flagValue(args, 'since')
+        const cutoff = since ? parseSince(since, Date.now()) : undefined
+        const limit = Number(flagValue(args, 'limit') ?? DEFAULT_ACTIVITY)
+        if (!Number.isFinite(limit) || limit < 1) throw new BadRequest('--limit must be a positive number.')
+
+        /*
+          What each change was *to*. A change carries only an address, and an
+          address is not something anybody can read — an activity line naming
+          `30851:b38fd268…:53182d00…` says nothing that a person could act on.
+          Resolved against what this read already folded, so no extra query.
+        */
+        const labels = new Map<string, { label: string; project?: string }>()
+        for (const project of state.projects) labels.set(project.addr, { label: project.title })
+        for (const issue of state.issues) {
+          labels.set(issue.addr, {
+            label: `${issue.ref ? `${issue.ref} — ` : ''}${issue.title}`,
+            project: issue.projectAddr,
+          })
+        }
+
+        const wantedProject = flagValue(args, 'project')
+        const project = wantedProject ? findProject(state.projects, wantedProject) : undefined
+
+        const by = flagValue(args, 'by')
+        const author = by === 'me' ? context.signer.pubkey : by
+
+        let changes = state.activity
+        if (cutoff !== undefined) {
+          changes = changes.filter((change) => (change.ts ?? change.createdAt * 1000) >= cutoff)
+        }
+        if (project) {
+          // The project's own record, and everything filed under it — "what
+          // happened on this project" means both, and either alone is a
+          // half-answer.
+          changes = changes.filter(
+            (change) =>
+              change.target === project.addr || labels.get(change.target)?.project === project.addr,
+          )
+        }
+        if (author) {
+          if (!/^[0-9a-f]{64}$/i.test(author)) {
+            throw new BadRequest('--by takes a 64-character hex pubkey, or "me". Try `ship people`.')
+          }
+          changes = changes.filter((change) => change.author.toLowerCase() === author.toLowerCase())
+        }
+
+        /*
+          Newest first, which is the opposite of the order the fold replays. The
+          fold needs oldest-first to be correct; a person asking what happened
+          wants the last thing first, and reversing here leaves the fold's own
+          ordering untouched.
+        */
+        const matched = changes.length
+        const shown = changes.slice(-limit).reverse()
+
+        const directory = await directoryFor(context, [
+          ...shown.map((change) => change.author),
+          ...shown.map((change) => change.value),
+        ])
+
+        return {
+          activity: shown.map((change) => ({
+            at: new Date(change.ts ?? change.createdAt * 1000).toISOString(),
+            by: who(directory, change.author),
+            field: change.field,
+            // Resolved by shape, the same rule `show` uses: any 64-character
+            // hex value is a key somebody may have a name for.
+            value: resolvePubkeys(directory, change.value),
+            /*
+              The human note, which is what makes a feed readable rather than a
+              list of field names. Empty for changes written before the note was
+              being set — `assign` and `set-status` omitted it until AGE-16, so
+              older lines are genuinely blank rather than rendered wrong.
+            */
+            note: change.note || undefined,
+            on: labels.get(change.target)?.label ?? change.target,
+            target: change.target,
+          })),
+          shown: shown.length,
+          matched,
+          /*
+            The same honesty `issues` owes about discovery, for the same reason.
+            A change to an object this read cannot reach is not in `activity` at
+            all, and a feed is exactly where somebody concludes "nothing
+            happened" from a short list.
+          */
+          note:
+            matched > shown.length
+              ? `${matched} changes matched; showing the ${shown.length} most recent. Pass --limit for more.`
+              : undefined,
         }
       },
     },
