@@ -18841,7 +18841,11 @@ var peekApp = {
         });
         const result = await context2.relay.publish(await context2.signer.sign(unsigned));
         published2(result, `a new topic "${name}"`);
-        return { created: { topic: name, folder }, eventId: result.eventId };
+        return {
+          created: { topic: name, folder },
+          eventId: result.eventId,
+          note: "Created on the relay. Peek renders its own topic list from Convex and does not import kind:9007 back, so this topic may not appear in the app \u2014 messages posted to it would be readable here and invisible to everybody else. Confirm it is visible in Peek before telling anybody to use it."
+        };
       }
     }
   ]
@@ -18879,7 +18883,8 @@ var TOOL_COMMANDS = {
   ship_create_issue: { app: shipApp, command: "create-issue" },
   ship_create_project: { app: shipApp, command: "create-project" },
   peek_reply: { app: peekApp, command: "reply" },
-  peek_say: { app: peekApp, command: "say" }
+  peek_say: { app: peekApp, command: "say" },
+  peek_create_topic: { app: peekApp, command: "create-topic" }
 };
 var str = (value) => typeof value === "string" ? value : "";
 var args = (flags, positional = []) => ({
@@ -19159,6 +19164,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: "peek_create_topic",
+      description: "Create a new Peek topic. Prefer an existing topic almost always \u2014 a new one is a container everybody sees, and the conversation that justified it usually belonged in a topic that already existed. Know before using this: Peek renders its topic list from its own database and does not import topic-creation events back from the relay, so a topic created here may never appear in the Peek app. It is readable and writable through these tools, and possibly invisible to every human being. Do not tell somebody a topic is ready without confirming they can see it. " + PEEK_WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "What the topic is called." },
+          about: { type: "string", description: "Optional. A line describing what it is for." }
+        },
+        required: ["name"],
+        additionalProperties: false
+      }
+    },
+    {
       name: "estiva_ping",
       description: 'Check the Estiva connection and report which hop is broken, without reading any workspace data. Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, runtime, summary }`. `runtime` says where this server is actually running \u2014 platform, whether it is inside WSL, which client opened the session, and **which revision is answering** (`runtime.revision`: commit, branch, and whether the tree is dirty) \u2014 and the credentials hop names where the credential came from. Check `runtime.revision` and `runtime.source` when a listing looks short or a fix seems absent. The server normally runs from a worktree pinned to a commit (`source: "pinned"`); a `source` of `"checkout"` means nothing was pinned and it fell back to a shared working tree that is routinely parked on somebody else\'s branch, which is how a session ends up answering from code days old while every other signal looks correct. That matters when one application runs this server twice: a Desktop extension on the host and a Code session inside WSL are separate installs with separate configuration, so "it works in one place and not the other" is answered by asking both and comparing, not by assuming they share anything. Use it when a read fails, and when a person asks why this is not working: "the connection is down" and "there is nothing to report" look identical in an empty answer, and the causes \u2014 an unconfigured credential, a replaced secret, an identity never admitted to the relay \u2014 have completely different fixes. Several of those fixes are administrative actions in Estiva ID that nobody can carry out from inside this conversation; report the state and say who has to act.',
       inputSchema: { type: "object", properties: {}, additionalProperties: false }
@@ -19190,6 +19208,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         job is to describe a connection that may be broken, so a shared failed
         promise would make it fail in exactly the case it exists for.
       */
+      case "peek_create_topic":
+        return text(
+          await command("create-topic", peekApp).run(
+            await context(),
+            args(flagsFrom(input, ["name", "about"]))
+          )
+        );
       case "estiva_ping":
         return text({ at: (/* @__PURE__ */ new Date()).toISOString(), ...await connectionStatus(shipApp, { client: callingClient() }) });
       case "ship_list_issues":
