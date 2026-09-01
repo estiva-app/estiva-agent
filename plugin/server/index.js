@@ -16159,6 +16159,7 @@ async function authorizationHeader(signer, args2) {
 
 // node_modules/@estiva-app/protocol/dist/bridge.js
 var RELAY_PAGE_CEILING = 1e3;
+var DEFAULT_QUERY_CONCURRENCY = 8;
 function parsePublishResponse(status2, text2) {
   let parsed;
   try {
@@ -16196,6 +16197,18 @@ var Relay = class {
   signer;
   headers;
   transport;
+  /**
+   * The largest page this relay has ever handed back, across every call.
+   *
+   * A *lower bound* on the relay's real clamp, and the only one obtainable
+   * without trusting anybody: the relay returned this many events in one
+   * response, so its ceiling is at least this large. {@link Relay.pageFilter}
+   * uses it to tell a short page apart from a clamped one — see there.
+   *
+   * Per instance and never reset, so the second read through a long-lived
+   * `Relay` is cheaper than the first.
+   */
+  observedPageCeiling = 0;
   constructor(url, signer, options = {}) {
     this.url = url.replace(/\/+$/, "");
     this.signer = signer;
@@ -16269,38 +16282,90 @@ var Relay = class {
    * value of `until` reaches past them without skipping some, and no correct
    * answer exists from this API — so it says so instead of returning a
    * plausible subset.
+   *
+   * **Filters run concurrently, up to {@link DEFAULT_QUERY_CONCURRENCY}.** They
+   * are independent of one another; only the pages inside one are a cursor
+   * walk. Doing them in sequence made a read cost the sum of every filter's
+   * latency, which is what put Ship's workspace read at nine seconds against a
+   * five-second poll — long enough that a write's re-read had usually not
+   * finished before the next one began.
+   *
+   * The concurrency is deliberately **not observable in the answer**: results
+   * are collected per filter and concatenated in filter order, so the returned
+   * array is identical to the serial one, and a failure reports the
+   * lowest-indexed filter's error rather than whichever lost the race.
    */
   async queryAll(filters, options = {}) {
     const pageSize = options.pageSize ?? RELAY_PAGE_CEILING;
     const maxPages = options.maxPages ?? 100;
+    const concurrency = Math.max(1, options.concurrency ?? DEFAULT_QUERY_CONCURRENCY);
+    const perFilter = new Array(filters.length);
+    const failures = new Array(filters.length);
+    let next = 0;
+    let failed = false;
+    const worker = async () => {
+      for (; ; ) {
+        if (failed)
+          return;
+        const index = next++;
+        if (index >= filters.length)
+          return;
+        try {
+          perFilter[index] = await this.pageFilter(filters[index], pageSize, maxPages);
+        } catch (error2) {
+          failures[index] = error2;
+          failed = true;
+          return;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, filters.length) }, () => worker()));
+    const firstFailure = failures.findIndex((error2) => error2 !== void 0);
+    if (firstFailure !== -1)
+      throw failures[firstFailure];
     const seen = /* @__PURE__ */ new Set();
     const out = [];
-    for (const filter of filters) {
-      let until;
-      for (let page = 0; ; page++) {
-        if (page >= maxPages) {
-          throw new Error(`queryAll: gave up after ${maxPages} pages \u2014 refusing to return a partial set`);
-        }
-        const events = await this.query([
-          { ...filter, limit: pageSize, ...until === void 0 ? {} : { until } }
-        ]);
-        if (events.length === 0)
-          break;
-        for (const e of events) {
-          if (seen.has(e.id))
-            continue;
-          seen.add(e.id);
-          out.push(e);
-        }
-        const oldest = Math.min(...events.map((e) => e.created_at));
-        if (until !== void 0 && oldest >= until) {
-          if (events.length >= pageSize) {
-            throw new Error(`queryAll: more than ${pageSize} events share created_at=${until} \u2014 cannot page without skipping`);
-          }
-          break;
-        }
-        until = oldest;
+    for (const events of perFilter) {
+      for (const e of events) {
+        if (seen.has(e.id))
+          continue;
+        seen.add(e.id);
+        out.push(e);
       }
+    }
+    return out;
+  }
+  /**
+   * One filter, paged to exhaustion. The sequential half, and it has to be:
+   * `until` is a cursor, so page N+1's request is not known until page N has
+   * answered. Only the filters are independent, which is why they are the
+   * axis {@link Relay.queryAll} parallelises.
+   */
+  async pageFilter(filter, pageSize, maxPages) {
+    const out = [];
+    let until;
+    for (let page = 0; ; page++) {
+      if (page >= maxPages) {
+        throw new Error(`queryAll: gave up after ${maxPages} pages \u2014 refusing to return a partial set`);
+      }
+      const events = await this.query([
+        { ...filter, limit: pageSize, ...until === void 0 ? {} : { until } }
+      ]);
+      if (events.length === 0)
+        break;
+      out.push(...events);
+      if (events.length > this.observedPageCeiling)
+        this.observedPageCeiling = events.length;
+      if (events.length < pageSize && events.length < this.observedPageCeiling)
+        break;
+      const oldest = Math.min(...events.map((e) => e.created_at));
+      if (until !== void 0 && oldest >= until) {
+        if (events.length >= pageSize) {
+          throw new Error(`queryAll: more than ${pageSize} events share created_at=${until} \u2014 cannot page without skipping`);
+        }
+        break;
+      }
+      until = oldest;
     }
     return out;
   }
