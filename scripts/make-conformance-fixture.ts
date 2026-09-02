@@ -37,6 +37,11 @@
  *  - three changes sharing one `created_at`, which must break by lowest id
  *  - a status set by somebody who did not author the issue, which must apply —
  *    the whole reason the model is event-sourced
+ *  - a `ref` set by a change on an issue whose root carries a different one, and
+ *    an issue whose description lives in a `description` tag with empty content.
+ *    Both are shapes the fold drifted on (SHA-19) while the recording contained
+ *    neither: 0 of 49 changes set `ref`, 0 of 18 issues had the tag. A guard
+ *    that cannot distinguish the two implementations is not guarding them.
  */
 import { writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -117,7 +122,54 @@ function adversarial(state: { issues: { addr: string; author: string }[] }): Sig
     */
     change(base + 10, 'status', 'done', (base + 13) * 1000, 'drifted ts, refused at 1s of slack'),
     change(base + 12, 'status', 'cancelled', undefined, 'later by created_at, wins while the window is 1s'),
+
+    /*
+      The two shapes SHA-19 found the fold drifting on, neither of which the
+      recording contained.
+
+      Measured on the previous fixture: 0 of 49 change events set `ref`, and 0
+      of 18 issues carried a `description` tag. So `ref: tag(event, 'ref')` and
+      `ref: fields.ref?.value ?? tag(event, 'ref')` folded that recording
+      identically, and so did `event.content` and `recordDescription(event)` —
+      the agent's copy was wrong for two days and this check could not fail.
+
+      Both shapes are ordinary in production now and were not when it was
+      recorded: an issue created from another app gets its display key from a
+      change event (nothing else can compute one), and `add-issue` grew a
+      description field, which a foreign consumer writes to a tag of its own
+      name rather than to `content`.
+    */
+    // A `ref` set by a change, on an issue whose root already carries a
+    // different one. Reading the tag alone returns the root's value.
+    change(base + 20, 'ref', 'FIXTURE-9', undefined, 'a display key assigned after the fact'),
   ]
+}
+
+/**
+ * An issue whose description lives in a `description` tag, with empty content.
+ *
+ * A root rather than a change, because the drift is in how an issue *root* is
+ * read. Ship's own composer puts the body in `content`, so every recorded issue
+ * has it there; a consumer filing through `add-issue` cannot, and writes each
+ * declared property to a tag of its own name.
+ */
+function taggedDescriptionIssue(): SignedEvent {
+  const pubkey = publicKeyFromSecret(FIXTURE_KEY)
+  return signEvent(
+    {
+      pubkey,
+      created_at: 1_700_000_030,
+      kind: KIND.ISSUE,
+      tags: [
+        ['d', 'fixture-tagged-description'],
+        ['title', 'Filed from another app'],
+        ['h', 'fixture-folder'],
+        ['description', 'The body arrived in a tag, because a consumer cannot write content.'],
+      ],
+      content: '',
+    },
+    FIXTURE_KEY,
+  )
 }
 
 async function main() {
@@ -149,7 +201,7 @@ async function main() {
     .slice()
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 
-  const ordered = [...recorded, ...adversarial(state)].sort((a, b) =>
+  const ordered = [...recorded, ...adversarial(state), taggedDescriptionIssue()].sort((a, b) =>
     a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
   )
 

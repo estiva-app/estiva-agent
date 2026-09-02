@@ -59,18 +59,90 @@ export type SlotSource =
    * one slot with several places to look.
    */
   | { tag: string | string[]; map?: string; as?: 'pubkey'; label?: string; truncate?: number }
-  /** A top-level event field — in practice only `content`. */
-  | { field: 'content'; truncate?: number; label?: string }
+  /**
+   * A top-level event field — in practice only `content`.
+   *
+   * **No `truncate` here, and that is deliberate (PRO-8).** `truncate` is a
+   * plain-text operation, and Ship's `content` is a structured field: 76 of 89
+   * descriptions on production carry markdown. Cutting one at 120 characters
+   * yields raw markup, not a summary. RFC 0.4 §13.3 states the rule; removing
+   * the option is what stops it being re-added by somebody who has not read it.
+   *
+   * `truncate` stays on the `tag` variant above, where a value is a plain
+   * string by construction.
+   */
+  | { field: 'content'; label?: string }
   /**
    * A field produced by folding change events.
    *
    * `default` is what to show when nobody has set it yet. `tag` names a tag on
    * the root event to seed the field from — see addition 3 below.
    */
-  | { fold: string; tag?: string; map?: string; as?: 'pubkey'; label?: string; default?: string }
+  | {
+      fold: string
+      tag?: string
+      /**
+       * Seed the fold from the event's own body when no change has set it and
+       * no seed tag resolves — the chain is fold, tag, content.
+       *
+       * Added by PRO-2, because a description is the one field an app puts in
+       * `content` and neither of Ship's could be declared without it.
+       * `fold.ts` read an issue's as `fields.description?.value ??
+       * event.content` and a project's as that with a `description` tag in
+       * between; a manifest could express neither. Same argument as the `tag`
+       * seed above, one field along.
+       *
+       * The asymmetry is gone: both now read change, then tag, then content
+       * (`recordDescription`), because `add-issue` takes a description and the
+       * runtime delivers it on a tag.
+       */
+      field?: 'content'
+      map?: string
+      as?: 'pubkey'
+      label?: string
+      default?: string
+    }
+  /**
+   * **Child objects, found by the tag on the child that names this one.**
+   *
+   * The `list` slot (RFC 0.4 §13.3), and the only source here that does not
+   * read the root event. Every other variant answers "what does this event
+   * say?"; this one answers "what points at it?", which is why it is named
+   * `children` and `via` rather than reusing `tag`. A reader who confuses the
+   * two writes a query in the wrong direction and gets an empty list rather
+   * than an error.
+   *
+   * The inversion is forced by the data, not chosen. A project cannot carry a
+   * tag listing its issues: a `kind:30850` is replaceable **only by its
+   * author**, so every issue anyone else filed would need the project's author
+   * to republish, and REW-11 established that republishing stamps a
+   * `created_at` the relay will not backdate. The link therefore lives on the
+   * child, where the child's own author can write it.
+   *
+   * `limit` is the producer saying how many children are worth fetching, not a
+   * guarantee. **Recursion depth is the consumer's business and is not declared
+   * here** — a child resolved through its own projection may declare a `list`
+   * too, and the app at risk of the render loop is the one drawing it. §13.4's
+   * honour-system rule cuts this way: a producer that could set the consumer's
+   * recursion budget could hang it.
+   */
+  | { children: { kind: number; via: string; limit?: number }; label?: string }
 
 export interface Projection {
-  /** One of the predefined widget types. The consumer owns the layout. */
+  /**
+   * One of the predefined widget types. The consumer owns the layout.
+   *
+   * **Narrower than the protocol allows, deliberately.** SPEC §7.5 lets a
+   * manifest declare any widget name as an ordered chain terminating in one of
+   * these — `["profile", "card"]` — and Ship has no use for one: a project is a
+   * card and an issue is a row, both closed types. Keeping the union means the
+   * compiler makes an unpublishable declaration unwritable here, which is a
+   * stronger guarantee than the runtime check in `publish-manifest.ts` and the
+   * reason that check reads as belt-and-braces for this app.
+   *
+   * Widen it to `string | string[]` the day Ship needs a chain; the publish
+   * script already validates the wire shape either way.
+   */
   widget: 'card' | 'row' | 'table' | 'stat'
   slots: Record<string, SlotSource | SlotSource[]>
 }
@@ -98,7 +170,12 @@ export interface ManifestContent {
     hiddenWhen?: { field: string; equals: string }
   }
   projections: Record<string, Projection>
-  vocabularies: Record<string, { value: string; label: string; colour: string }[]>
+  /**
+   * `stage` is what a status *means* (PRO-2) — see `Stage` in `kinds.ts`.
+   * Optional here because a manifest published before PRO-2 has no `stage` and
+   * cannot be given one, so a consumer must handle its absence.
+   */
+  vocabularies: Record<string, { value: string; label: string; colour: string; stage?: string }[]>
   actions: unknown[]
 }
 
@@ -155,23 +232,103 @@ export function manifestContent(): ManifestContent {
           // which one you name. The issue below is untouched: REW-11 did not
           // rename anything there.
           title: { tag: ['name', 'title'] },
-          subtitle: { field: 'content', truncate: 120 },
+          /*
+           * No `subtitle`, on purpose — PRO-8.
+           *
+           * This slot used to be `{ field: 'content', truncate: 120 }`. Against
+           * the descriptions production actually holds — 76 of 89 carrying
+           * markdown structure, the longest 5,706 characters — that renders the
+           * first 120 characters of *raw markup* as an object's subtitle. A
+           * description beginning `# Goal` projected as the literal text
+           * "# Goal" followed by a sentence fragment.
+           *
+           * RFC 0.4 §13.3 draws the line this crossed: `truncate` is a
+           * plain-text operation and MUST NOT be applied to a structured field.
+           * `subtitle` carries a plain-text summary; `body` carries structure.
+           * An app whose description is structured owes the consumer the
+           * summary rather than expecting it to flatten a grammar it does not
+           * know.
+           *
+           * Declaring nothing is the honest interim state, and it is strictly
+           * better than what shipped: a consumer that omits a slot renders a
+           * named, resolvable object, because §13.3 makes `title` the required
+           * one and obliges a consumer to ignore what it cannot use. A
+           * consumer handed 120 characters of markup renders something wrong
+           * and cannot tell that it is wrong.
+           *
+           * The slot comes back when Ship can derive a real summary, which
+           * needs the `body` slot and the content-format decision behind it.
+           */
           status: { fold: 'status', map: 'statuses', default: DEFAULT_PROJECT_STATUS },
           // Seeded by the root's `lead` tag, overridden by a change — the same
           // rule `fold.ts` applies, now stated where a consumer can read it.
           meta: [{ label: 'Lead', fold: 'lead', tag: 'lead', as: 'pubkey' }],
+          /*
+           * The issues in this project — PRO-2.
+           *
+           * "A project card with its issues underneath" is the layout most
+           * cited as proof this mechanism works, and until now it was the one
+           * layout the mechanism could not express: a consumer had to infer the
+           * relation from the `add-issue` action's `toAddressOf: "self"`, which
+           * is reading a *write* declaration to answer a *read* question. It
+           * worked, and it was a guess. This says it outright.
+           *
+           * `via: 'a'` is the tag `buildIssue` writes (`src/events.ts`), and it
+           * is optional there — an issue may name no project. Such an issue is
+           * simply not in anyone's list, which is correct and is why the query
+           * is by tag rather than by folder: a Folder holds the conversation,
+           * the `a` tag holds the containment, and REW-11 made them different
+           * questions when it made the project record global.
+           */
+          list: { children: { kind: KIND.ISSUE, via: 'a', limit: 200 } },
+          /*
+           * The description — PRO-2's third slot, unblocked by RIC-1.
+           *
+           * The chain is exactly `projectDescription()` in `fold.ts`: a change
+           * event, else the `description` tag, else `.content`. Declaring any
+           * shorter version renders something wrong — the tag alone loses every
+           * edit, the fold alone renders blank for a project nobody has edited.
+           *
+           * **No `truncate`, and no `subtitle` yet.** SPEC §13.5 makes rendering
+           * a body as plain text conformant, so a consumer can show this today;
+           * what it cannot do is flatten marker text into a one-line summary
+           * without a parser, and that parser is RIC-4. PRO-8's rule stands
+           * until then: an app whose description is structured owes the
+           * consumer the summary rather than expecting it to guess.
+           */
+          body: { fold: 'description', tag: 'description', field: 'content' },
         },
       },
       [KIND.ISSUE]: {
         widget: 'row',
         slots: {
           title: { tag: 'title' },
-          subtitle: { field: 'content', truncate: 120 },
+          // No `subtitle` — same reason as the project above (PRO-8). Peek's
+          // current widget never rendered this one anyway: a `row` is a single
+          // line by definition, so it reads `subtitle` only for a `card`. That
+          // made the issue projection the quieter half of the same defect, not
+          // an exempt one — the declaration was wrong for any consumer that
+          // chose to use it, and a manifest describes the object rather than
+          // one consumer's layout.
           status: { fold: 'status', map: 'issueStatuses', default: DEFAULT_ISSUE_STATUS },
           meta: [
-            { tag: 'ref' },
+            // Folded, seeded from the tag — see `fold.ts`. Declared this way so
+            // a consumer reading the slot gets the assigned key rather than the
+            // absence the root carries when somebody else created the issue.
+            { fold: 'ref', tag: 'ref' },
             { label: 'Assignee', fold: 'assignee', as: 'pubkey' },
           ],
+          // No `tag` seed here, unlike the project: `buildIssue` writes the
+          // description straight to `.content` and an issue root carries no
+          // `description` tag at all (`events.ts`). Declaring one would be a
+          // spelling nothing has ever written.
+/*
+            `tag` added with `add-issue`'s description field: an issue filed by a
+            foreign consumer carries the body on a `description` tag, and the
+            chain without it renders blank for exactly the issues this app did
+            not create. Now identical to the project's above.
+          */
+          body: { fold: 'description', tag: 'description', field: 'content' },
         },
       },
     },
@@ -188,10 +345,39 @@ export function manifestContent(): ManifestContent {
     // The consumer publishes the event itself; this says what to publish.
     // Note every action emits a CHANGE, never a rewrite — that is what lets
     // someone who is not the author act at all.
+    /*
+      Every action carries `description` and `effect` (PRO-5, RFC 0.4 §13.4).
+
+      `label` is a button caption — "Change status" tells a person which control
+      to press and tells a caller choosing *between* actions nothing. The
+      description is prose aimed at a machine, and each one here carries a fact
+      the label cannot: that a status lives on the change stream rather than on
+      the issue, that a project's lead is not an issue's assignee, that an
+      issue's root event holds immutable facts only.
+
+      **All six are `writes`, and none is `destructive` — because Ship offers no
+      destructive action to anyone else.** Archiving and deleting a project are
+      real operations with real UI, and neither is declared here, so no other
+      app can invoke them. That is a decision rather than an oversight: delete
+      is a NIP-09 request honoured only for the author, and archive is a folded
+      field a consumer already honours through `hiddenWhen`. Worth stating
+      because "no destructive actions" otherwise reads as an unexercised
+      vocabulary rather than as an inventory.
+
+      Nothing reads either field yet. They are here because adding a field costs
+      a line and adding one after several apps have published manifests is a
+      migration across every one of them, and a manifest is republished by its
+      owner alone.
+    */
     actions: [
       {
         id: 'set-issue-status',
         label: 'Change status',
+        description:
+          'Move an issue through its lifecycle by setting its status to one of the issueStatuses values. ' +
+          'The status is not on the issue \u2014 it lives on the change stream \u2014 so this is the only way to move it, ' +
+          'and every move stays attributable to whoever made it.',
+        effect: 'writes',
         appliesTo: String(KIND.ISSUE),
         emits: { kind: KIND.CHANGE, field: 'status' },
         input: { type: 'string', enum: 'issueStatuses' },
@@ -199,6 +385,10 @@ export function manifestContent(): ManifestContent {
       {
         id: 'assign-issue',
         label: 'Assign',
+        description:
+          'Say who is doing an issue, by public key. An empty value clears the assignment. ' +
+          'Distinct from a project lead, which is accountability for a whole project rather than for this one issue.',
+        effect: 'writes',
         appliesTo: String(KIND.ISSUE),
         emits: { kind: KIND.CHANGE, field: 'assignee' },
         input: { type: 'pubkey' },
@@ -216,6 +406,10 @@ export function manifestContent(): ManifestContent {
       {
         id: 'set-project-status',
         label: 'Change status',
+        description:
+          'Set a whole project\u2019s status to one of the statuses values \u2014 use when the project itself starts, ' +
+          'finishes or is abandoned. Not for the state of the issues inside it, which each carry their own status.',
+        effect: 'writes',
         appliesTo: String(KIND.PROJECT),
         emits: { kind: KIND.CHANGE, field: 'status' },
         input: { type: 'string', enum: 'statuses' },
@@ -223,6 +417,10 @@ export function manifestContent(): ManifestContent {
       {
         id: 'assign-project',
         label: 'Assign',
+        description:
+          'Say who is accountable for a project, by public key. An empty value clears it. ' +
+          'The tag is `lead` rather than `assignee`; they are the same idea at two levels and not interchangeable.',
+        effect: 'writes',
         appliesTo: String(KIND.PROJECT),
         emits: { kind: KIND.CHANGE, field: 'lead' },
         input: { type: 'pubkey' },
@@ -230,6 +428,10 @@ export function manifestContent(): ManifestContent {
       {
         id: 'comment',
         label: 'Comment',
+        description:
+          'Say something about a project or an issue that is not a change to one of its fields. ' +
+          'The comment lands in the Folder both apps read, so it appears in the paired conversation as well as on the object.',
+        effect: 'writes',
         /**
          * Emits NIP-22 `kind:1111`, and **also declares the `kind:9` it used
          * to**. Both halves matter and they are not the same statement.
@@ -265,11 +467,33 @@ export function manifestContent(): ManifestContent {
       {
         id: 'add-issue',
         label: 'Add issue',
+        description:
+          'File a new issue under a project. Only a title is required; a description is optional and becomes the ' +
+          'issue body. Status and assignee are not set here — they are their own actions afterwards, because only ' +
+          'what the issue *is* belongs on the root event.',
+        effect: 'writes',
         appliesTo: String(KIND.PROJECT),
         emits: { kind: KIND.ISSUE, setTag: 'a', toAddressOf: 'self' },
+        /*
+          A title alone was a worse capture than the context switch it replaced:
+          the whole point of filing from a conversation is carrying what was said
+          into the issue, and there was nowhere to put it.
+
+          `description` is optional, so a title-only capture still works exactly
+          as before. It is not `required`, and it must not be — a person who has
+          a title and no more should not be blocked.
+
+          **Adding it here alone would have published descriptions nothing
+          renders.** The runtime writes each declared property to a tag of its
+          own name, so this arrives as `["description", …]` with empty content,
+          and both of Ship's readers wanted `.content`: `fold.ts` (now
+          `recordDescription`) and the issue projection's `body` slot below,
+          which needed the same `tag: 'description'` a project's already had.
+          Three places, all of which had to agree.
+        */
         input: {
           type: 'object',
-          properties: { title: { type: 'string' } },
+          properties: { title: { type: 'string' }, description: { type: 'string' } },
           required: ['title'],
         },
       },
@@ -374,4 +598,65 @@ export function buildManifest(
     tags,
     content: JSON.stringify(manifestContent()),
   }
+}
+
+/**
+ * A slot's value, resolved the way a consumer resolves it.
+ *
+ * **Here rather than in `scripts/publish-manifest.ts`**, which is where it
+ * lived, because that script calls `main()` at import and so nothing could test
+ * it. It was wrong, and had been since PRO-11 (see the ordering note inside).
+ * Next to the `SlotSource` type it interprets, it is `manifest-slots.test.ts`'s
+ * subject instead.
+ *
+ * It stays a second implementation of what `@estiva-app/interop` already does,
+ * which is the drift SHA-19 is about. The reason it exists at all is that the
+ * publish check must be able to say "this declaration resolves against a real
+ * object" without the consumer runtime agreeing that it does — a check that
+ * shares an implementation with the thing it checks cannot catch that
+ * implementation being wrong. That argument justifies the copy; it does not
+ * justify the copy having *different* semantics, which is what this fixes.
+ */
+export function resolveSlotValue(
+  slot: SlotSource,
+  event: { tags: string[][]; content: string },
+  folded: Record<string, { value: string }>,
+): string | undefined {
+  // A `children` slot is a query, not a value on this event. It is resolved
+  // separately, against the relay, by `checkListSlot` — returning undefined
+  // here would report the flagship slot as an empty optional and prove nothing.
+  if ('children' in slot) return undefined
+
+  /*
+    **The fold first**, then the seed tag, then content, then the default.
+
+    This used to branch on `'tag' in slot` before anything else, under a comment
+    claiming it mirrored consumers "so the check and the rendering cannot
+    disagree". It did not: a slot that is *both* fold and tag — `{fold: "ref",
+    tag: "ref"}` has been declared here since PRO-11 — took the tag branch and
+    returned the seed, or undefined, without ever reading the fold. The check
+    reported the value the object was created with while every consumer rendered
+    the current one, which is the disagreement the comment ruled out.
+
+    Invisible because it was only ever wrong for a *changed* field, and this
+    script builds a fresh object and changes one thing: the status, which is
+    declared as a bare fold and so never entered the tag branch.
+  */
+  if ('fold' in slot) {
+    const changed = folded[slot.fold]?.value
+    if (changed !== undefined) return changed
+  }
+  if ('tag' in slot && slot.tag) {
+    // `tag` may name several spellings, meaning first that resolves — a slot
+    // whose tag was renamed has to reach records written under both. An empty
+    // value is skipped rather than accepted: it is the absence of an answer,
+    // and stopping there would report a blank slot with a good fallback behind
+    // it.
+    for (const name of Array.isArray(slot.tag) ? slot.tag : [slot.tag]) {
+      const value = event.tags.find((t) => t[0] === name)?.[1]
+      if (value !== undefined && value !== '') return value
+    }
+  }
+  if ('field' in slot && slot.field && event.content !== '') return event.content
+  return 'fold' in slot ? slot.default : undefined
 }
