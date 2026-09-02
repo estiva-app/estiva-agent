@@ -16917,6 +16917,7 @@ function buildChange(pubkey, createdAtMs, args2) {
       ["field", args2.field],
       ["value", args2.value],
       ["h", args2.folder],
+      ...args2.contentFormat ? [["content-format", args2.contentFormat]] : [],
       // Appended last so the four tags the spec fixes keep their documented
       // order. An app that does not know `ts` ignores it and still folds — just
       // at one-second resolution.
