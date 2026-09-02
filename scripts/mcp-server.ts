@@ -105,6 +105,8 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   ship_edit_issue: { app: shipApp, command: 'edit-issue' },
   ship_edit_project: { app: shipApp, command: 'edit-project' },
   ship_archive_project: { app: shipApp, command: 'archive-project' },
+  ship_delete_issue: { app: shipApp, command: 'delete-issue' },
+  ship_delete_project: { app: shipApp, command: 'delete-project' },
   ship_create_issue: { app: shipApp, command: 'create-issue' },
   ship_create_project: { app: shipApp, command: 'create-project' },
   peek_reply: { app: peekApp, command: 'reply' },
@@ -308,7 +310,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'ship_archive_project',
       description:
         'Hide one Estiva Ship project from the project list, or bring it back with `unarchive`. Reversible: it is a change event, not a deletion, and nothing is removed. ' +
-        'This is the cleanup operation to reach for — this identity cannot delete anything, so an unwanted project that is not archived stays in everyone\'s list permanently. ' +
+        'Prefer it to `ship_delete_project`: it is reversible, and it keeps a record of who did it. ' +
         'It hides the project only. The project\'s issues keep appearing in the issue listing, which has no archived filter — archiving is not a way to tidy issues away. ' +
         WRITE_NOTE,
       inputSchema: {
@@ -321,6 +323,62 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           unarchive: {
             type: 'boolean',
             description: 'Optional. Bring an archived project back into the listings instead.',
+          },
+        },
+        required: ['ref'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'ship_delete_issue',
+      description:
+        'Ask the relay to drop one Estiva Ship issue record. ' +
+        'IRREVERSIBLE, and the only tool here that is. Every other write is a change a later change supersedes; this asks the relay to drop the event, and republishing does not undo it. ' +
+        'Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. ' +
+        'It removes the issue, not the discussion: the conversations about it are separate events with their own authors, they are not deleted, and they stop being reachable from the issue. ' +
+        WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ref: {
+            type: 'string',
+            description: 'Display ref, address, or a distinctive fragment of the title.',
+          },
+          confirm: {
+            type: 'boolean',
+            description: 'Omit for a dry run describing what would happen. Pass true only after a person has seen that and agreed.',
+          },
+          reason: {
+            type: 'string',
+            description: 'Optional. Recorded on the deletion request.',
+          },
+        },
+        required: ['ref'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'ship_delete_project',
+      description:
+        'Ask the relay to drop one Estiva Ship project record. **`ship_archive_project` is almost always the right tool instead** — it hides the project, is reversible, and records who did it. ' +
+        'IRREVERSIBLE, and the only tool here that is. Every other write is a change a later change supersedes; this asks the relay to drop the event, and republishing does not undo it. ' +
+        'Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. ' +
+        'It removes the project record, not the work: its issues are separate events, are not deleted, and keep appearing in the issue listing with no project. ' +
+        WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ref: {
+            type: 'string',
+            description: 'Project name, part of one, or its address. Refuses if it matches more than one.',
+          },
+          confirm: {
+            type: 'boolean',
+            description: 'Omit for a dry run describing what would happen. Pass true only after a person has seen that and agreed.',
+          },
+          reason: {
+            type: 'string',
+            description: 'Optional. Recorded on the deletion request.',
           },
         },
         required: ['ref'],
@@ -589,6 +647,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             args(input.unarchive === true ? { unarchive: true } : {}, [str(input.ref)]),
           ),
         )
+
+      case 'ship_delete_issue':
+      case 'ship_delete_project': {
+        /*
+          `confirm` maps to the command's `--yes`, so the dry run is the
+          default in both surfaces and neither can delete on one call.
+        */
+        const flags: Record<string, string | true> = {}
+        if (input.confirm === true) flags.yes = true
+        if (typeof input.reason === 'string' && input.reason) flags.reason = input.reason
+        const which = request.params.name === 'ship_delete_issue' ? 'delete-issue' : 'delete-project'
+        return text(await command(which).run(await context(), args(flags, [str(input.ref)])))
+      }
 
       case 'ship_edit_project': {
         /*

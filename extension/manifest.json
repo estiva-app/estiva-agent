@@ -69,6 +69,14 @@
       "description": "Hide a project from the lists, or bring it back"
     },
     {
+      "name": "ship_delete_issue",
+      "description": "Ask the relay to drop an issue record — irreversible, and a dry run unless confirmed"
+    },
+    {
+      "name": "ship_delete_project",
+      "description": "Ask the relay to drop a project record — irreversible; archiving is usually wanted instead"
+    },
+    {
       "name": "ship_edit_project",
       "description": "Change one project's title, description, status or lead"
     },

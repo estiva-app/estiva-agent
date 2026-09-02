@@ -1329,6 +1329,112 @@ export const shipApp: AgentApp = {
         }
       },
     },
+    /*
+      The two irreversible commands, and the only ones that ask twice.
+
+      `--yes` is not ceremony here. Every other write in this app is a change
+      event a later change supersedes, or an archive that `--unarchive` undoes.
+      A NIP-09 deletion is a *request* the relay honours by dropping the event,
+      and republishing does not undo it: the address would be the same but the
+      signature and `created_at` are not, and REW-11 established the relay will
+      not backdate one. So a first call describes what goes and what stays and
+      publishes nothing, which is the same question Ship's confirm dialog asks
+      (SHI-3) in the shape a terminal has.
+
+      Note what authorises these, because it is not what authorises the rest.
+      A deletion carrying an `a` tag — which is what an addressable target is —
+      leaves the relay with no channel to check, since it derives a deletion's
+      channel from an `e` tag only. So membership in the object's Folder is
+      *not* consulted, and validation reduces to author, or the owner of an
+      authoring agent. That is why deleting is possible for an object whose
+      Folder will not take an archive, which is the case these were written
+      for: an empty project pointed at a channel with no members could not be
+      archived, renamed or re-paired, and a `kind:5` was the only way out.
+    */
+    {
+      name: 'delete-issue',
+      signs: [KIND.DELETION],
+      summary: 'ask the relay to drop an issue record — irreversible',
+      usage: 'delete-issue <ref> [--yes] [--reason "…"]',
+      async run(context, args) {
+        const reference = args.positional[0]
+        if (!reference) throw new BadRequest('delete-issue needs an issue reference.')
+
+        const { state, issue } = await resolveIssueFor(context, reference)
+        const conversations = conversationsAbout(state.conversations, issue.addr).length
+        const survives = `Its ${conversations} conversation(s) are separate events with their own authors and are NOT deleted — they stay in the Folder and stop being reachable from the issue.`
+
+        if (!args.flags.yes) {
+          return {
+            wouldDelete: { ref: issue.ref, addr: issue.addr, title: issue.title, folder: issue.folder },
+            survives,
+            note: 'Nothing was published. Pass --yes to send the deletion request.',
+          }
+        }
+
+        const result = await store(context).deleteIssue({
+          folder: issue.folder,
+          issue: issue.addr,
+          reason: flagValue(args, 'reason'),
+        })
+        published(result, `deleting ${issue.ref ?? issue.addr}`)
+
+        return {
+          deleted: { ref: issue.ref, addr: issue.addr, title: issue.title },
+          eventId: result.eventId,
+          survives,
+          note: 'NIP-09 is a request. The relay may decline it, and copies held elsewhere are untouched.',
+        }
+      },
+    },
+    {
+      name: 'delete-project',
+      signs: [KIND.DELETION],
+      summary: 'ask the relay to drop a project record — irreversible; prefer archive-project',
+      usage: 'delete-project <ref> [--yes] [--reason "…"]',
+      async run(context, args) {
+        const reference = args.positional[0]
+        if (!reference) throw new BadRequest('delete-project needs a project reference.')
+
+        const state = await store(context).loadAll()
+        const project = findProject(state.projects, reference)
+        const issues = state.issues.filter((issue) => issue.projectAddr === project.addr).length
+
+        /*
+          `archive-project` refuses without an origin Folder because a change
+          event published to the wrong one is accepted and then invisible. A
+          deletion has no such failure: its `h` is not what the relay reads, so
+          either Folder does — and refusing here would strand exactly the
+          object this command exists to remove.
+        */
+        const folder = project.originFolder ?? project.contentFolder
+        if (!folder) throw new BadRequest(`“${project.title}” names no Folder at all, so a deletion cannot be addressed to one.`)
+
+        const survives = `Its ${issues} issue(s) are separate events and are NOT deleted. Since SHI-7 they stay reachable in \`ship issues\`, listed with no project.`
+
+        if (!args.flags.yes) {
+          return {
+            wouldDelete: { title: project.title, addr: project.addr, folder },
+            survives,
+            note: 'Nothing was published. Archiving is reversible and usually what is wanted — see `archive-project`. Pass --yes to send the deletion request.',
+          }
+        }
+
+        const result = await store(context).deleteProject({
+          recordFolder: folder,
+          project: project.addr,
+          reason: flagValue(args, 'reason'),
+        })
+        published(result, `deleting “${project.title}”`)
+
+        return {
+          deleted: { title: project.title, addr: project.addr },
+          eventId: result.eventId,
+          survives,
+          note: 'NIP-09 is a request. The relay may decline it, and copies held elsewhere are untouched.',
+        }
+      },
+    },
     {
       name: 'create-project',
       /*
