@@ -18566,6 +18566,95 @@ Pass an address to say which.`
         };
       }
     },
+    /*
+          The two irreversible commands, and the only ones that ask twice.
+    
+          `--yes` is not ceremony here. Every other write in this app is a change
+          event a later change supersedes, or an archive that `--unarchive` undoes.
+          A NIP-09 deletion is a *request* the relay honours by dropping the event,
+          and republishing does not undo it: the address would be the same but the
+          signature and `created_at` are not, and REW-11 established the relay will
+          not backdate one. So a first call describes what goes and what stays and
+          publishes nothing, which is the same question Ship's confirm dialog asks
+          (SHI-3) in the shape a terminal has.
+    
+          Note what authorises these, because it is not what authorises the rest.
+          A deletion carrying an `a` tag — which is what an addressable target is —
+          leaves the relay with no channel to check, since it derives a deletion's
+          channel from an `e` tag only. So membership in the object's Folder is
+          *not* consulted, and validation reduces to author, or the owner of an
+          authoring agent. That is why deleting is possible for an object whose
+          Folder will not take an archive, which is the case these were written
+          for: an empty project pointed at a channel with no members could not be
+          archived, renamed or re-paired, and a `kind:5` was the only way out.
+        */
+    {
+      name: "delete-issue",
+      signs: [KIND2.DELETION],
+      summary: "ask the relay to drop an issue record \u2014 irreversible",
+      usage: 'delete-issue <ref> [--yes] [--reason "\u2026"]',
+      async run(context2, args2) {
+        const reference = args2.positional[0];
+        if (!reference) throw new BadRequest("delete-issue needs an issue reference.");
+        const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
+        const conversations = conversationsAbout(state.conversations, issue2.addr).length;
+        const survives = `Its ${conversations} conversation(s) are separate events with their own authors and are NOT deleted \u2014 they stay in the Folder and stop being reachable from the issue.`;
+        if (!args2.flags.yes) {
+          return {
+            wouldDelete: { ref: issue2.ref, addr: issue2.addr, title: issue2.title, folder: issue2.folder },
+            survives,
+            note: "Nothing was published. Pass --yes to send the deletion request."
+          };
+        }
+        const result = await store(context2).deleteIssue({
+          folder: issue2.folder,
+          issue: issue2.addr,
+          reason: flagValue(args2, "reason")
+        });
+        published(result, `deleting ${issue2.ref ?? issue2.addr}`);
+        return {
+          deleted: { ref: issue2.ref, addr: issue2.addr, title: issue2.title },
+          eventId: result.eventId,
+          survives,
+          note: "NIP-09 is a request. The relay may decline it, and copies held elsewhere are untouched."
+        };
+      }
+    },
+    {
+      name: "delete-project",
+      signs: [KIND2.DELETION],
+      summary: "ask the relay to drop a project record \u2014 irreversible; prefer archive-project",
+      usage: 'delete-project <ref> [--yes] [--reason "\u2026"]',
+      async run(context2, args2) {
+        const reference = args2.positional[0];
+        if (!reference) throw new BadRequest("delete-project needs a project reference.");
+        const state = await store(context2).loadAll();
+        const project = findProject(state.projects, reference);
+        const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
+        const folder = project.originFolder ?? project.contentFolder;
+        if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no Folder at all, so a deletion cannot be addressed to one.`);
+        const survives = `Its ${issues} issue(s) are separate events and are NOT deleted. Since SHI-7 they stay reachable in \`ship issues\`, listed with no project.`;
+        if (!args2.flags.yes) {
+          return {
+            wouldDelete: { title: project.title, addr: project.addr, folder },
+            survives,
+            note: "Nothing was published. Archiving is reversible and usually what is wanted \u2014 see `archive-project`. Pass --yes to send the deletion request."
+          };
+        }
+        const result = await store(context2).deleteProject({
+          recordFolder: folder,
+          project: project.addr,
+          reason: flagValue(args2, "reason")
+        });
+        published(result, `deleting \u201C${project.title}\u201D`);
+        return {
+          deleted: { title: project.title, addr: project.addr },
+          eventId: result.eventId,
+          survives,
+          note: "NIP-09 is a request. The relay may decline it, and copies held elsewhere are untouched."
+        };
+      }
+    },
     {
       name: "create-project",
       /*
@@ -18966,6 +19055,8 @@ var TOOL_COMMANDS = {
   ship_edit_issue: { app: shipApp, command: "edit-issue" },
   ship_edit_project: { app: shipApp, command: "edit-project" },
   ship_archive_project: { app: shipApp, command: "archive-project" },
+  ship_delete_issue: { app: shipApp, command: "delete-issue" },
+  ship_delete_project: { app: shipApp, command: "delete-project" },
   ship_create_issue: { app: shipApp, command: "create-issue" },
   ship_create_project: { app: shipApp, command: "create-project" },
   peek_reply: { app: peekApp, command: "reply" },
@@ -19124,7 +19215,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_archive_project",
-      description: "Hide one Estiva Ship project from the project list, or bring it back with `unarchive`. Reversible: it is a change event, not a deletion, and nothing is removed. This is the cleanup operation to reach for \u2014 this identity cannot delete anything, so an unwanted project that is not archived stays in everyone's list permanently. It hides the project only. The project's issues keep appearing in the issue listing, which has no archived filter \u2014 archiving is not a way to tidy issues away. " + WRITE_NOTE,
+      description: "Hide one Estiva Ship project from the project list, or bring it back with `unarchive`. Reversible: it is a change event, not a deletion, and nothing is removed. Prefer it to `ship_delete_project`: it is reversible, and it keeps a record of who did it. It hides the project only. The project's issues keep appearing in the issue listing, which has no archived filter \u2014 archiving is not a way to tidy issues away. " + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -19135,6 +19226,52 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           unarchive: {
             type: "boolean",
             description: "Optional. Bring an archived project back into the listings instead."
+          }
+        },
+        required: ["ref"],
+        additionalProperties: false
+      }
+    },
+    {
+      name: "ship_delete_issue",
+      description: "Ask the relay to drop one Estiva Ship issue record. IRREVERSIBLE, and the only tool here that is. Every other write is a change a later change supersedes; this asks the relay to drop the event, and republishing does not undo it. Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. It removes the issue, not the discussion: the conversations about it are separate events with their own authors, they are not deleted, and they stop being reachable from the issue. " + WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: "Display ref, address, or a distinctive fragment of the title."
+          },
+          confirm: {
+            type: "boolean",
+            description: "Omit for a dry run describing what would happen. Pass true only after a person has seen that and agreed."
+          },
+          reason: {
+            type: "string",
+            description: "Optional. Recorded on the deletion request."
+          }
+        },
+        required: ["ref"],
+        additionalProperties: false
+      }
+    },
+    {
+      name: "ship_delete_project",
+      description: "Ask the relay to drop one Estiva Ship project record. **`ship_archive_project` is almost always the right tool instead** \u2014 it hides the project, is reversible, and records who did it. IRREVERSIBLE, and the only tool here that is. Every other write is a change a later change supersedes; this asks the relay to drop the event, and republishing does not undo it. Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. It removes the project record, not the work: its issues are separate events, are not deleted, and keep appearing in the issue listing with no project. " + WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: "Project name, part of one, or its address. Refuses if it matches more than one."
+          },
+          confirm: {
+            type: "boolean",
+            description: "Omit for a dry run describing what would happen. Pass true only after a person has seen that and agreed."
+          },
+          reason: {
+            type: "string",
+            description: "Optional. Recorded on the deletion request."
           }
         },
         required: ["ref"],
@@ -19349,6 +19486,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             args(input.unarchive === true ? { unarchive: true } : {}, [str(input.ref)])
           )
         );
+      case "ship_delete_issue":
+      case "ship_delete_project": {
+        const flags = {};
+        if (input.confirm === true) flags.yes = true;
+        if (typeof input.reason === "string" && input.reason) flags.reason = input.reason;
+        const which = request.params.name === "ship_delete_issue" ? "delete-issue" : "delete-project";
+        return text(await command(which).run(await context(), args(flags, [str(input.ref)])));
+      }
       case "ship_edit_project": {
         const flags = {};
         for (const name of ["title", "description", "status", "lead"]) {
