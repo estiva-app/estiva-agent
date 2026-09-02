@@ -16836,16 +16836,16 @@ var KIND2 = {
   PROFILE: 0
 };
 var PROJECT_STATUSES = [
-  { value: "planned", label: "Planned", colour: "neutral" },
-  { value: "in_progress", label: "In Progress", colour: "blue" },
-  { value: "completed", label: "Completed", colour: "green" },
-  { value: "cancelled", label: "Cancelled", colour: "muted" }
+  { value: "planned", label: "Planned", colour: "neutral", stage: "open" },
+  { value: "in_progress", label: "In Progress", colour: "blue", stage: "started" },
+  { value: "completed", label: "Completed", colour: "green", stage: "done" },
+  { value: "cancelled", label: "Cancelled", colour: "muted", stage: "dropped" }
 ];
 var ISSUE_STATUSES = [
-  { value: "todo", label: "Todo", colour: "neutral" },
-  { value: "in_progress", label: "In Progress", colour: "blue" },
-  { value: "done", label: "Done", colour: "green" },
-  { value: "cancelled", label: "Cancelled", colour: "muted" }
+  { value: "todo", label: "Todo", colour: "neutral", stage: "open" },
+  { value: "in_progress", label: "In Progress", colour: "blue", stage: "started" },
+  { value: "done", label: "Done", colour: "green", stage: "done" },
+  { value: "cancelled", label: "Cancelled", colour: "muted", stage: "dropped" }
 ];
 var DEFAULT_PROJECT_STATUS = "planned";
 var DEFAULT_ISSUE_STATUS = "todo";
@@ -17147,7 +17147,7 @@ function projectFolder(event) {
 function projectName(event) {
   return tag(event, "name") ?? tag(event, "title");
 }
-function projectDescription(event) {
+function recordDescription(event) {
   return tag(event, "description") ?? event.content;
 }
 function foldFolder(events, resolveRefs = () => []) {
@@ -17172,7 +17172,7 @@ function foldFolder(events, resolveRefs = () => []) {
       // Two wire shapes, read in one pass, and it stays that way — see
       // `projectFolder` and `projectName` below for why there is no migration.
       title: fields.title?.value ?? projectName(event) ?? "(untitled project)",
-      description: fields.description?.value ?? projectDescription(event),
+      description: fields.description?.value ?? recordDescription(event),
       descriptionFormat: fields.description?.format ?? contentFormatOf(event),
       // The project's Folder is the one its record names — the Folder *is* the
       // project. A change may re-point it at an existing Peek topic; that
@@ -17199,11 +17199,26 @@ function foldFolder(events, resolveRefs = () => []) {
       author: event.pubkey,
       createdAt: event.created_at,
       title: fields.title?.value ?? tag(event, "title") ?? "(untitled issue)",
-      description: fields.description?.value ?? event.content,
+      description: fields.description?.value ?? recordDescription(event),
       descriptionFormat: fields.description?.format ?? contentFormatOf(event),
       folder: tag(event, "h") ?? "",
       projectAddr: fields.project?.value ?? parent,
-      ref: tag(event, "ref"),
+      /*
+              Folded, seeded from the root tag — the same shape as a project's `lead`
+              above, and `ref` was the one field on an issue that was not.
+      
+              It mattered the moment something other than Ship created an issue. A
+              display key is derived from the project's title and a count of its
+              siblings, so only the owning app can compute one; and an owning app
+              cannot rewrite a root it did not sign, because a NIP-33 address is
+              `(kind, pubkey, d)`. Reading the tag alone therefore meant an issue
+              created from another app could never acquire a ref at all — it showed a
+              dash for ever, while its status and assignee arrived normally, because
+              those were already folded.
+      
+              Nobody had noticed the asymmetry because Ship created every issue.
+            */
+      ref: fields.ref?.value ?? tag(event, "ref"),
       status: fields.status?.value ?? DEFAULT_ISSUE_STATUS,
       assignee: fields.assignee?.value,
       fields
