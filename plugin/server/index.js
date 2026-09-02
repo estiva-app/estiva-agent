@@ -16371,6 +16371,16 @@ var Relay = class {
   }
 };
 
+// node_modules/@estiva-app/protocol/dist/render.js
+var CONTENT_FORMAT_TAG = "content-format";
+var BLOCK_DOCUMENT_FORMAT = "estiva-blocks-1";
+function contentFormatOf(event) {
+  const declared = event.tags.find((t) => t[0] === CONTENT_FORMAT_TAG)?.[1];
+  if (declared === void 0 || declared === "")
+    return "marker";
+  return declared === BLOCK_DOCUMENT_FORMAT ? "blocks" : "unknown";
+}
+
 // lib/agent/credentials.ts
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -17015,6 +17025,7 @@ function parseChange(event) {
     target,
     field,
     value,
+    format: contentFormatOf(event),
     note: event.content
   };
 }
@@ -17043,7 +17054,7 @@ function foldChanges(changes) {
   }
   for (const change of winners.values()) {
     const fields = byTarget.get(change.target) ?? {};
-    fields[change.field] = { value: change.value, by: change.author, at: change.createdAt };
+    fields[change.field] = { value: change.value, by: change.author, at: change.createdAt, format: change.format };
     byTarget.set(change.target, fields);
   }
   return byTarget;
@@ -17162,6 +17173,7 @@ function foldFolder(events, resolveRefs = () => []) {
       // `projectFolder` and `projectName` below for why there is no migration.
       title: fields.title?.value ?? projectName(event) ?? "(untitled project)",
       description: fields.description?.value ?? projectDescription(event),
+      descriptionFormat: fields.description?.format ?? contentFormatOf(event),
       // The project's Folder is the one its record names — the Folder *is* the
       // project. A change may re-point it at an existing Peek topic; that
       // override wins, but the original still has to be read
@@ -17188,6 +17200,7 @@ function foldFolder(events, resolveRefs = () => []) {
       createdAt: event.created_at,
       title: fields.title?.value ?? tag(event, "title") ?? "(untitled issue)",
       description: fields.description?.value ?? event.content,
+      descriptionFormat: fields.description?.format ?? contentFormatOf(event),
       folder: tag(event, "h") ?? "",
       projectAddr: fields.project?.value ?? parent,
       ref: tag(event, "ref"),
