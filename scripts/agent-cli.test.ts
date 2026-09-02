@@ -41,6 +41,7 @@ function refuses(label: string, action: () => unknown, contains?: string) {
 
 const issue = (over: Partial<Issue>): Issue => ({
   addr: '30851:abc:1',
+  descriptionFormat: 'marker',
   id: '1',
   author: 'abc',
   createdAt: 0,
@@ -118,6 +119,7 @@ console.log('\n— resolving a project (the one that used to guess) —')
 */
 const project = (over: Partial<Project>): Project => ({
   addr: '30850:abc:x',
+  descriptionFormat: 'marker',
   id: 'x',
   author: 'abc',
   createdAt: 0,
@@ -412,6 +414,7 @@ console.log('— editing a project —')
   const other = 'b'.repeat(64)
   const project = (over: Partial<Project> = {}): Project => ({
     addr: '30850:abc:p1',
+    descriptionFormat: 'marker',
     id: 'p1',
     author: 'abc',
     createdAt: 0,
@@ -474,8 +477,8 @@ console.log('— editing an issue —')
     string that matches no project, and no reader would report it.
   */
   const projects: Project[] = [
-    { addr: '30850:abc:p1', id: 'p1', author: 'abc', createdAt: 0, title: 'Peek: Feedback & Bugs', description: '', contentFolder: 'f1', originFolder: 'f1', status: 'planned', archived: false, fields: {} },
-    { addr: '30850:abc:p2', id: 'p2', author: 'abc', createdAt: 0, title: 'Ship: Feedback & Bugs', description: '', contentFolder: 'f2', originFolder: 'f2', status: 'planned', archived: false, fields: {} },
+    { addr: '30850:abc:p1', id: 'p1', author: 'abc', createdAt: 0, title: 'Peek: Feedback & Bugs', description: '', descriptionFormat: 'marker', contentFolder: 'f1', originFolder: 'f1', status: 'planned', archived: false, fields: {} },
+    { addr: '30850:abc:p2', id: 'p2', author: 'abc', createdAt: 0, title: 'Ship: Feedback & Bugs', description: '', descriptionFormat: 'marker', contentFolder: 'f2', originFolder: 'f2', status: 'planned', archived: false, fields: {} },
   ]
 
   const subject = issue({ addr: '30851:abc:9', title: 'Old title', description: 'old body', projectAddr: '30850:abc:p1' })
