@@ -17431,6 +17431,27 @@ var Store = class {
     );
   }
   /**
+   * Ask the relay to drop an issue's record.
+   *
+   * The same shape as `deleteProject`, and the same caveats: NIP-09 is a
+   * *request*, and it removes the record rather than the discussion. An
+   * issue's conversations are separate events in the same Folder with their
+   * own authors — they survive, and stop being reachable from the issue.
+   *
+   * Who may do it is the relay's call, not this method's. It accepts a
+   * deletion from the target's author **or** from the owner of an authoring
+   * agent, and only the relay can evaluate the second half (SHI-14).
+   */
+  deleteIssue(args2) {
+    return this.publish(
+      buildDeletion2(this.signer.pubkey, Date.now(), {
+        target: args2.issue,
+        folder: args2.folder,
+        reason: args2.reason
+      })
+    );
+  }
+  /**
    * Re-point an existing project at a different Folder.
    *
    * Only needed after the fact. Creating the project in the topic's Folder is
