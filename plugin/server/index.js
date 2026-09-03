@@ -16381,6 +16381,13 @@ function contentFormatOf(event) {
   return declared === BLOCK_DOCUMENT_FORMAT ? "blocks" : "unknown";
 }
 
+// node_modules/@estiva-app/protocol/dist/anchors.js
+var BLOCK_ANCHOR_TAG = "block";
+function blockAnchorOf(event) {
+  const id = event.tags.find((t) => t[0] === BLOCK_ANCHOR_TAG)?.[1];
+  return id === void 0 || id === "" ? void 0 : id;
+}
+
 // lib/agent/credentials.ts
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -16939,6 +16946,13 @@ function buildNip22Comment(pubkey, createdAtMs, args2) {
       ["a", args2.about],
       ["k", kind],
       ["p", author],
+      /*
+        SPEC §13.6. The address above says which object; this says which part.
+        Written only when the author was looking at a block — a comment about
+        the whole object carries no tag, and §13.6 requires a reader to keep
+        that distinct from an anchor that has stopped resolving.
+      */
+      ...args2.blockId ? [["block", args2.blockId]] : [],
       ["h", args2.folder],
       // Same `ts` as everything else Ship writes, for the same reason: see
       // `buildConversationMessage` below.
@@ -16953,7 +16967,8 @@ function buildConversationMessage(pubkey, createdAtMs, args2) {
     return buildNip22Comment(pubkey, createdAtMs, {
       folder: args2.folder,
       body: args2.body,
-      about: args2.about
+      about: args2.about,
+      blockId: args2.blockId
     });
   }
   const event = buildMessage(pubkey, createdAtMs, {
@@ -17079,7 +17094,8 @@ function parseMessage(event, resolveRefs) {
     parentId,
     // Both routes to "what is this about": an explicit `a` tag, and a
     // `nostr:naddr…` typed into the body by a person in Peek.
-    about: [.../* @__PURE__ */ new Set([...tags(event, "a"), ...resolveRefs(event.content)])]
+    about: [.../* @__PURE__ */ new Set([...tags(event, "a"), ...resolveRefs(event.content)])],
+    ...blockAnchorOf(event) ? { blockId: blockAnchorOf(event) } : {}
   };
 }
 function parseNip22Comment(event, resolveRefs) {
@@ -17101,7 +17117,8 @@ function parseNip22Comment(event, resolveRefs) {
         ...tags(event, "a"),
         ...resolveRefs(event.content)
       ])
-    ]
+    ],
+    ...blockAnchorOf(event) ? { blockId: blockAnchorOf(event) } : {}
   };
 }
 function foldConversations(messages) {
@@ -17550,7 +17567,8 @@ ${args2.aboutRef}` : args2.body;
         folder: args2.folder,
         body,
         replyTo: args2.replyTo,
-        about: args2.about
+        about: args2.about,
+        blockId: args2.blockId
       })
     );
   }
