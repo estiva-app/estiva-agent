@@ -17254,6 +17254,22 @@ function foldFolder(events, resolveRefs = () => []) {
   return { projects, issues, activity: changes, conversations };
 }
 
+// src/references.ts
+function taggedIndex(events) {
+  const index = {};
+  for (const event of events) {
+    if (event.kind !== KIND2.MESSAGE && event.kind !== KIND2.COMMENT) continue;
+    const named = /* @__PURE__ */ new Set();
+    for (const tag2 of event.tags) {
+      if (tag2[0] === "a" || event.kind === KIND2.COMMENT && tag2[0] === "A") {
+        if (tag2[1]) named.add(tag2[1]);
+      }
+    }
+    if (named.size) index[event.id] = [...named];
+  }
+  return index;
+}
+
 // src/profiles.ts
 function parseProfile2(event) {
   if (event.kind !== KIND2.PROFILE) return null;
@@ -17323,6 +17339,9 @@ function referencedAddresses(body) {
     }
   }
   return out;
+}
+function read(events) {
+  return { ...foldFolder(events, referencedAddresses), tagged: taggedIndex(events) };
 }
 var Store = class {
   constructor(relay, signer) {
@@ -17675,7 +17694,7 @@ ${args2.aboutRef}` : args2.body;
    * reading one container in isolation.
    */
   async loadFolder(folder) {
-    return foldFolder(await this.rawFolders([folder]), referencedAddresses);
+    return read(await this.rawFolders([folder]));
   }
   /**
    * Read several Folders at once.
@@ -17685,7 +17704,7 @@ ${args2.aboutRef}` : args2.body;
    * doing that serially would make the issue list N round trips deep.
    */
   async loadFolders(folders) {
-    return foldFolder(await this.rawFolders(folders), referencedAddresses);
+    return read(await this.rawFolders(folders));
   }
   /**
    * Everything this identity can see: every project, and everything in it.
@@ -17736,7 +17755,7 @@ ${args2.aboutRef}` : args2.body;
       for (const folder of wanted) fetched.add(folder);
       events = [...events, ...await this.rawFolders([...wanted])];
     }
-    return foldFolder(events, referencedAddresses);
+    return read(events);
   }
   /**
    * Raw events for one or more Folders — for debugging and verification.
