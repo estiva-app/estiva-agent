@@ -15955,6 +15955,28 @@ function buildCreateChannel(pubkey, createdAtMs, args2) {
     content: ""
   };
 }
+function buildEdit(pubkey, createdAtMs, args2) {
+  assertHex64(pubkey, "pubkey");
+  assertHex64(args2.targetEventId, "targetEventId");
+  const bytes = utf8ToBytes(args2.body).length;
+  if (bytes > MAX_MESSAGE_BYTES) {
+    throw new Error(`content is ${bytes} bytes, max ${MAX_MESSAGE_BYTES}`);
+  }
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND.MESSAGE_EDIT,
+    tags: [
+      ["h", args2.channelUuid],
+      ["e", args2.targetEventId],
+      // Floor, not round: `created_at` is `toNostrSeconds` of the same instant,
+      // and a rounded `ts` could land in the next second and be discarded by
+      // its own agreement rule.
+      ["ts", String(Math.floor(createdAtMs))]
+    ],
+    content: args2.body
+  };
+}
 function threadTags(ref) {
   if (ref.rootId === ref.parentId) {
     return [["e", ref.rootId, "", "reply"]];
@@ -16991,12 +17013,42 @@ var KIND2 = {
    */
   COMMENT: 1111,
   /**
+   * NIP-25 reaction — an emoji on one message.
+   *
+   * **It carries no `h` tag**, and that is the whole difficulty (SPEC §6.6).
+   * Every other kind here is found by Folder; a reaction cannot be, because
+   * Buzz derives its channel from the target's `e` tag and ignores a
+   * client-supplied `h`. So reactions are fetched *addressed by target* — the
+   * event ids on screen — which is what forces a horizon nobody can see.
+   * `reactions.ts` holds that decision and the number.
+   *
+   * Attaches to a **message**, never to a block (RFC 0.4 §7.2) and not — yet —
+   * to an object. An issue has an address and no event id, so nothing here can
+   * express reacting to one even by accident.
+   */
+  REACTION: 7,
+  /**
    * NIP-09 deletion request.
    *
-   * A request rather than a delete, and honoured only for the pubkey that
-   * signed the original. Buzz accepts it and stops returning the target.
+   * A request rather than a delete. Buzz accepts it and stops returning the
+   * target, from the target's effective author **or** the NIP-OA owner of an
+   * authoring agent — not author-only, which is what this comment said until
+   * SPEC §6.5 was corrected on 2026-09-06 (CON-3, SHI-14).
    */
   DELETION: 5,
+  /**
+   * Buzz's message edit (`KIND_STREAM_MESSAGE_EDIT`) — RFC 0.4 §7.2.1, CON-4.
+   *
+   * An edit never rewrites: `kind:9` and `kind:1111` are non-replaceable, so
+   * this is a separate event naming its target and the reader folds the pair.
+   * `edits.ts` holds that fold, deliberately outside `foldFolder` — see its
+   * header for why the conformance contract forces it.
+   *
+   * **Channel-scoped**, unlike a reaction or a deletion: 40003 is in the
+   * relay's `requires_h_channel_scope`, so an edit without an `h` is refused
+   * with `accepted: false` while the kind is granted and the signature is fine.
+   */
+  MESSAGE_EDIT: 40003,
   /**
    * NIP-01 profile metadata — who a pubkey is.
    *
@@ -17434,6 +17486,35 @@ function taggedIndex(events) {
   return index;
 }
 
+// src/edits.ts
+function orderingTime(event) {
+  const raw = Number.parseInt(event.tags.find((t) => t[0] === "ts")?.[1] ?? "", 10);
+  if (Number.isFinite(raw) && Math.floor(raw / 1e3) === event.created_at) return raw;
+  return event.created_at * 1e3;
+}
+function laterThan(a, b) {
+  const at = orderingTime(a);
+  const bt = orderingTime(b);
+  if (at !== bt) return at > bt;
+  if (a.created_at !== b.created_at) return a.created_at > b.created_at;
+  return a.id > b.id;
+}
+function foldEdits(events) {
+  const winners = {};
+  for (const event of events) {
+    if (event.kind !== KIND2.MESSAGE_EDIT) continue;
+    const target = event.tags.find((t) => t[0] === "e")?.[1];
+    if (!target) continue;
+    const held = winners[target];
+    if (!held || laterThan(event, held)) winners[target] = event;
+  }
+  const out = {};
+  for (const [target, event] of Object.entries(winners)) {
+    out[target] = { body: event.content, at: orderingTime(event) };
+  }
+  return out;
+}
+
 // src/profiles.ts
 function parseProfile2(event) {
   if (event.kind !== KIND2.PROFILE) return null;
@@ -17493,7 +17574,17 @@ function buildRecommendation(pubkey, createdAtMs, args2) {
 var MANIFEST_ADDRESS = "31990:88ac6aae1a874652ef05e2deba8c8a9526cda0c78e6b7d98b815cd0b5a710d13:estiva-ship";
 
 // src/store.ts
-var FOLDER_KINDS = [KIND2.PROJECT, KIND2.ISSUE, KIND2.CHANGE, KIND2.MESSAGE, KIND2.COMMENT];
+var FOLDER_KINDS = [
+  KIND2.PROJECT,
+  KIND2.ISSUE,
+  KIND2.CHANGE,
+  KIND2.MESSAGE,
+  KIND2.COMMENT,
+  // An edit rides with the messages it edits: 40003 carries an `h`, unlike a
+  // reaction or a deletion, so it comes back on the Folder read rather than
+  // needing a second query addressed by target (CON-4).
+  KIND2.MESSAGE_EDIT
+];
 function referencedAddresses(body) {
   const out = [];
   for (const naddr of findNaddrs(body)) {
@@ -17505,7 +17596,11 @@ function referencedAddresses(body) {
   return out;
 }
 function read(events) {
-  return { ...foldFolder(events, referencedAddresses), tagged: taggedIndex(events) };
+  return {
+    ...foldFolder(events, referencedAddresses),
+    tagged: taggedIndex(events),
+    edits: foldEdits(events)
+  };
 }
 var Store = class {
   constructor(relay, signer) {
@@ -17677,6 +17772,43 @@ var Store = class {
         target: args2.issue,
         folder: args2.folder,
         reason: args2.reason
+      })
+    );
+  }
+  /**
+   * Edit a comment — CON-4, RFC 0.4 §7.2.1.
+   *
+   * ## An edit is a new event
+   *
+   * `kind:9` and `kind:1111` are both non-replaceable, so nothing here
+   * overwrites anything. This publishes a `kind:40003` naming the target, and
+   * `edits.ts` folds the pair on the way back — latest edit wins.
+   *
+   * ## The one write in this file that needs BOTH a Folder and an event id
+   *
+   * A reaction and a deletion carry no `h`: the relay derives the channel from
+   * the target. An edit is the exception — 40003 is in
+   * `requires_h_channel_scope`, so an edit without an `h` is refused with
+   * `accepted: false` while the kind is granted and the signature is fine. The
+   * two shapes are not interchangeable and the wrong one fails in a way that
+   * looks like a permissions problem.
+   *
+   * ## Who may
+   *
+   * The relay's call. `validate_edit_ownership` takes the target's effective
+   * author **or** the NIP-OA owner of an authoring agent, and on the author
+   * path re-checks channel membership — so somebody removed from a private
+   * channel cannot go back and rewrite what they said while they were in it.
+   * No client can evaluate that, so nothing here gates on authorship; the
+   * control is offered and a refusal is reported, exactly as for deletion.
+   */
+  editMessage(args2) {
+    assertFolderId(args2.folder);
+    return this.publish(
+      buildEdit(this.signer.pubkey, Date.now(), {
+        channelUuid: args2.folder,
+        targetEventId: args2.messageEventId,
+        body: args2.body
       })
     );
   }
@@ -18002,6 +18134,25 @@ function resolveOne(items, reference, how) {
   throw new BadRequest(`No ${how.noun} matches "${reference}".`);
 }
 
+// lib/agent/conversation.ts
+function edited(edits, message) {
+  const edit = edits[message.id];
+  if (!edit) return { body: message.body };
+  return { body: edit.body, edited: true, editedAt: new Date(edit.at).toISOString() };
+}
+function findMessage(messages, reference) {
+  if (!messages.length) {
+    throw new BadRequest("There are no messages here to edit.");
+  }
+  return resolveOne(messages, reference, {
+    noun: "message",
+    exact: (message) => [message.id],
+    text: (message) => `${message.id} ${message.body}`,
+    label: (message) => `${message.id.slice(0, 12)}\u2026 \u2014 ${message.body.slice(0, 60)}`,
+    hint: "Pass a message id, or a distinctive phrase from it."
+  });
+}
+
 // lib/agent/apps/ship.ts
 var store = (context2) => new Store(context2.relay, context2.signer);
 function who(directory, pubkey) {
@@ -18239,9 +18390,15 @@ async function timelineFor(context2, state, addr2, extraPubkeys) {
     conversation: conversations.map((thread) => ({
       id: thread.id,
       messages: [thread.root, ...thread.replies].map((message) => ({
+        /*
+          The id is what `edit-comment --message` takes. Without it printed
+          here the flag would be unsatisfiable from inside the tool — the same
+          shape of gap AGE-13 fixed for `reply --to` and AGE-15 for assignees.
+        */
+        id: message.id,
         by: who(directory, message.author),
         at: new Date(message.ts ?? message.createdAt * 1e3).toISOString(),
-        body: message.body
+        ...edited(state.edits, message)
       }))
     }))
   };
@@ -18585,6 +18742,79 @@ Pass an address to say which.`
         });
         published(result, `a comment on ${issue2.ref ?? issue2.addr}`);
         return { commented: { ref: issue2.ref, addr: issue2.addr, title: issue2.title }, eventId: result.eventId };
+      }
+    },
+    {
+      name: "edit-comment",
+      signs: [KIND2.MESSAGE_EDIT],
+      summary: "replace the text of one comment on an issue or project",
+      usage: 'edit-comment <ref> --message <id|phrase> --body "..."',
+      async run(context2, args2) {
+        const reference = args2.positional[0];
+        if (!reference) throw new BadRequest("edit-comment needs an issue or project reference.");
+        const target = flagValue(args2, "message");
+        if (!target) {
+          throw new BadRequest(
+            "edit-comment needs --message naming the comment to replace. `ship show <ref>` prints an id for every message."
+          );
+        }
+        const body = flagValue(args2, "body");
+        if (!body) throw new BadRequest("edit-comment needs --body \u2014 the whole new text, not a patch.");
+        const state = await store(context2).loadAll();
+        const asIssue = resolveMaybe(state.issues, reference, ISSUE_BY);
+        const asProject = resolveMaybe(state.projects, reference, PROJECT_BY);
+        if ("found" in asIssue && "found" in asProject) {
+          throw new BadRequest(
+            `"${reference}" names both an issue and a project:
+  issue   ${asIssue.found.ref ?? asIssue.found.addr} \u2014 ${asIssue.found.title}
+  project ${asProject.found.title}
+Pass an address to say which.`
+          );
+        }
+        const object3 = "found" in asIssue ? { addr: asIssue.found.addr, label: asIssue.found.ref ?? asIssue.found.addr } : "found" in asProject ? { addr: asProject.found.addr, label: asProject.found.title } : void 0;
+        if (!object3) {
+          if ("ambiguous" in asIssue) throw new BadRequest(asIssue.ambiguous);
+          if ("ambiguous" in asProject) throw new BadRequest(asProject.ambiguous);
+          throw new BadRequest(`No issue or project matches "${reference}".`);
+        }
+        const messages = conversationsAbout(state.conversations, object3.addr).flatMap(
+          (thread) => [thread.root, ...thread.replies].map((message2) => ({
+            id: message2.id,
+            body: edited(state.edits, message2).body,
+            folder: message2.folder
+          }))
+        );
+        const message = findMessage(messages, target);
+        const result = await store(context2).editMessage({
+          folder: message.folder,
+          messageEventId: message.id,
+          body
+        });
+        published(result, `an edit of a comment on ${object3.label}`);
+        return {
+          edited: {
+            ref: object3.label,
+            addr: object3.addr,
+            messageId: message.id,
+            folder: message.folder,
+            /*
+              What was there before, said back rather than assumed. `--message`
+              matches a phrase, and "it replaced the comment I meant" is the one
+              thing the caller cannot check afterwards — the original body is
+              still on the relay but nothing prints it once an edit has won.
+            */
+            replaced: message.body.slice(0, 120)
+          },
+          eventId: result.eventId,
+          /*
+            An edit that this identity did not author is the relay's to refuse,
+            not this command's — `validate_edit_ownership` also accepts the
+            NIP-OA owner of an authoring agent, and no client can evaluate that
+            half. So the note is about what the wire keeps, which nobody can
+            infer from a success.
+          */
+          note: "The original event is untouched on the relay \u2014 an edit is a new kind:40003 naming it, and readers fold the pair. A reader that does not implement the fold still shows the old text."
+        };
       }
     },
     {
@@ -18987,7 +19217,16 @@ var KIND3 = {
   MESSAGE: 9,
   CHANNEL: 9007,
   /** "This thread is resolved" — said on the wire, not inferred. */
-  ASSERTION: 9101
+  ASSERTION: 9101,
+  /**
+   * Buzz's `KIND_STREAM_MESSAGE_EDIT` — RFC 0.4 §7.2.1, CON-4.
+   *
+   * Peek's own edit is a Convex patch that publishes nothing, so until CON-8
+   * landed this kind appeared nowhere in the app. It is here because the agent
+   * has no Convex: the relay is the only record it has, which makes 40003 the
+   * only way it can edit anything at all.
+   */
+  MESSAGE_EDIT: 40003
 };
 var tagValue = (event, name) => event.tags.find((tag2) => tag2[0] === name)?.[1];
 function parseTopic(event) {
@@ -19042,18 +19281,21 @@ function findThread(threads, reference) {
 }
 async function threadsIn(context2, folder) {
   const events = await context2.relay.queryAll([
-    { kinds: [KIND3.MESSAGE], "#h": [folder] }
+    { kinds: [KIND3.MESSAGE, KIND3.MESSAGE_EDIT], "#h": [folder] }
   ]);
   const { conversations } = foldFolder(events);
+  const edits = foldEdits(events);
   return conversations.map((thread) => ({
     id: thread.id,
-    opening: thread.root.body,
+    opening: edited(edits, thread.root).body,
     replies: thread.replies.length,
-    // Every message in the thread, root included, so `--to` can name one.
-    // Carried here rather than re-queried: the fold already threaded them.
+    // Every message in the thread, root included, so `--to` and `--message`
+    // can name one. Carried here rather than re-queried: the fold already
+    // threaded them.
     messages: [thread.root, ...thread.replies].map((message) => ({
       id: message.id,
-      body: message.body
+      body: edited(edits, message).body,
+      folder: message.folder
     }))
   }));
 }
@@ -19136,8 +19378,19 @@ var peekApp = {
         const limit = limitFlag ? Number(limitFlag) : 200;
         if (!Number.isFinite(limit) || limit <= 0) throw new BadRequest("--limit must be a number");
         const filter = { kinds: [KIND3.MESSAGE, KIND3.ASSERTION], "#h": [topic.folder] };
-        const events = limit > RELAY_PAGE_CEILING ? (await context2.relay.queryAll([filter])).slice(0, limit) : await context2.relay.query([{ ...filter, limit }]);
+        const editFilter = { kinds: [KIND3.MESSAGE_EDIT], "#h": [topic.folder] };
+        let events;
+        if (limit > RELAY_PAGE_CEILING) {
+          const page = await context2.relay.queryAll([filter, editFilter]);
+          events = [
+            ...page.filter((event) => event.kind !== KIND3.MESSAGE_EDIT).slice(0, limit),
+            ...page.filter((event) => event.kind === KIND3.MESSAGE_EDIT)
+          ];
+        } else {
+          events = await context2.relay.query([{ ...filter, limit }, { ...editFilter, limit }]);
+        }
         const { conversations } = foldFolder(events);
+        const edits = foldEdits(events);
         const speakers = conversations.flatMap((thread) => [
           thread.root.author,
           ...thread.replies.map((reply) => reply.author)
@@ -19155,16 +19408,23 @@ var peekApp = {
             // Said on the wire by a kind:9101, never inferred from the text.
             resolved: resolved.has(thread.id) || void 0,
             messages: [thread.root, ...thread.replies].map((message) => ({
-              // The id is what `reply --to` takes. Without it printed here the
-              // flag would be unsatisfiable from inside the tool — the same
-              // shape of gap AGE-15 fixed for assignees.
+              // The id is what `reply --to` and `edit --message` take. Without
+              // it printed here the flags would be unsatisfiable from inside
+              // the tool — the same shape of gap AGE-15 fixed for assignees.
               id: message.id,
               by: who2(directory, message.author),
               at: new Date(message.ts ?? message.createdAt * 1e3).toISOString(),
               // Which message this one answers, so the shape of the thread is
               // legible rather than a flat list under a root.
               inReplyTo: message.parentId !== message.rootId ? message.parentId : void 0,
-              body: message.body
+              /*
+                The text as it stands, with `edited` saying that is not what was
+                first said. Printing the original silently would be worse than
+                in a UI: an agent quoting a comment back is the only thing
+                between a person and a body rewritten after they were told
+                about it.
+              */
+              ...edited(edits, message)
             }))
           }))
         };
@@ -19229,6 +19489,52 @@ var peekApp = {
       }
     },
     {
+      name: "edit",
+      signs: [KIND3.MESSAGE_EDIT],
+      summary: "replace the text of one message in a conversation",
+      usage: 'edit <topic> <conversation> --message <id|phrase> --body "..."',
+      async run(context2, args2) {
+        const [topicRef, threadRef] = args2.positional;
+        if (!topicRef || !threadRef) {
+          throw new BadRequest("edit needs a topic and a conversation \u2014 try `peek topic <name>` first.");
+        }
+        const target = flagValue(args2, "message");
+        if (!target) {
+          throw new BadRequest(
+            "edit needs --message naming the message to replace. `peek topic <name>` prints an id for every one."
+          );
+        }
+        const body = flagValue(args2, "body");
+        if (!body) throw new BadRequest("edit needs --body \u2014 the whole new text, not a patch.");
+        const topic = findTopic(await loadTopics(context2), topicRef);
+        const thread = findThread(await threadsIn(context2, topic.folder), threadRef);
+        const message = findMessage(thread.messages, target);
+        const result = await new Store(context2.relay, context2.signer).editMessage({
+          folder: message.folder,
+          messageEventId: message.id,
+          body
+        });
+        published2(result, `an edit of a message in ${topic.name}`);
+        return {
+          edited: {
+            topic: topic.name,
+            conversation: thread.id,
+            messageId: message.id,
+            folder: message.folder,
+            /*
+              What was replaced, said back. `--message` matches a phrase, and
+              whether it matched the intended message is the one thing the
+              caller cannot check afterwards — the original stays on the relay
+              but nothing prints it once an edit has won.
+            */
+            replaced: message.body.slice(0, 120)
+          },
+          eventId: result.eventId,
+          note: "The original event is untouched \u2014 an edit is a new kind:40003 naming it, and readers fold the pair. Peek renders its own timeline from Convex, so an edit published here may not change what the app shows until it reads the relay back."
+        };
+      }
+    },
+    {
       name: "create-topic",
       signs: [KIND3.CHANNEL],
       summary: "create a new topic",
@@ -19280,6 +19586,7 @@ function command(name, app = shipApp) {
 }
 var TOOL_COMMANDS = {
   ship_comment: { app: shipApp, command: "comment" },
+  ship_edit_comment: { app: shipApp, command: "edit-comment" },
   ship_set_status: { app: shipApp, command: "set-status" },
   ship_assign: { app: shipApp, command: "assign" },
   ship_edit_issue: { app: shipApp, command: "edit-issue" },
@@ -19290,6 +19597,7 @@ var TOOL_COMMANDS = {
   ship_create_issue: { app: shipApp, command: "create-issue" },
   ship_create_project: { app: shipApp, command: "create-project" },
   peek_reply: { app: peekApp, command: "reply" },
+  peek_edit_message: { app: peekApp, command: "edit" },
   peek_say: { app: peekApp, command: "say" },
   peek_create_topic: { app: peekApp, command: "create-topic" }
 };
@@ -19387,6 +19695,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           body: { type: "string", description: "The comment text." }
         },
         required: ["ref", "body"],
+        additionalProperties: false
+      }
+    },
+    {
+      name: "ship_edit_comment",
+      description: "Replace the text of one comment on an Estiva Ship issue or project \u2014 a typo, a wrong number, a claim that turned out to be false. Read the object with `ship_get_issue` first and pass the `id` of the message you mean: `message` also takes a distinctive phrase, but a phrase is matched against every comment on that object and an edit of the wrong one silently replaces text that was already true. If it matches more than one this returns the candidates instead of choosing. `body` is the whole new text, not a patch. The original event stays on the relay untouched \u2014 an edit is a separate event naming it, and a reader that does not fold the pair still shows the old text. Who may edit is the relay's decision, not this tool's: it accepts the comment's author, or the owner of an agent that wrote it. A refusal comes back in the relay's own words. " + WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: { type: "string", description: "Display ref, project name, address, or a distinctive fragment of a title." },
+          message: {
+            type: "string",
+            description: "A message id from `ship_get_issue`, or a distinctive phrase from it. Resolved within that object's conversations only; refuses if it matches more than one."
+          },
+          body: { type: "string", description: "The whole replacement text." }
+        },
+        required: ["ref", "message", "body"],
         additionalProperties: false
       }
     },
@@ -19604,6 +19929,24 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: "peek_edit_message",
+      description: "Replace the text of one message in a Peek conversation. Read the topic first and pass the `id` of the message you mean: `message` also takes a distinctive phrase, but an edit of the wrong message silently replaces text that was already true, and the version it replaced is not shown again. If it matches more than one this returns the candidates instead of choosing. `body` is the whole new text, not a patch. The original event stays on the relay untouched \u2014 an edit is a separate event naming it, and readers fold the pair. Peek renders its own timeline from its database, so an edit published here may not change what the app shows until it reads the relay back. Confirm in Peek before telling somebody the message now reads differently. " + PEEK_WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          topic: { type: "string", description: "Topic name or part of one." },
+          conversation: { type: "string", description: "Conversation id, or a distinctive phrase from its first message." },
+          message: {
+            type: "string",
+            description: "A message id from `peek_read_topic`, or a distinctive phrase from one. Resolved within the chosen conversation only; refuses if it matches more than one message."
+          },
+          body: { type: "string", description: "The whole replacement text." }
+        },
+        required: ["topic", "conversation", "message", "body"],
+        additionalProperties: false
+      }
+    },
+    {
       name: "peek_say",
       description: "Start a new conversation in a Peek topic. Prefer replying to an existing conversation when there is a relevant one \u2014 a new conversation appears at the top of the topic for everybody in it. " + PEEK_WRITE_NOTE,
       inputSchema: {
@@ -19693,6 +20036,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text(
           await command("comment").run(await context(), args(flagsFrom(input, ["body"]), [str(input.ref)]))
         );
+      case "ship_edit_comment":
+        return text(
+          await command("edit-comment").run(
+            await context(),
+            args(flagsFrom(input, ["message", "body"]), [str(input.ref)])
+          )
+        );
       case "ship_set_status":
         return text(
           await command("set-status").run(await context(), args({}, [str(input.ref), str(input.status)]))
@@ -19755,6 +20105,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await command("reply", peekApp).run(
             await context(),
             args(flagsFrom(input, ["body", "to"]), [str(input.topic), str(input.conversation)])
+          )
+        );
+      case "peek_edit_message":
+        return text(
+          await command("edit", peekApp).run(
+            await context(),
+            args(flagsFrom(input, ["message", "body"]), [str(input.topic), str(input.conversation)])
           )
         );
       case "peek_say":

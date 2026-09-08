@@ -53,6 +53,10 @@
       "description": "Add a comment to one issue"
     },
     {
+      "name": "ship_edit_comment",
+      "description": "Replace the text of one comment on an issue or project \u2014 the original event stays on the relay"
+    },
+    {
       "name": "ship_set_status",
       "description": "Set the status of one issue"
     },
@@ -103,6 +107,10 @@
     {
       "name": "peek_reply",
       "description": "Reply inside one existing Peek conversation"
+    },
+    {
+      "name": "peek_edit_message",
+      "description": "Replace the text of one message in a conversation \u2014 the original event stays on the relay"
     },
     {
       "name": "peek_say",

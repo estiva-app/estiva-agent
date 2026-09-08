@@ -36,8 +36,10 @@
  * accurate about the data and wrong about the question.
  */
 import { foldFolder } from '../../../src/fold'
+import { foldEdits } from '../../../src/edits'
 import { buildCreateChannel, RELAY_PAGE_CEILING, type SignedEvent } from '@estiva-app/protocol'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
+import { edited, findMessage } from '../conversation'
 import { resolveOne } from '../resolve'
 import { Store } from '../../../src/store'
 import type { Directory } from '../../../src/profiles'
@@ -48,6 +50,15 @@ const KIND = {
   CHANNEL: 9007,
   /** "This thread is resolved" — said on the wire, not inferred. */
   ASSERTION: 9101,
+  /**
+   * Buzz's `KIND_STREAM_MESSAGE_EDIT` — RFC 0.4 §7.2.1, CON-4.
+   *
+   * Peek's own edit is a Convex patch that publishes nothing, so until CON-8
+   * landed this kind appeared nowhere in the app. It is here because the agent
+   * has no Convex: the relay is the only record it has, which makes 40003 the
+   * only way it can edit anything at all.
+   */
+  MESSAGE_EDIT: 40003,
 } as const
 
 const tagValue = (event: SignedEvent, name: string) =>
@@ -180,19 +191,29 @@ function findThread<T extends { id: string; opening: string }>(threads: T[], ref
 
 /** The conversations in one topic, in the shape `findThread` resolves over. */
 async function threadsIn(context: AgentContext, folder: string) {
+  /*
+    Edits ride along with the messages they edit. 40003 carries an `h`, unlike
+    a reaction or a deletion, so it comes back on the same Folder read — and it
+    has to, because `--to` and `--message` both match a *phrase*. Resolving
+    against a body somebody has since replaced would refuse the phrase a caller
+    just read out of `peek topic`, which prints the edited one.
+  */
   const events = await context.relay.queryAll([
-    { kinds: [KIND.MESSAGE], '#h': [folder] },
+    { kinds: [KIND.MESSAGE, KIND.MESSAGE_EDIT], '#h': [folder] },
   ])
   const { conversations } = foldFolder(events)
+  const edits = foldEdits(events)
   return conversations.map((thread) => ({
     id: thread.id,
-    opening: thread.root.body,
+    opening: edited(edits, thread.root).body,
     replies: thread.replies.length,
-    // Every message in the thread, root included, so `--to` can name one.
-    // Carried here rather than re-queried: the fold already threaded them.
+    // Every message in the thread, root included, so `--to` and `--message`
+    // can name one. Carried here rather than re-queried: the fold already
+    // threaded them.
     messages: [thread.root, ...thread.replies].map((message) => ({
       id: message.id,
-      body: message.body,
+      body: edited(edits, message).body,
+      folder: message.folder,
     })),
   }))
 }
@@ -326,10 +347,38 @@ export const peekApp: AgentApp = {
         // caller told nothing, so ask for what they asked for: one request when
         // it fits, paged and trimmed when it does not.
         const filter = { kinds: [KIND.MESSAGE, KIND.ASSERTION], '#h': [topic.folder] }
-        const events =
-          limit > RELAY_PAGE_CEILING
-            ? (await context.relay.queryAll([filter])).slice(0, limit)
-            : await context.relay.query([{ ...filter, limit }])
+
+        /*
+          Edits get their **own filter**, rather than a third kind on the one
+          above, and `--limit` is not applied to them at all.
+
+          A `limit` is shared across everything one filter matches and the relay
+          clamps per filter, so on a topic busy enough to fill a page the edits
+          would spend the caller's budget — and the ones that fell off the end
+          would leave their targets printed as originally written, with no
+          marker. That is the exact divergence this command is being taught to
+          close, arriving silently. A second filter gets its own clamp and costs
+          no second round trip: `POST /query` takes a bare array, and `queryAll`
+          batches every filter's first page into one request.
+
+          Nothing has to separate the two afterwards. `foldFolder` ignores a
+          40003 (`parseMessage` returns null for it) and `foldEdits` ignores
+          everything else, so both folds read the same array.
+        */
+        const editFilter = { kinds: [KIND.MESSAGE_EDIT], '#h': [topic.folder] }
+
+        let events: SignedEvent[]
+        if (limit > RELAY_PAGE_CEILING) {
+          const page = await context.relay.queryAll([filter, editFilter])
+          // Trimmed over the conversation alone — a trim across the union would
+          // put the edits back inside the budget they were split out of.
+          events = [
+            ...page.filter((event) => event.kind !== KIND.MESSAGE_EDIT).slice(0, limit),
+            ...page.filter((event) => event.kind === KIND.MESSAGE_EDIT),
+          ]
+        } else {
+          events = await context.relay.query([{ ...filter, limit }, { ...editFilter, limit }])
+        }
 
         /*
           Ship's fold, on Peek's events, deliberately — see the note at the top.
@@ -338,6 +387,7 @@ export const peekApp: AgentApp = {
           conversation they can both see.
         */
         const { conversations } = foldFolder(events)
+        const edits = foldEdits(events)
 
         const speakers = conversations.flatMap((thread) => [
           thread.root.author,
@@ -363,16 +413,23 @@ export const peekApp: AgentApp = {
             // Said on the wire by a kind:9101, never inferred from the text.
             resolved: resolved.has(thread.id) || undefined,
             messages: [thread.root, ...thread.replies].map((message) => ({
-              // The id is what `reply --to` takes. Without it printed here the
-              // flag would be unsatisfiable from inside the tool — the same
-              // shape of gap AGE-15 fixed for assignees.
+              // The id is what `reply --to` and `edit --message` take. Without
+              // it printed here the flags would be unsatisfiable from inside
+              // the tool — the same shape of gap AGE-15 fixed for assignees.
               id: message.id,
               by: who(directory, message.author),
               at: new Date(message.ts ?? message.createdAt * 1000).toISOString(),
               // Which message this one answers, so the shape of the thread is
               // legible rather than a flat list under a root.
               inReplyTo: message.parentId !== message.rootId ? message.parentId : undefined,
-              body: message.body,
+              /*
+                The text as it stands, with `edited` saying that is not what was
+                first said. Printing the original silently would be worse than
+                in a UI: an agent quoting a comment back is the only thing
+                between a person and a body rewritten after they were told
+                about it.
+              */
+              ...edited(edits, message),
             })),
           })),
         }
@@ -452,6 +509,73 @@ export const peekApp: AgentApp = {
               : { attachedTo: answered?.body.slice(0, 80), messageId: target.parentId }),
           },
           eventId: result.eventId,
+        }
+      },
+    },
+    {
+      name: 'edit',
+      signs: [KIND.MESSAGE_EDIT],
+      summary: 'replace the text of one message in a conversation',
+      usage: 'edit <topic> <conversation> --message <id|phrase> --body "..."',
+      async run(context, args) {
+        const [topicRef, threadRef] = args.positional
+        if (!topicRef || !threadRef) {
+          throw new BadRequest('edit needs a topic and a conversation — try `peek topic <name>` first.')
+        }
+        const target = flagValue(args, 'message')
+        if (!target) {
+          throw new BadRequest(
+            'edit needs --message naming the message to replace. `peek topic <name>` prints an id for every one.',
+          )
+        }
+        const body = flagValue(args, 'body')
+        if (!body) throw new BadRequest('edit needs --body — the whole new text, not a patch.')
+
+        const topic = findTopic(await loadTopics(context), topicRef)
+        const thread = findThread(await threadsIn(context, topic.folder), threadRef)
+
+        /*
+          Resolved inside the conversation the caller named, never across the
+          topic. `replyTarget` narrows for the same reason and the argument is
+          stronger here: a reply under the wrong message is a non-sequitur
+          somebody can read and answer, whereas an edit of the wrong message
+          replaces text that was already true and shows nobody what it was.
+        */
+        const message = findMessage(thread.messages, target)
+
+        /*
+          The message's own Folder rather than the topic's. They are the same
+          for a message posted here, and deliberately not assumed to be: 40003
+          is channel-scoped, and the `h` has to name the target's channel or the
+          relay answers `accepted: false` with the kind granted and the
+          signature fine — a refusal that reads exactly like a permissions
+          problem.
+        */
+        const result = await new Store(context.relay, context.signer).editMessage({
+          folder: message.folder,
+          messageEventId: message.id,
+          body,
+        })
+        published(result, `an edit of a message in ${topic.name}`)
+
+        return {
+          edited: {
+            topic: topic.name,
+            conversation: thread.id,
+            messageId: message.id,
+            folder: message.folder,
+            /*
+              What was replaced, said back. `--message` matches a phrase, and
+              whether it matched the intended message is the one thing the
+              caller cannot check afterwards — the original stays on the relay
+              but nothing prints it once an edit has won.
+            */
+            replaced: message.body.slice(0, 120),
+          },
+          eventId: result.eventId,
+          note:
+            'The original event is untouched — an edit is a new kind:40003 naming it, and readers fold the pair. ' +
+            'Peek renders its own timeline from Convex, so an edit published here may not change what the app shows until it reads the relay back.',
         }
       },
     },
