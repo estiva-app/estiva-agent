@@ -16528,58 +16528,87 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-// lib/nostr/signer.ts
-function estivaIdSigner({ base, pubkey, token, renew }) {
-  const origin = base.replace(/\/+$/, "");
-  let bearer = token;
-  return {
-    pubkey,
-    kind: "estiva-id",
-    async sign(unsigned) {
-      const post = (auth) => fetch(`${origin}/sign`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${auth}`
-        },
-        body: JSON.stringify({
-          event: {
-            kind: unsigned.kind,
-            created_at: unsigned.created_at,
-            tags: unsigned.tags,
-            content: unsigned.content
-          }
-        })
-      });
-      let response = await post(bearer);
-      if (response.status === 401 && renew) {
-        const renewed = await renew();
-        if (renewed) {
-          bearer = renewed;
-          response = await post(bearer);
-        }
-      }
-      const text2 = await response.text();
-      if (response.status === 401) throw new SignerTokenExpired();
-      if (!response.ok) {
-        let reason = text2.slice(0, 200);
-        try {
-          const body = JSON.parse(text2);
-          reason = body.error?.message ?? reason;
-        } catch {
-        }
-        throw new Error(`Estiva ID refused to sign kind:${unsigned.kind} \u2014 ${reason}`);
-      }
-      return JSON.parse(text2).event;
-    }
-  };
-}
+// node_modules/@estiva-app/identity/dist/signer.js
 var SignerTokenExpired = class extends Error {
   constructor() {
     super("The signing token has expired");
     this.name = "SignerTokenExpired";
   }
 };
+async function signViaEstivaId(unsigned, options) {
+  const send = options.fetch ?? fetch;
+  const origin = options.base.replace(/\/+$/, "");
+  const response = await send(`${origin}/sign`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${options.token}`
+    },
+    /*
+      Only the four fields that go into the signature input. The unsigned event
+      may carry a `pubkey` — Peek's NIP-98 path passes an empty one on purpose —
+      and sending it would imply `/sign` honours it, which it does not.
+    */
+    body: JSON.stringify({
+      event: {
+        kind: unsigned.kind,
+        created_at: unsigned.created_at,
+        tags: unsigned.tags,
+        content: unsigned.content
+      }
+    })
+  });
+  const text2 = await response.text();
+  if (response.status === 401)
+    throw new SignerTokenExpired();
+  if (!response.ok) {
+    let reason = text2.slice(0, 200);
+    try {
+      const body = JSON.parse(text2);
+      reason = body.error?.message ?? reason;
+    } catch {
+    }
+    throw new Error(`Estiva ID refused to sign kind:${unsigned.kind} \u2014 ${reason}`);
+  }
+  const event = JSON.parse(text2).event;
+  if (!event)
+    throw new Error("POST /sign returned no event");
+  if (options.expectedPubkey && event.pubkey !== options.expectedPubkey) {
+    throw new Error(`POST /sign returned an event authored by ${event.pubkey}, expected ${options.expectedPubkey}. That token belongs to a different identity \u2014 refusing to publish under the wrong author.`);
+  }
+  return event;
+}
+function estivaIdSigner({ base, pubkey, token, renew, fetch: send }) {
+  let bearer = token;
+  return {
+    pubkey,
+    kind: "estiva-id",
+    async sign(unsigned) {
+      const once = (auth) => signViaEstivaId(unsigned, {
+        base,
+        token: auth,
+        // The guard, unconditionally. Ship's copy of this signer never had it
+        // and Peek's `signViaEstivaId` did, which is exactly the drift three
+        // copies produce: the app that publishes every issue, comment and
+        // status change was the one that could not tell it had signed as
+        // somebody else. SHA-4's Traps section says both must keep it.
+        expectedPubkey: pubkey,
+        ...send ? { fetch: send } : {}
+      });
+      try {
+        return await once(bearer);
+      } catch (error2) {
+        if (!(error2 instanceof SignerTokenExpired) || !renew)
+          throw error2;
+        const renewed = await renew();
+        if (!renewed)
+          throw error2;
+        bearer = renewed;
+        return await once(bearer);
+      }
+    }
+  };
+}
 
 // lib/agent/credentials.ts
 var DEFAULT_ID_BASE = "https://id.estiva.app";

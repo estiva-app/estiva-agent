@@ -18,6 +18,7 @@
     "plugin:validate": "node scripts/build-extension.mjs && tsx scripts/plugin.test.ts"
   },
   "dependencies": {
+    "@estiva-app/identity": "^0.2.0",
     "@estiva-app/protocol": "^0.15.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@noble/curves": "1.9.2",
