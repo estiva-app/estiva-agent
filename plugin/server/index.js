@@ -15899,7 +15899,20 @@ var KIND = {
    * comment in that file. It goes over the socket and is gone.
    */
   RELAY_AUTH: 22242,
-  HTTP_AUTH: 27235
+  HTTP_AUTH: 27235,
+  /**
+   * Buzz's message edit (`KIND_STREAM_MESSAGE_EDIT`) — RFC 0.4 §7.2.1.
+   *
+   * A `kind:9` and a `kind:1111` are both non-replaceable, so an edit cannot
+   * overwrite what it edits. It is a separate event naming its target, and what
+   * an app shows as "edited" is a fold over the pair.
+   *
+   * **Channel-scoped.** 40003 is in the relay's `requires_h_channel_scope`, so
+   * an edit without an `h` comes back `accepted: false` even when the kind is
+   * granted and the signature is fine — two gates, and the kind ceiling is only
+   * the first.
+   */
+  MESSAGE_EDIT: 40003
 };
 var MAX_MESSAGE_BYTES = 64 * 1024;
 var MAX_MENTIONS = 50;
@@ -16159,6 +16172,7 @@ async function authorizationHeader(signer, args2) {
 
 // node_modules/@estiva-app/protocol/dist/bridge.js
 var RELAY_PAGE_CEILING = 1e3;
+var MAX_FILTERS_PER_QUERY = 128;
 var DEFAULT_QUERY_CONCURRENCY = 8;
 function parsePublishResponse(status2, text2) {
   let parsed;
@@ -16191,6 +16205,58 @@ function parseQueryResponse(status2, text2) {
   } catch {
     return { ok: false, events: [], reason: `unparseable response: ${text2.slice(0, 200)}`, httpStatus: status2 };
   }
+}
+function byFolder(filters) {
+  const slot = /* @__PURE__ */ new Map();
+  for (const [index, filter] of filters.entries()) {
+    const h = filter["#h"];
+    if (!Array.isArray(h) || h.length !== 1 || typeof h[0] !== "string")
+      return null;
+    if (slot.has(h[0]))
+      return null;
+    slot.set(h[0], index);
+  }
+  return (event) => {
+    let found = null;
+    for (const tag2 of event.tags) {
+      if (tag2[0] !== "h" || typeof tag2[1] !== "string")
+        continue;
+      const candidate = slot.get(tag2[1]);
+      if (candidate === void 0)
+        continue;
+      if (found !== null && found !== candidate)
+        return null;
+      found = candidate;
+    }
+    return found;
+  };
+}
+function byKind(filters) {
+  const slot = /* @__PURE__ */ new Map();
+  for (const [index, filter] of filters.entries()) {
+    const kinds = filter.kinds;
+    if (!Array.isArray(kinds) || kinds.length === 0)
+      return null;
+    for (const kind of kinds) {
+      if (typeof kind !== "number" || slot.has(kind))
+        return null;
+      slot.set(kind, index);
+    }
+  }
+  return (event) => slot.get(event.kind) ?? null;
+}
+function discriminate(filters) {
+  return byFolder(filters) ?? byKind(filters);
+}
+function splitRuns(count, events, which) {
+  const runs = Array.from({ length: count }, () => []);
+  for (const event of events) {
+    const index = which(event);
+    if (index === null)
+      return null;
+    runs[index].push(event);
+  }
+  return runs;
 }
 var Relay = class {
   url;
@@ -16301,17 +16367,24 @@ var Relay = class {
     const concurrency = Math.max(1, options.concurrency ?? DEFAULT_QUERY_CONCURRENCY);
     const perFilter = new Array(filters.length);
     const failures = new Array(filters.length);
+    const unresolved = new Set(filters.map((_, index) => index));
+    const seeds = new Array(filters.length);
+    if (options.batch !== false && filters.length > 1) {
+      await this.batchFirstPages(filters, pageSize, perFilter, unresolved, seeds);
+    }
+    const remaining = [...unresolved];
     let next = 0;
     let failed = false;
     const worker = async () => {
       for (; ; ) {
         if (failed)
           return;
-        const index = next++;
-        if (index >= filters.length)
+        const slot = next++;
+        if (slot >= remaining.length)
           return;
+        const index = remaining[slot];
         try {
-          perFilter[index] = await this.pageFilter(filters[index], pageSize, maxPages);
+          perFilter[index] = await this.pageFilter(filters[index], pageSize, maxPages, seeds[index]);
         } catch (error2) {
           failures[index] = error2;
           failed = true;
@@ -16319,7 +16392,7 @@ var Relay = class {
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(concurrency, filters.length) }, () => worker()));
+    await Promise.all(Array.from({ length: Math.min(concurrency, remaining.length) }, () => worker()));
     const firstFailure = failures.findIndex((error2) => error2 !== void 0);
     if (firstFailure !== -1)
       throw failures[firstFailure];
@@ -16336,14 +16409,76 @@ var Relay = class {
     return out;
   }
   /**
+   * Every filter's first page, in as few requests as the relay will allow.
+   *
+   * Fills `perFilter` for each filter it can prove complete and removes it from
+   * `unresolved`; everything else is left for {@link Relay.pageFilter}, which is
+   * unchanged and remains the only thing that pages.
+   *
+   * **Proving a filter complete needs its own run's length**, and a flat
+   * response only yields that if the events can be attributed. Two ways, and
+   * the code takes whichever applies:
+   *
+   * 1. **By `h` tag**, when every filter in the chunk names exactly one Folder
+   *    and no two name the same one. Exact — an event carries the Folder it is
+   *    in — and it is the shape every workspace read in the suite actually
+   *    sends.
+   * 2. **By the total**, otherwise. If the whole chunk came back under the
+   *    largest page this relay has ever produced, no single run reached that
+   *    bound either, so none was clamped. Weaker, and it cannot fire on a cold
+   *    `Relay` that has no evidence yet — deliberately, per SHA-15.
+   *
+   * When neither applies the chunk is simply left unresolved: one request is
+   * spent and the old path runs, which is a cost in requests and never in
+   * correctness.
+   */
+  async batchFirstPages(filters, pageSize, perFilter, unresolved, seeds) {
+    for (let start = 0; start < filters.length; start += MAX_FILTERS_PER_QUERY) {
+      const indices = filters.slice(start, start + MAX_FILTERS_PER_QUERY).map((_, offset) => start + offset);
+      if (indices.length < 2)
+        continue;
+      const which = discriminate(indices.map((i) => filters[i]));
+      if (!which && this.observedPageCeiling === 0)
+        continue;
+      const events = await this.query(indices.map((i) => ({ ...filters[i], limit: pageSize })));
+      const runs = which ? splitRuns(indices.length, events, which) : null;
+      if (runs) {
+        for (const run of runs) {
+          if (run.length > this.observedPageCeiling)
+            this.observedPageCeiling = run.length;
+        }
+        for (const [offset, run] of runs.entries()) {
+          if (run.length < pageSize && run.length < this.observedPageCeiling) {
+            perFilter[indices[offset]] = run;
+            unresolved.delete(indices[offset]);
+          } else {
+            seeds[indices[offset]] = run;
+          }
+        }
+        continue;
+      }
+      if (events.length < pageSize && events.length < this.observedPageCeiling) {
+        perFilter[indices[0]] = events;
+        for (const index of indices.slice(1))
+          perFilter[index] = [];
+        for (const index of indices)
+          unresolved.delete(index);
+      }
+    }
+  }
+  /**
    * One filter, paged to exhaustion. The sequential half, and it has to be:
    * `until` is a cursor, so page N+1's request is not known until page N has
    * answered. Only the filters are independent, which is why they are the
    * axis {@link Relay.queryAll} parallelises.
    */
-  async pageFilter(filter, pageSize, maxPages) {
+  async pageFilter(filter, pageSize, maxPages, seed) {
     const out = [];
     let until;
+    if (seed && seed.length > 0) {
+      out.push(...seed);
+      until = Math.min(...seed.map((e) => e.created_at));
+    }
     for (let page = 0; ; page++) {
       if (page >= maxPages) {
         throw new Error(`queryAll: gave up after ${maxPages} pages \u2014 refusing to return a partial set`);
