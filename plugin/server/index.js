@@ -16580,6 +16580,18 @@ function blockAnchorOf(event) {
 }
 
 // node_modules/@estiva-app/protocol/dist/media.js
+function imetaTag(meta2) {
+  const parts = [`url ${meta2.url}`, `m ${meta2.m}`, `x ${meta2.x}`, `size ${meta2.size}`];
+  if (meta2.dim)
+    parts.push(`dim ${meta2.dim}`);
+  if (meta2.alt)
+    parts.push(`alt ${meta2.alt}`);
+  if (meta2.thumb)
+    parts.push(`thumb ${meta2.thumb}`);
+  if (meta2.filename)
+    parts.push(`filename ${meta2.filename}`);
+  return ["imeta", ...parts];
+}
 function imetaOf(event) {
   const out = [];
   for (const tag2 of event.tags) {
@@ -17252,7 +17264,9 @@ function buildNip22Comment(pubkey, createdAtMs, args2) {
       ["h", args2.folder],
       // Same `ts` as everything else Ship writes, for the same reason: see
       // `buildConversationMessage` below.
-      ["ts", String(Math.floor(createdAtMs))]
+      ["ts", String(Math.floor(createdAtMs))],
+      // Attachments last, as on the `kind:9` branch — see there for why.
+      ...(args2.files ?? []).map(imetaTag)
     ],
     content: args2.body
   };
@@ -17264,7 +17278,8 @@ function buildConversationMessage(pubkey, createdAtMs, args2) {
       folder: args2.folder,
       body: args2.body,
       about: args2.about,
-      blockId: args2.blockId
+      blockId: args2.blockId,
+      files: args2.files
     });
   }
   const event = buildMessage(pubkey, createdAtMs, {
@@ -17275,6 +17290,7 @@ function buildConversationMessage(pubkey, createdAtMs, args2) {
   if (args2.replyTo) tags2.push(...threadTags(args2.replyTo));
   if (args2.about) tags2.push(["a", args2.about]);
   tags2.push(["ts", String(Math.floor(createdAtMs))]);
+  tags2.push(...(args2.files ?? []).map(imetaTag));
   return { ...event, tags: tags2 };
 }
 function buildDeletion2(pubkey, createdAtMs, args2) {
@@ -18023,7 +18039,8 @@ ${args2.aboutRef}` : args2.body;
         body,
         replyTo: args2.replyTo,
         about: args2.about,
-        blockId: args2.blockId
+        blockId: args2.blockId,
+        files: args2.files
       })
     );
   }
