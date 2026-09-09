@@ -66,7 +66,19 @@ function gap(what: string) {
 }
 
 interface SlotSource {
-  tag?: string
+  /**
+   * One tag name, or several to try in order.
+   *
+   * **A list, because the manifest publishes one.** Ship's `title` slot is
+   * `{"tag": ["name", "title"], "fold": "title"}` — two spellings a rename left
+   * behind — and this was typed as a bare `string`, so `tag(event, source.tag)`
+   * compared a tag name against an *array* and never matched. Measured against
+   * production: 13 of 19 projects rendered with no title at all.
+   *
+   * The interop vocabulary has always allowed both, so the narrower type was
+   * this reader's mistake rather than a manifest that broke its own contract.
+   */
+  tag?: string | string[]
   field?: string
   fold?: string
   map?: string
@@ -74,6 +86,35 @@ interface SlotSource {
   label?: string
   default?: string
   truncate?: number
+}
+
+/**
+ * The first tag name that actually carries a value.
+ *
+ * Order is the manifest's, not a preference of this reader's: a publisher lists
+ * the spellings it wants tried and in which order, and a consumer that reordered
+ * them would be overriding the one party that knows.
+ *
+ * Exported so it can be tested without running the probe, which talks to a live
+ * relay. Pure, and takes the tags rather than an event, so it stays ignorant of
+ * every kind this file is forbidden to know about.
+ */
+export function readTagValue(
+  tags: readonly (readonly string[])[],
+  name: string | string[] | undefined,
+): string | undefined {
+  if (name === undefined) return undefined
+  for (const one of Array.isArray(name) ? name : [name]) {
+    const found = tags.find((t) => t[0] === one)?.[1]
+    /*
+      An empty tag value is a value. A publisher writing `["title", ""]` has
+      said the title is empty, which is a different claim from not writing the
+      tag — and falling through to the next spelling would silently prefer a
+      stale one over a deliberate blank.
+    */
+    if (found !== undefined) return found
+  }
+  return undefined
 }
 
 async function main() {
@@ -189,9 +230,9 @@ async function main() {
     else if (source.fold) {
       value =
         folded.get(addressOf(event))?.[source.fold] ??
-        (source.tag ? tag(event, source.tag) : undefined) ??
+        readTagValue(event.tags, source.tag) ??
         source.default
-    } else if (source.tag) value = tag(event, source.tag)
+    } else if (source.tag) value = readTagValue(event.tags, source.tag)
 
     if (value === undefined) return undefined
 
@@ -275,7 +316,14 @@ async function main() {
   console.log(`Written up in peek-app docs/buzz-compat/RFC_UPDATES.md §3.`)
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exit(1)
-})
+/*
+  Only when run, never on import — `readTagValue` above is exported so a test can
+  reach it, and a test that fetched a live manifest as a side effect of an import
+  would be a test nobody could run offline.
+*/
+if (process.argv[1]?.endsWith('manifest-reader.ts')) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  })
+}
