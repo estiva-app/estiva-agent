@@ -10,9 +10,17 @@ separately. They cannot answer differently.
 
 ## What you are getting
 
-Twelve tools, the same ones Desktop gets: read and comment on Ship issues, set
-status, assign, create issues and projects; read Peek topics, reply in a thread,
-start a conversation.
+Twenty-two tools, the same ones Desktop gets. For Ship: read issues, projects
+and the activity feed; comment, and **edit a comment already posted**; set a
+status, assign, amend or move an issue, edit or archive a project, create either,
+and — behind a confirmation — delete either. For Peek: read a topic, reply in a
+thread or to one message in it, **edit a message**, start a conversation, create
+a topic. Plus `estiva_ping`, which reports which hop is broken when nothing
+works.
+
+`extension/manifest.json` is the authoritative list — `extension.test.ts` diffs
+it against the server's real `tools/list`, and nothing compares a sentence like
+this one to either. It read "twelve" while the server offered twenty-two.
 
 It acts as **your own service identity**, not a shared one. Anything it writes
 is attributed to a bot whose name says you steer it.

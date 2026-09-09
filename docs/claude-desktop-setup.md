@@ -8,9 +8,14 @@ Expect 15 minutes. Almost all of it is waiting for an admin.
 ## What you are getting
 
 Claude Desktop gains tools for the team's Ship workspace: list issues, read one
-in full, and — if your credential allows it — comment, set a status, assign, and
-file an issue. It reads and writes **production**. There is no staging
-workspace.
+in full, and — if your credential allows it — comment, edit a comment you have
+already posted, set a status, assign, and file an issue. **And for the team's
+Peek topics**: read a conversation, reply in one, edit a message, and start a
+conversation. It reads and writes **production**. There is no staging workspace.
+
+Peek was missing from that sentence entirely while the extension shipped six
+Peek tools, so check this page against the tool list Desktop shows you before
+installing rather than the other way round.
 
 **What you can do is decided by your credential, not by this software.** The
 tools are always present; a credential minted for reading only will have its
