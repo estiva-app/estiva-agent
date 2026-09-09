@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { readTagValue } from './manifest-reader'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const source = readFileSync(join(here, 'manifest-reader.ts'), 'utf8')
@@ -79,6 +80,46 @@ check(
 */
 const vocabularyLeak = /'(todo|in_progress|done|cancelled|planned|archived)'/.exec(withoutComments)
 check('no status value is written into the code', vocabularyLeak === null, vocabularyLeak?.[0] ?? '')
+
+/*
+  Reading a slot's tag, which is where the reader was wrong about the manifest
+  rather than about Ship.
+
+  `SlotSource.tag` was typed as a bare `string` while the published manifest
+  carries `{"tag": ["name", "title"], "fold": "title"}`, so the fallback compared
+  a tag name against an array and never matched. Measured against production
+  before the fix: **13 of 19 projects rendered with no title at all** — and the
+  probe prints only three sample rows, so it looked like one odd project rather
+  than most of them.
+
+  Importing this at all is why `main()` is now guarded: an unguarded probe would
+  fetch a live manifest as a side effect of this import, and an offline suite
+  would stop being offline.
+*/
+const tags = [
+  ['d', 'p1'],
+  ['title', 'Agent / Steer'],
+  ['h', 'folder'],
+]
+
+check('a single name reads its tag', readTagValue(tags, 'title') === 'Agent / Steer')
+check('a name that is not there reads undefined', readTagValue(tags, 'name') === undefined)
+check('no name at all reads undefined', readTagValue(tags, undefined) === undefined)
+check(
+  'a list falls through to the spelling that is present',
+  readTagValue(tags, ['name', 'title']) === 'Agent / Steer',
+  'the case that rendered 13 of 19 projects blank',
+)
+check(
+  'a list keeps the manifest\'s order rather than this reader\'s preference',
+  readTagValue([['name', 'first'], ['title', 'second']], ['name', 'title']) === 'first',
+)
+check('a list matching nothing reads undefined', readTagValue(tags, ['name', 'label']) === undefined)
+check(
+  'an empty tag value is a value, not a miss',
+  readTagValue([['name', ''], ['title', 'fallback']], ['name', 'title']) === '',
+  'a deliberate blank must not fall through to a stale spelling',
+)
 
 console.log(failures === 0 ? '\nThe manifest reader is still app-agnostic.' : `\n${failures} failed.`)
 process.exit(failures === 0 ? 0 : 1)
