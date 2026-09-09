@@ -100,6 +100,7 @@ function command(name: string, app: AgentApp = shipApp) {
  */
 const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   ship_comment: { app: shipApp, command: 'comment' },
+  ship_edit_comment: { app: shipApp, command: 'edit-comment' },
   ship_set_status: { app: shipApp, command: 'set-status' },
   ship_assign: { app: shipApp, command: 'assign' },
   ship_edit_issue: { app: shipApp, command: 'edit-issue' },
@@ -110,6 +111,7 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   ship_create_issue: { app: shipApp, command: 'create-issue' },
   ship_create_project: { app: shipApp, command: 'create-project' },
   peek_reply: { app: peekApp, command: 'reply' },
+  peek_edit_message: { app: peekApp, command: 'edit' },
   peek_say: { app: peekApp, command: 'say' },
   peek_create_topic: { app: peekApp, command: 'create-topic' },
 }
@@ -242,6 +244,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           body: { type: 'string', description: 'The comment text.' },
         },
         required: ['ref', 'body'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'ship_edit_comment',
+      description:
+        'Replace the text of one comment on an Estiva Ship issue or project — a typo, a wrong number, a claim that turned out to be false. ' +
+        'Read the object with `ship_get_issue` first and pass the `id` of the message you mean: `message` also takes a distinctive phrase, but a phrase is matched against every comment on that object and an edit of the wrong one silently replaces text that was already true. If it matches more than one this returns the candidates instead of choosing. ' +
+        '`body` is the whole new text, not a patch. The original event stays on the relay untouched — an edit is a separate event naming it, and a reader that does not fold the pair still shows the old text. ' +
+        'Who may edit is the relay\'s decision, not this tool\'s: it accepts the comment\'s author, or the owner of an agent that wrote it. A refusal comes back in the relay\'s own words. ' +
+        WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ref: { type: 'string', description: 'Display ref, project name, address, or a distinctive fragment of a title.' },
+          message: {
+            type: 'string',
+            description:
+              'A message id from `ship_get_issue`, or a distinctive phrase from it. Resolved within that object\'s conversations only; refuses if it matches more than one.',
+          },
+          body: { type: 'string', description: 'The whole replacement text.' },
+        },
+        required: ['ref', 'message', 'body'],
         additionalProperties: false,
       },
     },
@@ -497,6 +522,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'peek_edit_message',
+      description:
+        'Replace the text of one message in a Peek conversation. Read the topic first and pass the `id` of the message you mean: `message` also takes a distinctive phrase, but an edit of the wrong message silently replaces text that was already true, and the version it replaced is not shown again. If it matches more than one this returns the candidates instead of choosing. ' +
+        '`body` is the whole new text, not a patch. The original event stays on the relay untouched — an edit is a separate event naming it, and readers fold the pair. ' +
+        'Peek renders its own timeline from its database, so an edit published here may not change what the app shows until it reads the relay back. Confirm in Peek before telling somebody the message now reads differently. ' +
+        PEEK_WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          topic: { type: 'string', description: 'Topic name or part of one.' },
+          conversation: { type: 'string', description: 'Conversation id, or a distinctive phrase from its first message.' },
+          message: {
+            type: 'string',
+            description:
+              'A message id from `peek_read_topic`, or a distinctive phrase from one. Resolved within the chosen conversation only; refuses if it matches more than one message.',
+          },
+          body: { type: 'string', description: 'The whole replacement text.' },
+        },
+        required: ['topic', 'conversation', 'message', 'body'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'peek_say',
       description:
         'Start a new conversation in a Peek topic. Prefer replying to an existing conversation when there is a relevant one — a new conversation appears at the top of the topic for everybody in it. ' +
@@ -619,6 +667,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await command('comment').run(await context(), args(flagsFrom(input, ['body']), [str(input.ref)])),
         )
 
+      case 'ship_edit_comment':
+        return text(
+          await command('edit-comment').run(
+            await context(),
+            args(flagsFrom(input, ['message', 'body']), [str(input.ref)]),
+          ),
+        )
+
       case 'ship_set_status':
         return text(
           await command('set-status').run(await context(), args({}, [str(input.ref), str(input.status)])),
@@ -703,6 +759,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await command('reply', peekApp).run(
             await context(),
             args(flagsFrom(input, ['body', 'to']), [str(input.topic), str(input.conversation)]),
+          ),
+        )
+
+      case 'peek_edit_message':
+        return text(
+          await command('edit', peekApp).run(
+            await context(),
+            args(flagsFrom(input, ['message', 'body']), [str(input.topic), str(input.conversation)]),
           ),
         )
 

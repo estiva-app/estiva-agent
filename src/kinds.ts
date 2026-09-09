@@ -51,12 +51,42 @@ export const KIND = {
    */
   COMMENT: 1111,
   /**
+   * NIP-25 reaction — an emoji on one message.
+   *
+   * **It carries no `h` tag**, and that is the whole difficulty (SPEC §6.6).
+   * Every other kind here is found by Folder; a reaction cannot be, because
+   * Buzz derives its channel from the target's `e` tag and ignores a
+   * client-supplied `h`. So reactions are fetched *addressed by target* — the
+   * event ids on screen — which is what forces a horizon nobody can see.
+   * `reactions.ts` holds that decision and the number.
+   *
+   * Attaches to a **message**, never to a block (RFC 0.4 §7.2) and not — yet —
+   * to an object. An issue has an address and no event id, so nothing here can
+   * express reacting to one even by accident.
+   */
+  REACTION: 7,
+  /**
    * NIP-09 deletion request.
    *
-   * A request rather than a delete, and honoured only for the pubkey that
-   * signed the original. Buzz accepts it and stops returning the target.
+   * A request rather than a delete. Buzz accepts it and stops returning the
+   * target, from the target's effective author **or** the NIP-OA owner of an
+   * authoring agent — not author-only, which is what this comment said until
+   * SPEC §6.5 was corrected on 2026-09-06 (CON-3, SHI-14).
    */
   DELETION: 5,
+  /**
+   * Buzz's message edit (`KIND_STREAM_MESSAGE_EDIT`) — RFC 0.4 §7.2.1, CON-4.
+   *
+   * An edit never rewrites: `kind:9` and `kind:1111` are non-replaceable, so
+   * this is a separate event naming its target and the reader folds the pair.
+   * `edits.ts` holds that fold, deliberately outside `foldFolder` — see its
+   * header for why the conformance contract forces it.
+   *
+   * **Channel-scoped**, unlike a reaction or a deletion: 40003 is in the
+   * relay's `requires_h_channel_scope`, so an edit without an `h` is refused
+   * with `accepted: false` while the kind is granted and the signature is fine.
+   */
+  MESSAGE_EDIT: 40003,
   /**
    * NIP-01 profile metadata — who a pubkey is.
    *

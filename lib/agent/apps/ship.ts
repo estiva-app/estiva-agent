@@ -12,7 +12,7 @@
  * from what the app shows a person. The whole value of this CLI is that it and
  * `ship.estiva.app` agree.
  */
-import { Store, nextRef, refPrefix } from '../../../src/store'
+import { Store, nextRef, refPrefix, type WorkspaceState } from '../../../src/store'
 import type { FolderState, Issue, Project } from '../../../src/fold'
 import { conversationsAbout } from '../../../src/fold'
 import {
@@ -24,6 +24,7 @@ import {
 } from '../../../src/kinds'
 import type { Directory } from '../../../src/profiles'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
+import { edited, findMessage } from '../conversation'
 import { resolveMaybe, resolveOne } from '../resolve'
 
 const store = (context: AgentContext) => new Store(context.relay, context.signer)
@@ -515,7 +516,7 @@ function published<T extends { ok: boolean; reason?: string; duplicate?: boolean
  */
 async function timelineFor(
   context: AgentContext,
-  state: FolderState,
+  state: WorkspaceState,
   addr: string,
   extraPubkeys: (string | undefined)[],
 ) {
@@ -552,9 +553,15 @@ async function timelineFor(
     conversation: conversations.map((thread) => ({
       id: thread.id,
       messages: [thread.root, ...thread.replies].map((message) => ({
+        /*
+          The id is what `edit-comment --message` takes. Without it printed
+          here the flag would be unsatisfiable from inside the tool — the same
+          shape of gap AGE-13 fixed for `reply --to` and AGE-15 for assignees.
+        */
+        id: message.id,
         by: who(directory, message.author),
         at: new Date(message.ts ?? message.createdAt * 1000).toISOString(),
-        body: message.body,
+        ...edited(state.edits, message),
       })),
     })),
   }
@@ -571,7 +578,7 @@ async function timelineFor(
  * project that was re-linked to a Peek topic, and which of the two an event
  * carries decides whether anyone reading the project ever sees it.
  */
-async function showProject(context: AgentContext, state: FolderState, project: Project) {
+async function showProject(context: AgentContext, state: WorkspaceState, project: Project) {
   const issues = state.issues.filter((issue) => issue.projectAddr === project.addr)
   const { directory, history, conversation } = await timelineFor(context, state, project.addr, [
     project.author,
@@ -1022,6 +1029,114 @@ export const shipApp: AgentApp = {
         published(result, `a comment on ${issue.ref ?? issue.addr}`)
 
         return { commented: { ref: issue.ref, addr: issue.addr, title: issue.title }, eventId: result.eventId }
+      },
+    },
+    {
+      name: 'edit-comment',
+      signs: [KIND.MESSAGE_EDIT],
+      summary: 'replace the text of one comment on an issue or project',
+      usage: 'edit-comment <ref> --message <id|phrase> --body "..."',
+      async run(context, args) {
+        const reference = args.positional[0]
+        if (!reference) throw new BadRequest('edit-comment needs an issue or project reference.')
+        const target = flagValue(args, 'message')
+        if (!target) {
+          throw new BadRequest(
+            'edit-comment needs --message naming the comment to replace. `ship show <ref>` prints an id for every message.',
+          )
+        }
+        const body = flagValue(args, 'body')
+        if (!body) throw new BadRequest('edit-comment needs --body — the whole new text, not a patch.')
+
+        const state = await store(context).loadAll()
+
+        /*
+          Both kinds, asked and then decided, exactly as `show` does — and for
+          the same reason. A comment on a project is the same `kind:9` as a
+          comment on an issue, so resolving issues first with projects as a
+          fallback would silently pick one for a reference naming both.
+        */
+        const asIssue = resolveMaybe(state.issues, reference, ISSUE_BY)
+        const asProject = resolveMaybe(state.projects, reference, PROJECT_BY)
+
+        if ('found' in asIssue && 'found' in asProject) {
+          throw new BadRequest(
+            `"${reference}" names both an issue and a project:\n` +
+              `  issue   ${asIssue.found.ref ?? asIssue.found.addr} — ${asIssue.found.title}\n` +
+              `  project ${asProject.found.title}\n` +
+              'Pass an address to say which.',
+          )
+        }
+        const object = 'found' in asIssue
+          ? { addr: asIssue.found.addr, label: asIssue.found.ref ?? asIssue.found.addr }
+          : 'found' in asProject
+            ? { addr: asProject.found.addr, label: asProject.found.title }
+            : undefined
+
+        if (!object) {
+          // Whichever attempt had something to say says it, as `show` does: an
+          // ambiguity is a finding — "three issues match" — where a miss is a miss.
+          if ('ambiguous' in asIssue) throw new BadRequest(asIssue.ambiguous)
+          if ('ambiguous' in asProject) throw new BadRequest(asProject.ambiguous)
+          throw new BadRequest(`No issue or project matches "${reference}".`)
+        }
+
+        /*
+          The candidate set is this one object's conversations and nothing
+          wider. `--message` takes a phrase as well as an id, and a phrase
+          matched across the workspace is how the wrong comment gets rewritten
+          — the failure `resolve.ts` exists for, and one that leaves no trace
+          afterwards because the text it replaced is not shown again.
+        */
+        const messages = conversationsAbout(state.conversations, object.addr).flatMap((thread) =>
+          [thread.root, ...thread.replies].map((message) => ({
+            id: message.id,
+            body: edited(state.edits, message).body,
+            folder: message.folder,
+          })),
+        )
+        const message = findMessage(messages, target)
+
+        /*
+          The target's own Folder, not the object's — the trap CON-4 named.
+          A conversation stays in the Folder it was posted in even after the
+          project is re-linked to a Peek topic, and 40003 is channel-scoped, so
+          an `h` copied from the page would be refused with `accepted: false`
+          while the kind is granted and the signature is fine.
+        */
+        const result = await store(context).editMessage({
+          folder: message.folder,
+          messageEventId: message.id,
+          body,
+        })
+        published(result, `an edit of a comment on ${object.label}`)
+
+        return {
+          edited: {
+            ref: object.label,
+            addr: object.addr,
+            messageId: message.id,
+            folder: message.folder,
+            /*
+              What was there before, said back rather than assumed. `--message`
+              matches a phrase, and "it replaced the comment I meant" is the one
+              thing the caller cannot check afterwards — the original body is
+              still on the relay but nothing prints it once an edit has won.
+            */
+            replaced: message.body.slice(0, 120),
+          },
+          eventId: result.eventId,
+          /*
+            An edit that this identity did not author is the relay's to refuse,
+            not this command's — `validate_edit_ownership` also accepts the
+            NIP-OA owner of an authoring agent, and no client can evaluate that
+            half. So the note is about what the wire keeps, which nobody can
+            infer from a success.
+          */
+          note:
+            'The original event is untouched on the relay — an edit is a new kind:40003 naming it, and readers fold the pair. ' +
+            'A reader that does not implement the fold still shows the old text.',
+        }
       },
     },
     {

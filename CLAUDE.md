@@ -45,6 +45,7 @@ This reads **production**, `estiva.estiva.app`. There is no staging workspace.
 
 ```bash
 npx tsx scripts/agent.ts ship comment PEE-1 --body "..."
+npx tsx scripts/agent.ts ship edit-comment PEE-1 --message <id|phrase> --body "..."
 npx tsx scripts/agent.ts ship set-status PEE-1 in_progress
 npx tsx scripts/agent.ts ship assign PEE-1 me
 npx tsx scripts/agent.ts ship people          # the keys assign and --lead require
@@ -64,6 +65,29 @@ earlier fields standing and the answer says which those were.
 other people and other apps read the result as fact, and NIP-09 deletion is a
 request rather than a reversal.
 
+**An edit is the nearest thing to an undo, and it is not one** (AGE-3). A
+`kind:9` cannot be rewritten, so `edit-comment` and `peek edit` publish a
+`kind:40003` naming the target and readers fold the pair — latest edit wins. The
+original stays on the relay for ever, a reader that does not implement the fold
+still shows the old text, and Peek renders its timeline from Convex, so an edit
+published here may not change what the app shows until it reads the relay back.
+
+Three things about the target are easy to get wrong:
+
+- **`--message` takes an id or a phrase, and the id is what to prefer.** A
+  phrase is resolved against one conversation only, and refused if it matches
+  two — but an edit of the wrong message replaces text that was already true
+  and nothing prints the old body afterwards. `ship show` and `peek topic` both
+  print an `id` for every message.
+- **The `h` is the *target's* Folder, not the page's.** 40003 is channel-scoped,
+  and a conversation stays in the Folder it was posted in even after its project
+  is re-linked. Both commands read it off the message, which is why neither
+  takes a Folder.
+- **Who may edit is the relay's answer, never the CLI's.** It accepts the
+  target's effective author or the NIP-OA owner of an authoring agent, and no
+  client can evaluate the second half. A refusal comes back in the relay's own
+  words.
+
 Each command changes **exactly one object**, by design. There is deliberately no
 way to express "close everything matching X": see `docs/untrusted-content.md`.
 Every relay channel is open (PEEK-145), so Folder membership bounds nothing and
@@ -82,6 +106,7 @@ that places on writes is far cheaper to design for than to retrofit.
 ```bash
 npx tsx scripts/agent.ts peek topic "Feedback on Peek"
 npx tsx scripts/agent.ts peek reply "Feedback on Peek" <conversation> --body "..."
+npx tsx scripts/agent.ts peek edit "Feedback on Peek" <conversation> --message <id|phrase> --body "..."
 npx tsx scripts/agent.ts peek say "Feedback on Peek" --body "..."
 npx tsx scripts/agent.ts peek create-topic --name "..." [--about "..."]
 ```

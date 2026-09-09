@@ -20,6 +20,10 @@ import { loadCredentials } from '../lib/agent/credentials'
 import { archivedRemoved, assigneeFor, findIssue, findProject, issueEdits, participants, parseSince, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
 import { findTopic, replyTarget, type Topic } from '../lib/agent/apps/peek'
+import { edited, findMessage } from '../lib/agent/conversation'
+import { foldEdits } from '../src/edits'
+import { KIND } from '../src/kinds'
+import type { SignedEvent } from '@estiva-app/protocol'
 import type { Issue } from '../src/fold'
 import type { Directory } from '../src/profiles'
 
@@ -553,6 +557,101 @@ console.log('— where a reply attaches —')
 
   refuses('an ambiguous phrase is refused, not guessed', () => replyTarget(thread, 'to'), 'matches')
   refuses('a phrase matching nothing is refused', () => replyTarget(thread, 'nonexistent'))
+}
+
+console.log('— editing a message —')
+
+{
+  /*
+    AGE-3. An edit is a separate `kind:40003` naming its target, so the fold is
+    what decides which body a reader shows — and getting it wrong is not a
+    cosmetic bug here. An agent quoting a comment back at somebody is the only
+    thing between them and a body that was rewritten after they were told about
+    it, so `edited` marks the pair rather than silently substituting.
+  */
+  const edit = (over: Partial<SignedEvent> & { target: string }): SignedEvent => ({
+    id: over.id ?? 'e1',
+    pubkey: 'abc',
+    kind: KIND.MESSAGE_EDIT,
+    created_at: over.created_at ?? 1_000,
+    content: over.content ?? 'new text',
+    sig: '',
+    tags: [
+      ['h', 'folder'],
+      ['e', over.target],
+      ...(over.tags ?? []),
+    ],
+  })
+
+  {
+    const index = foldEdits([edit({ target: 'm1', content: 'corrected' })])
+    check('an edit is folded onto its target', index.m1?.body === 'corrected')
+    check('and nothing else picks it up', index.m2 === undefined)
+  }
+
+  {
+    /*
+      `ts` is honoured only when it agrees with `created_at` to the second
+      (SPEC §6.2). Both of these land in the same second, so without `ts` there
+      would be no defined order at all — which is the whole reason the builder
+      emits one that Buzz's own does not.
+    */
+    const index = foldEdits([
+      edit({ id: 'a', target: 'm1', content: 'first', created_at: 1_000, tags: [['ts', '1000200']] }),
+      edit({ id: 'b', target: 'm1', content: 'second', created_at: 1_000, tags: [['ts', '1000900']] }),
+    ])
+    check('the later ts wins inside one second', index.m1?.body === 'second')
+    check('and the time reported is the ts, in milliseconds', index.m1?.at === 1_000_900)
+  }
+
+  {
+    // A `ts` disagreeing with `created_at` is ignored rather than preferred —
+    // otherwise a client with a wrong clock reorders somebody's conversation,
+    // and the relay validates only `created_at`.
+    const index = foldEdits([
+      edit({ id: 'a', target: 'm1', content: 'honest', created_at: 2_000 }),
+      edit({ id: 'b', target: 'm1', content: 'liar', created_at: 1_000, tags: [['ts', '9999000']] }),
+    ])
+    check('a ts outside its own second cannot win', index.m1?.body === 'honest')
+  }
+
+  {
+    const index = foldEdits([{ ...edit({ target: 'm1' }), tags: [['h', 'folder']] }])
+    check('an edit naming no target is dropped', Object.keys(index).length === 0)
+  }
+
+  {
+    const index = foldEdits([edit({ target: 'm1', content: 'now', created_at: 5 })])
+
+    const untouched = edited(index, { id: 'm2', body: 'as written' })
+    check('an unedited message keeps its body', untouched.body === 'as written')
+    check('and carries no marker at all', untouched.edited === undefined && untouched.editedAt === undefined)
+
+    const changed = edited(index, { id: 'm1', body: 'as written' })
+    check('an edited message shows the new text', changed.body === 'now')
+    check('and says that it was edited', changed.edited === true)
+    check('with when, to the millisecond', changed.editedAt === new Date(5_000).toISOString())
+  }
+}
+
+{
+  /*
+    Resolving the target. The candidate set is narrowed by the caller — one
+    conversation, or one object's conversations — because a phrase matched
+    across a busy topic is how the wrong message gets rewritten, and unlike a
+    misplaced reply nothing afterwards shows what the text used to be.
+  */
+  const messages = [
+    { id: 'm1', body: 'Gate cleared. estiva-id#60 merged' },
+    { id: 'm2', body: 'Ship half is up for review' },
+    { id: 'm3', body: 'Peek half is up for review' },
+  ]
+
+  check('an exact id resolves', findMessage(messages, 'm2').id === 'm2')
+  check('a distinctive phrase resolves', findMessage(messages, 'Gate cleared').id === 'm1')
+  refuses('a phrase matching two messages is refused, not guessed', () => findMessage(messages, 'up for review'), 'matches')
+  refuses('a phrase matching nothing is refused', () => findMessage(messages, 'nonexistent'))
+  refuses('an empty conversation says so rather than refusing the phrase', () => findMessage([], 'anything'), 'no messages')
 }
 
 console.log('— since, for the activity feed —')
