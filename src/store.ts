@@ -25,10 +25,12 @@ import {
   issueAddr,
   projectAddr,
 } from './events'
-import { findNaddrs, naddrToAddr, buildEdit } from '@estiva-app/protocol'
+import { findNaddrs, naddrToAddr, buildReaction, buildEdit, buildDeletion as buildEventDeletion } from '@estiva-app/protocol'
 import { foldFolder, projectFolders, type FolderState } from './fold'
 import { taggedIndex, type TaggedIndex } from './references'
 import { foldEdits, type EditIndex } from './edits'
+import { foldAttachments, type AttachmentIndex } from './attachments'
+import { REACTION_EVENT_LIMIT } from './reactions'
 import { directoryFrom, type Directory } from './profiles'
 import { KIND } from './kinds'
 import { buildRecommendation } from './manifest'
@@ -100,17 +102,46 @@ export interface WorkspaceState extends FolderState {
    * `edited` field on `Message` would turn both repos red — see `edits.ts`.
    */
   edits: EditIndex
+  /**
+   * Message id → the files it carries, from its `imeta` tags (CON-12).
+   *
+   * Beside the fold for the same reason as `edits`: a `files` field on
+   * `Message` would walk into the conformance test's union of keys and turn
+   * both repos red — see `attachments.ts`.
+   */
+  attachments: AttachmentIndex
+  /**
+   * Every Folder this read actually fetched (PER-3).
+   *
+   * Beside the fold, like the three above, and for the same reason: `foldFolder`
+   * is a contract with `estiva-agent` whose conformance test walks the union of
+   * its keys, so a `folders` field on `FolderState` would turn both repos red.
+   *
+   * It exists because the live socket needs the set and `loadAll` was the only
+   * thing that knew it — discovery *derives* the Folder list while reading, so
+   * there is no index to consult and nothing else can compute it. Which also
+   * means the subscription cannot be opened until a read has landed; see
+   * `useLiveWorkspace`.
+   */
+  folders: string[]
 }
 
 /**
  * Fold a set of events, and read off the same set the two things `foldFolder`
- * deliberately does not carry: tag-vs-body provenance, and edits.
+ * deliberately does not carry: tag-vs-body provenance, edits, and attachments.
  */
-function read(events: SignedEvent[]): WorkspaceState {
+function read(events: SignedEvent[], folders: string[]): WorkspaceState {
   return {
     ...foldFolder(events, referencedAddresses),
     tagged: taggedIndex(events),
     edits: foldEdits(events),
+    attachments: foldAttachments(events),
+    // A parameter rather than derived from the events: the set that was
+    // *asked for* is not the set that came back. A Folder holding nothing this
+    // reader may see yields no events and would vanish from a derived list,
+    // and then nothing would ever subscribe to it — so it would stay empty and
+    // silent, which is indistinguishable from working.
+    folders: [...new Set(folders)],
   }
 }
 
@@ -272,11 +303,15 @@ export class Store {
   /**
    * Ask the relay to drop a project's record.
    *
-   * Only the project's author can do this — NIP-09 is author-scoped — and it
-   * only removes the *record*. The issues in the Folder are separate events
+   * It only removes the *record*. The issues in the Folder are separate events
    * with their own authors; they survive, and simply stop being reachable from
    * this app once the project they hung off is gone. Callers should say that
    * out loud before publishing.
+   *
+   * Who may do it is the relay's call and not this method's — the author, or
+   * the NIP-OA owner of an authoring agent (SPEC §6.5, corrected 2026-09-06).
+   * This comment used to say "only the project's author can do this", which is
+   * the rule SHI-14 found wrong and CON-3 withdrew.
    */
   deleteProject(args: {
     recordFolder: string
@@ -316,6 +351,42 @@ export class Store {
         reason: args.reason,
       }),
     )
+  }
+
+  /**
+   * Ask the relay to drop a comment — CON-3.
+   *
+   * ## Why this is the event form and not the address form
+   *
+   * A comment is a `kind:1111`: a regular event with an id and no address. So
+   * the `kind:5` names it with an `e` tag, and carries **no `h`** — the relay
+   * looks the target up and takes the channel from it (`ingest.rs`: *"kind:5
+   * events don't carry an h-tag, so we look up the target event and use its
+   * channel_id"*). Exactly one target is allowed, `e` or `a`, never both.
+   *
+   * That is the same shape `unreact` uses, and deliberately: a reaction and a
+   * comment are both regular events, and the relay validates their deletions
+   * through the same branch. The difference is only what is being taken back.
+   *
+   * ## Who may
+   *
+   * The relay's call, never this app's. `validate_standard_deletion_event`
+   * accepts the target's effective author **or** that author's NIP-OA owner,
+   * on both branches — so a human can retract a comment their agent wrote.
+   * **No client can evaluate the second half**: `users.agent_owner_pubkey` is
+   * written from the attestation and read server-side only, and the attestation
+   * runs agent→owner rather than the reverse. So the control is offered and the
+   * refusal is reported in the relay's own words (SPEC §6.5, corrected
+   * 2026-09-06; SHI-14 found the same thing on objects).
+   *
+   * ## Still a request
+   *
+   * The relay stops returning the event, which is why nothing here has to fold
+   * a tombstone: the next read simply does not contain it. A copy on another
+   * relay, or in another app's cache, is untouched.
+   */
+  deleteMessage(args: { messageEventId: string }): Promise<PublishResult> {
+    return this.publish(buildEventDeletion(this.signer.pubkey, Date.now(), { targetEventId: args.messageEventId }))
   }
 
   /**
@@ -476,6 +547,71 @@ export class Store {
   }
 
   /**
+   * Reactions on a set of messages — CON-2.
+   *
+   * **One filter with an `#e` array, and that is checked rather than assumed.**
+   * One filter with an `#e` array, not one per message — which would be 588
+   * round trips for this workspace. Measured against production 2026-09-06:
+   * `#e` **does** OR, two targets asked for and two answered. `rawFolders` is
+   * per-Folder for a reason that does not apply here: it is about `limit`
+   * being shared across a filter's values, and this call bounds the events it
+   * takes back explicitly through `REACTION_EVENT_LIMIT`.
+   *
+   * (The note that used to sit here said `#h` does not OR at all. It does —
+   * see `rawFolders`, re-measured 2026-09-07.)
+   *
+   * The horizon is applied by the caller through `reactionTargets`, so this
+   * method has no opinion about how much of a page it is being asked about; it
+   * bounds the *events* it will take back, which is a different limit and the
+   * one a single very busy message could otherwise blow past.
+   *
+   * No `kind:5` query. The relay stops returning an event once it holds a
+   * deletion for it, and this app caches nothing — so a retracted reaction is
+   * absent from the next read rather than something to reconcile. Peek asks
+   * because Peek keeps a copy.
+   */
+  async reactionsFor(eventIds: string[]): Promise<SignedEvent[]> {
+    if (!eventIds.length) return []
+    return this.relay.query([
+      { kinds: [KIND.REACTION], '#e': eventIds, limit: REACTION_EVENT_LIMIT },
+    ] as never)
+  }
+
+  /**
+   * React to a message.
+   *
+   * No `h`, deliberately — `buildReaction` mirrors Buzz's own builder, which
+   * emits none, because the relay derives the channel from the target's `e` tag
+   * and ignores a client-supplied one. Adding it would change the event id for
+   * no benefit.
+   */
+  react(args: { targetEventId: string; emoji: string }): Promise<PublishResult> {
+    return this.publish(
+      buildReaction(this.signer.pubkey, Date.now(), {
+        targetEventId: args.targetEventId,
+        emoji: args.emoji,
+      }),
+    )
+  }
+
+  /**
+   * Take a reaction back.
+   *
+   * A `kind:5` naming **the reaction's own event**, not the message — and with
+   * no `h`, matching `build_remove_reaction`. That is a different shape from
+   * this file's other deletions, which target an *address* and must carry the
+   * record's Folder; the two are not interchangeable and the wrong one is
+   * accepted-and-ignored rather than refused.
+   *
+   * Still a request. The relay honours it from the reaction's author or that
+   * author's NIP-OA owner (SPEC §6.5, corrected 2026-09-06), and the caller
+   * reports a refusal rather than assuming it worked.
+   */
+  unreact(args: { reactionEventId: string }): Promise<PublishResult> {
+    return this.publish(buildEventDeletion(this.signer.pubkey, Date.now(), { targetEventId: args.reactionEventId }))
+  }
+
+  /**
    * **Ship does not publish `kind:0`. Estiva ID does, and it is the only
    * writer** (PEEK-48).
    *
@@ -590,7 +726,7 @@ export class Store {
    * reading one container in isolation.
    */
   async loadFolder(folder: string): Promise<WorkspaceState> {
-    return read(await this.rawFolders([folder]))
+    return read(await this.rawFolders([folder]), [folder])
   }
 
   /**
@@ -601,7 +737,7 @@ export class Store {
    * doing that serially would make the issue list N round trips deep.
    */
   async loadFolders(folders: string[]): Promise<WorkspaceState> {
-    return read(await this.rawFolders(folders))
+    return read(await this.rawFolders(folders), folders)
   }
 
   /**
@@ -703,21 +839,34 @@ export class Store {
       events = [...events, ...(await this.rawFolders([...wanted]))]
     }
 
-    return read(events)
+    return read(events, [...fetched])
   }
 
   /**
    * Raw events for one or more Folders — for debugging and verification.
    *
-   * **One filter per Folder, not one filter with an `#h` array.** NIP-01 says
-   * the values of a tag filter are OR-ed, and Buzz does not do that: measured
-   * against the live relay, `{'#h': [A, B]}` returns only A's events, silently.
-   * Two filters return both.
+   * **One filter per Folder, not one filter with an `#h` array — but not for
+   * the reason this comment used to give.**
    *
-   * That failure mode is the worst kind — no error, just a short read, which
-   * folds into a project whose issues have all vanished. Costing one filter
-   * object per project is cheap next to that; it is still a single round trip,
-   * because `POST /query` takes a **bare array** of filters (FRICTION.md A5).
+   * It said Buzz does not OR the values of a tag filter, and that
+   * `{'#h': [A, B]}` returns only A's events. Re-measured against production
+   * 2026-09-07: **it returns both.** Two Folders holding 13 and 3 events came
+   * back as 16; at `limit: 5` the answer was 5 drawn from both, which is
+   * NIP-01 behaving exactly as written. Whatever was seen before, that is not
+   * what the relay does now, and the belief had been reasoned from ever since
+   * without being re-checked.
+   *
+   * The shape survives the correction because the real reason is the `limit`.
+   * One filter over thirty-six Folders shares **one** limit, so a busy Folder
+   * crowds the others out; NIP-01 has no truncation signal, so what a reader
+   * gets is a short read with no error — a project whose issues have silently
+   * vanished. One filter per Folder gets the relay's clamp *per Folder*,
+   * measured: ten filters at `limit: 5` returned 48 events, not 5.
+   *
+   * And it is a single round trip again. `queryAll` batches every filter's
+   * first page into one `POST /query` since protocol 0.15.0, so the per-Folder
+   * shape no longer costs a request per Folder — this read went from 39
+   * requests to 3 against production.
    */
   async rawFolders(folders: string[]): Promise<SignedEvent[]> {
     for (const folder of folders) assertFolderId(folder)
