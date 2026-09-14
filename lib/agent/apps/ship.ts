@@ -78,6 +78,17 @@ function projectSummary(project: Project, directory: Directory) {
     archived: project.archived || undefined,
     folder: project.contentFolder,
     /*
+      Said in the listing, not only in `show` (FOL-20). `folder` is where the
+      project's *work* is, and after a re-link that is not where its record
+      is — the record keeps the `h` it was filed with, and a change published
+      anywhere else is accepted by the relay and then invisible to a reader of
+      the record's own Folder. Fourteen projects linked to five team Folders is
+      fourteen chances to get that wrong, and this is what makes the move
+      checkable from the one command everybody runs first.
+    */
+    relinked: project.contentFolder !== project.originFolder || undefined,
+    recordFolder: project.contentFolder !== project.originFolder ? project.originFolder : undefined,
+    /*
       Present even when empty, and that is the point of including it at all.
 
       This listing omitted the field entirely, so a project with an 8000-word
@@ -498,6 +509,38 @@ async function resolveIssueFor(context: AgentContext, reference: string) {
  * authority. Every write funnels through here so no caller can forget, since
  * the failure mode is an agent reporting an issue closed that the relay dropped.
  */
+/**
+ * A Folder by name or id, from the create events on the relay.
+ *
+ * The same lookup for `create-project --topic` and `link-project --folder`,
+ * through `resolveOne` like every other reference (CLAUDE.md): an ambiguous
+ * name is refused with the candidates, never guessed. `noun` is only what the
+ * refusal calls it — a "topic" to somebody pairing with a Peek topic, a
+ * "folder" to somebody linking to a team.
+ */
+async function resolveFolder(
+  context: AgentContext,
+  reference: string,
+  noun: 'topic' | 'folder',
+): Promise<{ folder: string; name: string }> {
+  const events = await context.relay.queryAll([{ kinds: [KIND.FOLDER] }])
+  const channels = events.map((event) => ({
+    folder: event.tags.find((tag) => tag[0] === 'h')?.[1] ?? '',
+    name: event.tags.find((tag) => tag[0] === 'name')?.[1] ?? '',
+  }))
+  return resolveOne(
+    channels.filter((channel) => channel.folder),
+    reference,
+    {
+      noun,
+      exact: (channel) => [channel.folder],
+      text: (channel) => channel.name,
+      label: (channel) => `${channel.name} (${channel.folder.slice(0, 8)}…)`,
+      hint: `Pass a ${noun} name or a Folder id.`,
+    },
+  )
+}
+
 function published<T extends { ok: boolean; reason?: string; duplicate?: boolean }>(
   result: T,
   what: string,
@@ -1365,6 +1408,67 @@ export const shipApp: AgentApp = {
       },
     },
     {
+      name: 'link-project',
+      signs: [KIND.CHANGE],
+      summary: 'point a project’s work at a Folder that already exists — a team, or a Peek topic',
+      usage: 'link-project <ref> --folder <name|id>',
+      async run(context, args) {
+        const reference = args.positional[0]
+        const target = flagValue(args, 'folder')
+        if (!reference) throw new BadRequest('link-project needs a project reference.')
+        if (!target) throw new BadRequest('link-project needs --folder: a Folder name or id.')
+
+        const state = await store(context).loadAll()
+        const project = findProject(state.projects, reference)
+        const folder = await resolveFolder(context, target, 'folder')
+
+        /*
+          Nothing is re-created and nothing moves. The record keeps the `h` it
+          was filed with, the issues already in the old Folder keep theirs, and
+          the change is published twice — into the record's Folder, where every
+          reader of this project looks, and into the Folder being linked, so an
+          app reading *that* Folder finds the project named from inside it
+          (`Store.linkProjectFolder` says why both). Without the second write a
+          team Folder linked before any issue is filed in it lists nothing.
+
+          Refused rather than repeated when the project already points there: a
+          repeated value folds to the same state, but it is one more activity
+          line on the project for no change, and the answer would read as if
+          something had moved.
+        */
+        if (project.contentFolder === folder.folder) {
+          throw new BadRequest(
+            `“${project.title}” is already linked to ${folder.name || 'that Folder'} (${folder.folder}). Nothing was published.`,
+          )
+        }
+        if (!project.originFolder) {
+          throw new BadRequest(
+            `“${project.title}” names no Folder for its record, so the link has nowhere to be published.`,
+          )
+        }
+
+        const result = await store(context).linkProjectFolder({
+          recordFolder: project.originFolder,
+          project: project.addr,
+          folder: folder.folder,
+        })
+        published(result, `linking “${project.title}” to ${folder.name || folder.folder}`)
+
+        return {
+          linked: { title: project.title, addr: project.addr },
+          from: project.contentFolder,
+          to: { folder: folder.folder, name: folder.name || undefined },
+          recordFolder: project.originFolder,
+          eventId: result.eventId,
+          // The second write is the one a reader of the team Folder depends on,
+          // and it can be refused on its own — a restricted Folder would.
+          announced: result.announced,
+          announceReason: result.announceReason,
+          note: `Issues already filed keep their Folder; new ones land in ${folder.name || folder.folder}. \`ship projects\` now reports this project as relinked.`,
+        }
+      },
+    },
+    {
       name: 'archive-project',
       signs: [KIND.CHANGE],
       summary: 'hide a project from the lists, or bring it back',
@@ -1585,22 +1689,7 @@ export const shipApp: AgentApp = {
         const topic = flagValue(args, 'topic')
         let folder: string | undefined
         if (topic) {
-          const events = await context.relay.queryAll([{ kinds: [KIND.FOLDER] }])
-          const channels = events.map((event) => ({
-            folder: event.tags.find((tag) => tag[0] === 'h')?.[1] ?? '',
-            name: event.tags.find((tag) => tag[0] === 'name')?.[1] ?? '',
-          }))
-          const match = resolveOne(
-            channels.filter((channel) => channel.folder),
-            topic,
-            {
-              noun: 'topic',
-              exact: (channel) => [channel.folder],
-              text: (channel) => channel.name,
-              label: (channel) => `${channel.name} (${channel.folder.slice(0, 8)}…)`,
-              hint: 'Pass a topic name or a Folder id.',
-            },
-          )
+          const match = await resolveFolder(context, topic, 'topic')
           const adopted = await store.adoptFolder(match.folder)
           if (!adopted.ok) {
             throw new BadRequest(
