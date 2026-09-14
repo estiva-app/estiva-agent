@@ -18409,6 +18409,17 @@ function projectSummary(project, directory) {
     archived: project.archived || void 0,
     folder: project.contentFolder,
     /*
+      Said in the listing, not only in `show` (FOL-20). `folder` is where the
+      project's *work* is, and after a re-link that is not where its record
+      is — the record keeps the `h` it was filed with, and a change published
+      anywhere else is accepted by the relay and then invisible to a reader of
+      the record's own Folder. Fourteen projects linked to five team Folders is
+      fourteen chances to get that wrong, and this is what makes the move
+      checkable from the one command everybody runs first.
+    */
+    relinked: project.contentFolder !== project.originFolder || void 0,
+    recordFolder: project.contentFolder !== project.originFolder ? project.originFolder : void 0,
+    /*
           Present even when empty, and that is the point of including it at all.
     
           This listing omitted the field entirely, so a project with an 8000-word
@@ -18586,6 +18597,24 @@ async function resolveIssueFor(context2, reference) {
   const state = await store(context2).loadAll();
   const issue2 = findIssue(state.issues, reference);
   return { state, issue: issue2 };
+}
+async function resolveFolder(context2, reference, noun) {
+  const events = await context2.relay.queryAll([{ kinds: [KIND2.FOLDER] }]);
+  const channels = events.map((event) => ({
+    folder: event.tags.find((tag2) => tag2[0] === "h")?.[1] ?? "",
+    name: event.tags.find((tag2) => tag2[0] === "name")?.[1] ?? ""
+  }));
+  return resolveOne(
+    channels.filter((channel) => channel.folder),
+    reference,
+    {
+      noun,
+      exact: (channel) => [channel.folder],
+      text: (channel) => channel.name,
+      label: (channel) => `${channel.name} (${channel.folder.slice(0, 8)}\u2026)`,
+      hint: `Pass a ${noun} name or a Folder id.`
+    }
+  );
 }
 function published(result, what) {
   if (!result.ok) throw new BadRequest(`The relay refused ${what}: ${result.reason ?? "no reason given"}`);
@@ -19200,6 +19229,49 @@ Pass an address to say which.`
       }
     },
     {
+      name: "link-project",
+      signs: [KIND2.CHANGE],
+      summary: "point a project\u2019s work at a Folder that already exists \u2014 a team, or a Peek topic",
+      usage: "link-project <ref> --folder <name|id>",
+      async run(context2, args2) {
+        const reference = args2.positional[0];
+        const target = flagValue(args2, "folder");
+        if (!reference) throw new BadRequest("link-project needs a project reference.");
+        if (!target) throw new BadRequest("link-project needs --folder: a Folder name or id.");
+        const state = await store(context2).loadAll();
+        const project = findProject(state.projects, reference);
+        const folder = await resolveFolder(context2, target, "folder");
+        if (project.contentFolder === folder.folder) {
+          throw new BadRequest(
+            `\u201C${project.title}\u201D is already linked to ${folder.name || "that Folder"} (${folder.folder}). Nothing was published.`
+          );
+        }
+        if (!project.originFolder) {
+          throw new BadRequest(
+            `\u201C${project.title}\u201D names no Folder for its record, so the link has nowhere to be published.`
+          );
+        }
+        const result = await store(context2).linkProjectFolder({
+          recordFolder: project.originFolder,
+          project: project.addr,
+          folder: folder.folder
+        });
+        published(result, `linking \u201C${project.title}\u201D to ${folder.name || folder.folder}`);
+        return {
+          linked: { title: project.title, addr: project.addr },
+          from: project.contentFolder,
+          to: { folder: folder.folder, name: folder.name || void 0 },
+          recordFolder: project.originFolder,
+          eventId: result.eventId,
+          // The second write is the one a reader of the team Folder depends on,
+          // and it can be refused on its own — a restricted Folder would.
+          announced: result.announced,
+          announceReason: result.announceReason,
+          note: `Issues already filed keep their Folder; new ones land in ${folder.name || folder.folder}. \`ship projects\` now reports this project as relinked.`
+        };
+      }
+    },
+    {
       name: "archive-project",
       signs: [KIND2.CHANGE],
       summary: "hide a project from the lists, or bring it back",
@@ -19370,22 +19442,7 @@ Pass an address to say which.`
         const topic = flagValue(args2, "topic");
         let folder;
         if (topic) {
-          const events = await context2.relay.queryAll([{ kinds: [KIND2.FOLDER] }]);
-          const channels = events.map((event) => ({
-            folder: event.tags.find((tag2) => tag2[0] === "h")?.[1] ?? "",
-            name: event.tags.find((tag2) => tag2[0] === "name")?.[1] ?? ""
-          }));
-          const match = resolveOne(
-            channels.filter((channel) => channel.folder),
-            topic,
-            {
-              noun: "topic",
-              exact: (channel) => [channel.folder],
-              text: (channel) => channel.name,
-              label: (channel) => `${channel.name} (${channel.folder.slice(0, 8)}\u2026)`,
-              hint: "Pass a topic name or a Folder id."
-            }
-          );
+          const match = await resolveFolder(context2, topic, "topic");
           const adopted = await store2.adoptFolder(match.folder);
           if (!adopted.ok) {
             throw new BadRequest(
