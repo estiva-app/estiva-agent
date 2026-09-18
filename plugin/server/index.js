@@ -18406,6 +18406,25 @@ function resolvePubkeys(directory, value) {
   return profile?.name ?? value;
 }
 var status = (vocab, value) => lookupStatus(vocab, value).label;
+var statusValue = (vocab, label) => vocab.find((entry) => entry.label === label)?.value ?? label;
+var ROW_TITLE = 68;
+function issueRow(issue2) {
+  return [
+    issue2.ref.padEnd(8),
+    statusValue(ISSUE_STATUSES, issue2.status).padEnd(12),
+    issue2.short,
+    clip(issue2.title, ROW_TITLE)
+  ].join(" ");
+}
+function projectRow(project) {
+  return [
+    project.short,
+    statusValue(PROJECT_STATUSES, project.status).padEnd(12),
+    `${String(project.issues).padStart(3)} issues`,
+    clip(project.title, ROW_TITLE) + (project.archived ? " (archived)" : ""),
+    project.lead ? `\u2014 ${project.lead}` : ""
+  ].join(" ").trimEnd();
+}
 var DEFAULT_ACTIVITY = 50;
 var BLURB = 200;
 function projectSummary(project, directory) {
@@ -18810,7 +18829,10 @@ var shipApp = {
     {
       name: "projects",
       summary: "every project, with status and lead",
-      usage: "projects [--archived]",
+      usage: "projects [--archived] [--json]",
+      lines(result) {
+        return [...result.projects.map(projectRow), ...result.hidden.note ? [result.hidden.note] : []];
+      },
       async run(context2, args2) {
         const state = await store(context2).loadAll();
         const directory = await directoryFor(context2, state.projects.map((p) => p.lead));
@@ -18850,7 +18872,14 @@ var shipApp = {
     {
       name: "issues",
       summary: "issues, newest first",
-      usage: "issues [--project <ref>] [--status <value>]",
+      usage: "issues [--project <ref>] [--status <value>] [--json]",
+      lines(result) {
+        return [
+          ...result.issues.map(issueRow),
+          `${result.issues.length} listed`,
+          ...result.coverage.note ? [result.coverage.note] : []
+        ];
+      },
       async run(context2, args2) {
         const state = await store(context2).loadAll();
         const wantedProject = flagValue(args2, "project");
@@ -19587,7 +19616,8 @@ Pass an address to say which.`
         });
         published(created.result, `a new issue in ${project.title}`);
         return {
-          created: { ref, addr: created.addr, title, project: project.title },
+          state: issueLine({ ref, id: created.id, status: DEFAULT_ISSUE_STATUS, comments: [] }, void 0),
+          created: { ref, short: short(created.id), addr: created.addr, title, project: project.title },
           eventId: created.result.eventId
         };
       }
