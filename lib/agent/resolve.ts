@@ -44,6 +44,17 @@ export interface Resolvable<T> {
    * appears the day somebody files an ordinary follow-up.
    */
   exact: (item: T) => (string | undefined)[]
+  /**
+   * Identifiers a reference may name by a leading fragment — the `d` of an
+   * address, so `42d82497` stands for the 110-character whole (MAK-1).
+   *
+   * Checked after `exact` and before `text`, and only for a reference of at
+   * least `MIN_PREFIX` characters: below that a fragment is far more likely to
+   * be the start of a word than the start of an id. Two ids sharing the
+   * fragment is a refusal, not a fall-through to the title search, because the
+   * person typed an identifier and the answer is "longer, please".
+   */
+  prefix?: (item: T) => (string | undefined)[]
   /** Free text searched by substring when no exact identifier matched. */
   text: (item: T) => string
   /** How a candidate is listed back when the reference was ambiguous. */
@@ -54,6 +65,18 @@ export interface Resolvable<T> {
 
 /** How many candidates to name before it stops being a helpful list. */
 const MAX_CANDIDATES = 8
+
+/** Shortest fragment treated as the start of an id rather than of a word. */
+const MIN_PREFIX = 4
+
+/**
+ * The first `SHORT` characters of an id, which is what listings print and
+ * what `prefix` accepts back. Eight hex characters of a v4 uuid: 4 billion
+ * values, so two colliding in a workspace of a few hundred is not a case worth
+ * a variable-length scheme — and a collision is still refused, never guessed.
+ */
+export const SHORT = 8
+export const short = (id: string): string => id.slice(0, SHORT)
 
 /**
  * What one reference resolved to, without deciding whether that is an error.
@@ -80,19 +103,29 @@ export function resolveMaybe<T>(items: T[], reference: string, how: Resolvable<T
   )
   if (exact.length === 1) return { found: exact[0] }
 
-  const partial = items.filter((item) => how.text(item).toLowerCase().includes(needle))
+  const byPrefix =
+    how.prefix && needle.length >= MIN_PREFIX && exact.length === 0
+      ? items.filter((item) =>
+          how.prefix!(item).some((value) => value?.toLowerCase().startsWith(needle)),
+        )
+      : []
+  if (byPrefix.length === 1) return { found: byPrefix[0] }
+
+  const partial =
+    byPrefix.length > 1 ? [] : items.filter((item) => how.text(item).toLowerCase().includes(needle))
   if (partial.length === 1) return { found: partial[0] }
 
-  if (partial.length > 1 || exact.length > 1) {
+  if (partial.length > 1 || exact.length > 1 || byPrefix.length > 1) {
     /*
       Two exact matches is a genuine collision in the data rather than a vague
       question — display refs are not unique, and the workspace really does
       contain two `PEE-1`. Listing them is still the right answer: the caller
       needs to see that the identifier they trusted is not an identifier.
     */
-    const candidates = (exact.length > 1 ? exact : partial).slice(0, MAX_CANDIDATES)
+    const collided = exact.length > 1 ? exact : byPrefix.length > 1 ? byPrefix : partial
+    const candidates = collided.slice(0, MAX_CANDIDATES)
     const shown = candidates.map((item) => `  ${how.label(item)}`).join('\n')
-    const total = exact.length > 1 ? exact.length : partial.length
+    const total = collided.length
     const more = total > candidates.length ? `\n  …and ${total - candidates.length} more` : ''
     return { ambiguous: `"${reference}" matches ${total} ${how.noun}s:\n${shown}${more}` }
   }

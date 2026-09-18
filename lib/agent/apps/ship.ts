@@ -25,7 +25,7 @@ import {
 import type { Directory } from '../../../src/profiles'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage } from '../conversation'
-import { resolveMaybe, resolveOne } from '../resolve'
+import { resolveMaybe, resolveOne, short } from '../resolve'
 
 const store = (context: AgentContext) => new Store(context.relay, context.signer)
 
@@ -72,6 +72,7 @@ const BLURB = 200
 function projectSummary(project: Project, directory: Directory) {
   return {
     ref: project.addr,
+    short: short(project.id),
     title: project.title,
     status: status(PROJECT_STATUSES, project.status),
     lead: who(directory, project.lead),
@@ -113,6 +114,10 @@ function projectSummary(project: Project, directory: Directory) {
 function issueSummary(issue: Issue, directory: Directory) {
   return {
     ref: issue.ref ?? issue.addr,
+    // Printed in every listing so the next command can name the issue by it
+    // rather than by a ref that collides (SHI-4) or an address typed from
+    // memory. Every resolver here accepts it back.
+    short: short(issue.id),
     addr: issue.addr,
     title: issue.title,
     status: status(ISSUE_STATUSES, issue.status),
@@ -205,17 +210,21 @@ async function coverage(
 const ISSUE_BY = {
   noun: 'issue',
   exact: (issue: Issue) => [issue.addr, issue.id, issue.ref],
+  prefix: (issue: Issue) => [issue.id],
   text: (issue: Issue) => issue.title,
-  label: (issue: Issue) => `${issue.ref ?? issue.addr} — ${issue.title}`,
-  hint: 'Pass a ref, an address or part of a title.',
+  // The short id is in the label so a refusal hands back something that
+  // cannot collide the way the ref it lists beside does.
+  label: (issue: Issue) => `${issue.ref ?? issue.addr} ${short(issue.id)} — ${issue.title}`,
+  hint: 'Pass a ref, an address, the first 8 characters of its id, or part of a title.',
 }
 
 const PROJECT_BY = {
   noun: 'project',
   exact: (project: Project) => [project.addr, project.id, project.title],
+  prefix: (project: Project) => [project.id],
   text: (project: Project) => project.title,
-  label: (project: Project) => project.title,
-  hint: 'Pass a project name or part of one.',
+  label: (project: Project) => `${short(project.id)} — ${project.title}`,
+  hint: 'Pass a project name or part of one, or the first 8 characters of its id.',
 }
 
 export function findIssue(issues: Issue[], reference: string): Issue {
@@ -501,6 +510,106 @@ async function resolveIssueFor(context: AgentContext, reference: string) {
   const state = await store(context).loadAll()
   const issue = findIssue(state.issues, reference)
   return { state, issue }
+}
+
+/** How much of the last comment a one-line echo quotes, and `status` returns. */
+const LINE_QUOTE = 80
+const LAST_COMMENT = 200
+
+/** One line of text, whitespace collapsed, cut with an ellipsis past `max`. */
+export function clip(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+/** Every comment about one object, oldest first, each body as it stands now. */
+function commentsOn(state: WorkspaceState, addr: string) {
+  return conversationsAbout(state.conversations, addr)
+    .flatMap((thread) => [thread.root, ...thread.replies])
+    .map((message) => ({
+      id: message.id,
+      author: message.author,
+      at: message.ts ?? message.createdAt * 1000,
+      body: edited(state.edits, message).body,
+    }))
+    .sort((a, b) => a.at - b.at)
+}
+
+/**
+ * The most recent pull request named on an issue, from its comments (newest
+ * first) and then its description. A URL is the only place Ship keeps one —
+ * there is no link field — and "where is it now" is usually answered by it.
+ */
+export function pullRequestOn(texts: string[]): string | undefined {
+  for (const text of texts) {
+    const found = text.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g)
+    if (found) return found[found.length - 1]
+  }
+  return undefined
+}
+
+export interface IssueStateInput {
+  ref: string
+  id: string
+  status: string
+  assignee?: string
+  comments: { body: string }[]
+}
+
+/**
+ * One line that answers "where is it now" — what a write echoes so nothing
+ * has to be read back (MAK-1: 79 of 155 issue reads in a week were a `show`
+ * after a write, because the write printed only an eventId).
+ *
+ *     MAK-1 · a57c26e3 · in_progress · Claude · 4 comments · last: "…"
+ *
+ * The status is the value, not the label, because it is what `set-status`
+ * takes back. The short id is there so the next command can name the issue
+ * without the ref, which collides.
+ */
+export function issueLine(issue: IssueStateInput, assignee: string | undefined): string {
+  const count = issue.comments.length
+  const last = issue.comments[count - 1]
+  return [
+    issue.ref,
+    short(issue.id),
+    issue.status || DEFAULT_ISSUE_STATUS,
+    assignee ?? 'unassigned',
+    `${count} comment${count === 1 ? '' : 's'}`,
+    ...(last ? [`last: "${clip(last.body, LINE_QUOTE)}"`] : []),
+  ].join(' · ')
+}
+
+/**
+ * The state a write just produced, without reading it back.
+ *
+ * The relay accepted the event — `published` threw otherwise — so the state
+ * is what was loaded plus that one change, and `after` is the change. A
+ * second `loadAll` would show the same thing a few hundred milliseconds
+ * later, at the cost of the round trip this exists to remove.
+ */
+async function stateAfter(
+  context: AgentContext,
+  state: WorkspaceState,
+  issue: Issue,
+  after: { status?: string; assignee?: string | null; comment?: string },
+) {
+  const assignee = after.assignee === undefined ? issue.assignee : after.assignee || undefined
+  const directory = await directoryFor(context, [assignee])
+  const comments = commentsOn(state, issue.addr)
+  if (after.comment !== undefined) {
+    comments.push({ id: '', author: context.signer.pubkey, at: Date.now(), body: after.comment })
+  }
+  return issueLine(
+    {
+      ref: issue.ref ?? issue.addr,
+      id: issue.id,
+      status: after.status ?? issue.status,
+      assignee,
+      comments,
+    },
+    who(directory, assignee),
+  )
 }
 
 /**
@@ -924,6 +1033,45 @@ export const shipApp: AgentApp = {
       },
     },
     {
+      name: 'status',
+      summary: 'where one issue is now, in a few lines — not its description or conversation',
+      usage: 'status <ref>',
+      async run(context, args) {
+        const reference = args.positional[0]
+        if (!reference) throw new BadRequest('status needs a reference — try `ship issues` first.')
+
+        /*
+          The "where is it now" read. Most `show` calls were this question
+          (MAK-1), answered with the whole description and conversation every
+          time — a median of 1.6K characters, and up to 24K. This returns the
+          state, the PR if one is named, and the last comment clipped; `show`
+          is still there for the rest.
+        */
+        const { state, issue } = await resolveIssueFor(context, reference)
+        const comments = commentsOn(state, issue.addr)
+        const last = comments[comments.length - 1]
+        const directory = await directoryFor(context, [issue.assignee, last?.author])
+
+        return {
+          state: issueLine({ ...issue, ref: issue.ref ?? issue.addr, comments }, who(directory, issue.assignee)),
+          ref: issue.ref ?? issue.addr,
+          short: short(issue.id),
+          addr: issue.addr,
+          title: issue.title,
+          status: issue.status || DEFAULT_ISSUE_STATUS,
+          assignee: who(directory, issue.assignee),
+          pullRequest: pullRequestOn([...comments.map((c) => c.body).reverse(), issue.description]),
+          comments: comments.length,
+          lastComment: last && {
+            id: last.id,
+            by: who(directory, last.author),
+            at: new Date(last.at).toISOString(),
+            body: clip(last.body, LAST_COMMENT),
+          },
+        }
+      },
+    },
+    {
       name: 'show',
       summary: 'one issue or project, folded, with its conversation and history',
       usage: 'show <ref>',
@@ -1057,7 +1205,7 @@ export const shipApp: AgentApp = {
         const body = flagValue(args, 'body')
         if (!body) throw new BadRequest('comment needs --body.')
 
-        const { issue } = await resolveIssueFor(context, reference)
+        const { state, issue } = await resolveIssueFor(context, reference)
         /*
           Posted into the issue's own Folder and tagged `about` its address, so
           it lands where Peek shows the conversation rather than as a loose
@@ -1071,7 +1219,8 @@ export const shipApp: AgentApp = {
         })
         published(result, `a comment on ${issue.ref ?? issue.addr}`)
 
-        return { commented: { ref: issue.ref, addr: issue.addr, title: issue.title }, eventId: result.eventId }
+        // The eventId is kept because it is what `edit-comment --message` takes.
+        return { state: await stateAfter(context, state, issue, { comment: body }), eventId: result.eventId }
       },
     },
     {
@@ -1201,7 +1350,7 @@ export const shipApp: AgentApp = {
           )
         }
 
-        const { issue } = await resolveIssueFor(context, reference)
+        const { state, issue } = await resolveIssueFor(context, reference)
         const result = await store(context).setField({
           folder: issue.folder,
           target: issue.addr,
@@ -1214,10 +1363,8 @@ export const shipApp: AgentApp = {
         published(result, `a status change on ${issue.ref ?? issue.addr}`)
 
         return {
-          changed: { ref: issue.ref, addr: issue.addr, title: issue.title },
-          field: 'status',
-          from: issue.status,
-          to: wanted,
+          state: await stateAfter(context, state, issue, { status: wanted }),
+          from: issue.status || DEFAULT_ISSUE_STATUS,
           eventId: result.eventId,
         }
       },
@@ -1237,7 +1384,7 @@ export const shipApp: AgentApp = {
         // person choose who work lands on by renaming themselves.
         const assignee = assigneeFor(who, context.signer.pubkey)
 
-        const { issue } = await resolveIssueFor(context, reference)
+        const { state, issue } = await resolveIssueFor(context, reference)
         const result = await store(context).setField({
           folder: issue.folder,
           target: issue.addr,
@@ -1258,10 +1405,8 @@ export const shipApp: AgentApp = {
         published(result, `an assignment on ${issue.ref ?? issue.addr}`)
 
         return {
-          changed: { ref: issue.ref, addr: issue.addr, title: issue.title },
-          field: 'assignee',
+          state: await stateAfter(context, state, issue, { assignee: assignee.toLowerCase() }),
           from: issue.assignee,
-          to: assignee.toLowerCase(),
           eventId: result.eventId,
         }
       },
