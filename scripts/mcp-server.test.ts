@@ -147,6 +147,7 @@ async function main() {
   for (const name of [
     'ship_list_issues',
     'ship_get_issue',
+    'ship_status',
     'ship_comment',
     'ship_set_status',
     'ship_assign',

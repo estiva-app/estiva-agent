@@ -20032,7 +20032,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "ship_list_issues",
-      description: "List issues in Estiva Ship, the team's issue tracker, newest first. Optionally filter by project or status. Returns { issues, coverage }. **Read `coverage` before summarising**: some issues are unreachable because the project they belonged to no longer resolves, and the list is not the whole workspace when `coverage.unreachable` is above zero. Say so rather than implying completeness. Issue refs such as PEE-1 are display keys and are not unique across projects; the `addr` field is the real identity. If `project` matches more than one project this returns the candidates instead of choosing \u2014 pick one and ask again rather than guessing.",
+      description: "List issues in Estiva Ship, the team's issue tracker, newest first. Optionally filter by project or status. Returns one line per issue \u2014 `REF  status  shortid  title` \u2014 then a count, and last a coverage note when the read could not reach the whole workspace. **Read that last line before summarising**: some issues are unreachable because the project they belonged to no longer resolves, and when the note is present the list is not complete. Say so rather than implying completeness. Issue refs such as PEE-1 are display keys and are not unique across projects; the short id (the first eight characters of the `d`) is unique and is what the other tools take. If `project` matches more than one project this returns the candidates instead of choosing \u2014 pick one and ask again rather than guessing.",
       inputSchema: {
         type: "object",
         properties: {
@@ -20071,13 +20071,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_get_issue",
-      description: "Read one Estiva Ship issue or project in full: for an issue its description, status, assignee, change history and conversation; for a project its description, status, lead, both of its Folders, its issues and its conversation. Use it before editing anything \u2014 a project description in particular is returned nowhere else in full, and overwriting one that was never read is how a brief gets lost. Accepts a display ref (PEE-1), a project name, a full address, or part of a title. The answer says which kind it found. If the reference matches more than one issue, more than one project, or one of each, this returns the candidates instead of choosing \u2014 pick one and ask again rather than guessing, because the wrong object is indistinguishable from the right one once reported.",
+      description: 'Read one Estiva Ship issue or project in full: for an issue its description, status, assignee, change history and conversation; for a project its description, status, lead, both of its Folders, its issues and its conversation. Use it before editing anything \u2014 a project description in particular is returned nowhere else in full, and overwriting one that was never read is how a brief gets lost. For "where is this issue now" ask `ship_status` instead: this returns the whole description and conversation every time, and most calls to it were that question. Accepts a display ref (PEE-1), a short id (the first eight characters of the `d`, printed in every listing), a project name, a full address, or part of a title. The answer says which kind it found. If the reference matches more than one issue, more than one project, or one of each, this returns the candidates instead of choosing \u2014 pick one and ask again rather than guessing, because the wrong object is indistinguishable from the right one once reported.',
       inputSchema: {
         type: "object",
         properties: {
           ref: {
             type: "string",
             description: "Display ref, project name, address, or a distinctive fragment of a title."
+          }
+        },
+        required: ["ref"],
+        additionalProperties: false
+      }
+    },
+    {
+      name: "ship_status",
+      description: 'Where one Estiva Ship issue is now, in a few lines: its state line (ref, short id, status, assignee, comment count), the newest pull request URL named in its text, and the last comment clipped to 200 characters. This is the read for "is it done", "who has it" and "was the PR posted" \u2014 `ship_get_issue` answers the same questions with the whole description and conversation attached, and most calls to it were one of these. Use `ship_get_issue` when you need the description or the conversation itself. Accepts a display ref (PEE-1), a short id, or a full address. If the reference matches more than one issue this returns the candidates instead of choosing.',
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: "Display ref, short id, or address of the issue."
           }
         },
         required: ["ref"],
@@ -20395,6 +20410,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 var text = (value) => ({
   content: [{ type: "text", text: JSON.stringify(value, null, 2) }]
 });
+async function dispatch(cmd, argv) {
+  const result = await cmd.run(await context(), argv);
+  if (cmd.lines) return { content: [{ type: "text", text: cmd.lines(result).join("\n") }] };
+  return text(result);
+}
 var failure = (message) => ({
   isError: true,
   content: [{ type: "text", text: message }]
@@ -20418,66 +20438,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         promise would make it fail in exactly the case it exists for.
       */
       case "peek_create_topic":
-        return text(
-          await command("create-topic", peekApp).run(
-            await context(),
-            args(flagsFrom(input, ["name", "about"]))
-          )
-        );
+        return dispatch(command("create-topic", peekApp), args(flagsFrom(input, ["name", "about"])));
       case "estiva_ping":
         return text({ at: (/* @__PURE__ */ new Date()).toISOString(), ...await connectionStatus(shipApp, { client: callingClient() }) });
       case "ship_list_issues":
-        return text(
-          await command("issues").run(await context(), args(flagsFrom(input, ["project", "status"])))
-        );
+        return dispatch(command("issues"), args(flagsFrom(input, ["project", "status"])));
       case "ship_activity":
-        return text(
-          await command("activity").run(
-            await context(),
-            args(flagsFrom(input, ["since", "project", "by", "limit"]))
-          )
-        );
+        return dispatch(command("activity"), args(flagsFrom(input, ["since", "project", "by", "limit"])));
       case "ship_get_issue": {
         const ref = typeof input.ref === "string" ? input.ref : "";
-        return text(await command("show").run(await context(), args({}, [ref])));
+        return dispatch(command("show"), args({}, [ref]));
       }
+      case "ship_status":
+        return dispatch(command("status"), args({}, [str(input.ref)]));
       case "ship_people":
-        return text(
-          await command("people").run(await context(), args(input.named === true ? { named: true } : {}))
-        );
+        return dispatch(command("people"), args(input.named === true ? { named: true } : {}));
       case "ship_comment":
-        return text(
-          await command("comment").run(await context(), args(flagsFrom(input, ["body"]), [str(input.ref)]))
-        );
+        return dispatch(command("comment"), args(flagsFrom(input, ["body"]), [str(input.ref)]));
       case "ship_edit_comment":
-        return text(
-          await command("edit-comment").run(
-            await context(),
-            args(flagsFrom(input, ["message", "body"]), [str(input.ref)])
-          )
+        return dispatch(
+          command("edit-comment"),
+          args(flagsFrom(input, ["message", "body"]), [str(input.ref)])
         );
       case "ship_set_status":
-        return text(
-          await command("set-status").run(await context(), args({}, [str(input.ref), str(input.status)]))
-        );
+        return dispatch(command("set-status"), args({}, [str(input.ref), str(input.status)]));
       case "ship_assign":
-        return text(
-          await command("assign").run(await context(), args({}, [str(input.ref), str(input.pubkey)]))
-        );
+        return dispatch(command("assign"), args({}, [str(input.ref), str(input.pubkey)]));
       case "ship_edit_issue": {
         const flags = {};
         for (const name of ["title", "description", "project"]) {
           const value = input[name];
           if (typeof value === "string") flags[name] = value;
         }
-        return text(await command("edit-issue").run(await context(), args(flags, [str(input.ref)])));
+        return dispatch(command("edit-issue"), args(flags, [str(input.ref)]));
       }
       case "ship_archive_project":
-        return text(
-          await command("archive-project").run(
-            await context(),
-            args(input.unarchive === true ? { unarchive: true } : {}, [str(input.ref)])
-          )
+        return dispatch(
+          command("archive-project"),
+          args(input.unarchive === true ? { unarchive: true } : {}, [str(input.ref)])
         );
       case "ship_delete_issue":
       case "ship_delete_project": {
@@ -20485,7 +20483,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (input.confirm === true) flags.yes = true;
         if (typeof input.reason === "string" && input.reason) flags.reason = input.reason;
         const which = request.params.name === "ship_delete_issue" ? "delete-issue" : "delete-project";
-        return text(await command(which).run(await context(), args(flags, [str(input.ref)])));
+        return dispatch(command(which), args(flags, [str(input.ref)]));
       }
       case "ship_edit_project": {
         const flags = {};
@@ -20493,47 +20491,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const value = input[name];
           if (typeof value === "string") flags[name] = value;
         }
-        return text(await command("edit-project").run(await context(), args(flags, [str(input.ref)])));
+        return dispatch(command("edit-project"), args(flags, [str(input.ref)]));
       }
       case "ship_create_project":
-        return text(
-          await command("create-project").run(
-            await context(),
-            args(flagsFrom(input, ["title", "description", "topic"]))
-          )
-        );
+        return dispatch(command("create-project"), args(flagsFrom(input, ["title", "description", "topic"])));
       case "ship_create_issue":
-        return text(
-          await command("create-issue").run(
-            await context(),
-            args(flagsFrom(input, ["project", "title", "description"]))
-          )
-        );
+        return dispatch(command("create-issue"), args(flagsFrom(input, ["project", "title", "description"])));
       case "peek_list_topics":
-        return text(await command("topics", peekApp).run(await context(), args({})));
+        return dispatch(command("topics", peekApp), args({}));
       case "peek_read_topic":
-        return text(await command("topic", peekApp).run(await context(), args({}, [str(input.topic)])));
+        return dispatch(command("topic", peekApp), args({}, [str(input.topic)]));
       case "peek_reply":
-        return text(
-          await command("reply", peekApp).run(
-            await context(),
-            args(flagsFrom(input, ["body", "to"]), [str(input.topic), str(input.conversation)])
-          )
+        return dispatch(
+          command("reply", peekApp),
+          args(flagsFrom(input, ["body", "to"]), [str(input.topic), str(input.conversation)])
         );
       case "peek_edit_message":
-        return text(
-          await command("edit", peekApp).run(
-            await context(),
-            args(flagsFrom(input, ["message", "body"]), [str(input.topic), str(input.conversation)])
-          )
+        return dispatch(
+          command("edit", peekApp),
+          args(flagsFrom(input, ["message", "body"]), [str(input.topic), str(input.conversation)])
         );
       case "peek_say":
-        return text(
-          await command("say", peekApp).run(
-            await context(),
-            args(flagsFrom(input, ["body"]), [str(input.topic)])
-          )
-        );
+        return dispatch(command("say", peekApp), args(flagsFrom(input, ["body"]), [str(input.topic)]));
       default:
         return failure(`No such tool: ${request.params.name}`);
     }
