@@ -69,8 +69,9 @@ export interface AgentCommand {
   /**
    * The result as lines of text, for a listing somebody greps rather than
    * pipes (MAK-2). Rendered by the app — the runner knows nothing about what
-   * the lines contain — and only for the CLI: an MCP tool gets the result
-   * `run` returned. `--json` on the command line asks for that instead.
+   * the lines contain. The CLI prints them unless `--json` asks for the shape
+   * `run` returned, and the MCP server returns them as the tool's text (MAK-3),
+   * so both front-ends hand a client the same bytes.
    *
    * Absent on every command that is not a listing; JSON is still the default.
    */
