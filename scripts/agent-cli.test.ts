@@ -17,7 +17,7 @@ import { resolveMaybe } from '../lib/agent/resolve'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { archivedRemoved, assigneeFor, findIssue, findProject, issueEdits, participants, parseSince, projectEdits, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
+import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, participants, parseSince, projectEdits, pullRequestOn, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
 import type { Project } from '../src/fold'
 import { findTopic, replyTarget, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
@@ -111,6 +111,43 @@ refuses('refuses an empty reference', () => findIssue(issues, '   '))
 */
 const withDecoy = [...issues, issue({ id: 'd', addr: '30851:abc:d', ref: 'PEE-9', title: 'Follow-up to PEE-1' })]
 check('an exact ref beats a title containing it', findIssue(withDecoy, 'PEE-1').id === 'a')
+
+/*
+  Short addresses (MAK-1). The first characters of the `d` name an issue the
+  way the whole address does, because refs collide and nobody types 110
+  characters from memory. Two ids sharing the fragment is a refusal — longer,
+  please — not a fall-through to whatever title happens to contain it.
+*/
+console.log('\n— resolving by a prefix of the id —')
+
+const uuids = [
+  issue({ id: 'a57c26e3-9e23-4665-a9f6-c9885950fd7b', addr: '30851:abc:a57c26e3-9e23', ref: 'MAK-1', title: 'Writes echo state' }),
+  issue({ id: 'a57c9999-0000-4665-a9f6-c9885950fd7b', addr: '30851:abc:a57c9999-0000', ref: 'MAK-2', title: 'One-line listings' }),
+  issue({ id: '42d82497-1111-4665-a9f6-c9885950fd7b', addr: '30851:abc:42d82497-1111', ref: 'FOL-19', title: 'A ?file= URL does not open a57c' }),
+]
+
+check('finds by a unique prefix of the id', findIssue(uuids, '42d82497').id.startsWith('42d8'))
+check('any unique length works, not only eight', findIssue(uuids, '42d8').id.startsWith('42d8'))
+check('a prefix is case-insensitive', findIssue(uuids, '42D82497').id.startsWith('42d8'))
+check('a prefix longer than eight still resolves', findIssue(uuids, 'a57c26e3-9e23').ref === 'MAK-1')
+refuses('refuses a prefix two ids share, rather than searching titles', () => findIssue(uuids, 'a57c'), 'matches 2 issues')
+refuses('and lists them by short id', () => findIssue(uuids, 'a57c'), 'a57c9999')
+check('a fragment under four characters is a word, not an id', findIssue(uuids, 'a57').ref === 'FOL-19')
+check('an exact ref beats an id that starts the same way', findIssue([...uuids, issue({ id: 'mak-1-000', addr: '30851:abc:mak-1-000', ref: 'X-1', title: 'decoy' })], 'MAK-1').ref === 'MAK-1')
+
+console.log('\n— the one-line state a write echoes —')
+
+const stated = issueLine(
+  { ref: 'MAK-1', id: 'a57c26e3-9e23-4665-a9f6-c9885950fd7b', status: 'in_progress', comments: [{ body: 'first' }, { body: '  PR is up:\n\nhttps://github.com/estiva-app/estiva-agent/pull/48  ' }] },
+  'Claude',
+)
+check('names ref, short id, status, assignee, count and the last comment', stated === 'MAK-1 · a57c26e3 · in_progress · Claude · 2 comments · last: "PR is up: https://github.com/estiva-app/estiva-agent/pull/48"', stated)
+check('an unassigned issue with no comments says so', issueLine({ ref: 'X-1', id: 'abcdefgh', status: '', comments: [] }, undefined) === 'X-1 · abcdefgh · todo · unassigned · 0 comments')
+check('one comment is singular', issueLine({ ref: 'X-1', id: 'abcdefgh', status: 'done', comments: [{ body: 'x' }] }, 'M').includes('1 comment ·'))
+check('a long comment is clipped with an ellipsis', clip('a'.repeat(100), 80).length === 80 && clip('a'.repeat(100), 80).endsWith('…'))
+check('a short one is not', clip('short', 80) === 'short')
+check('the newest PR named wins', pullRequestOn(['see https://github.com/o/r/pull/2 and https://github.com/o/r/pull/3', 'https://github.com/o/r/pull/1']) === 'https://github.com/o/r/pull/3')
+check('no PR is undefined, not a string', pullRequestOn(['nothing here', 'https://github.com/o/r/issues/4']) === undefined)
 
 console.log('\n— resolving a project (the one that used to guess) —')
 
@@ -803,8 +840,8 @@ console.log('— resolving across two kinds —')
 
   refuses('resolveOne still throws on ambiguity', () => findProject(
     [
-      { title: 'Peek: Feedback' } as never,
-      { title: 'Ship: Feedback' } as never,
+      { id: 'p1', title: 'Peek: Feedback' } as never,
+      { id: 'p2', title: 'Ship: Feedback' } as never,
     ],
     'Feedback',
   ), 'matches 2')

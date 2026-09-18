@@ -18339,6 +18339,9 @@ function refPrefix(title) {
 
 // lib/agent/resolve.ts
 var MAX_CANDIDATES = 8;
+var MIN_PREFIX = 4;
+var SHORT = 8;
+var short = (id) => id.slice(0, SHORT);
 function resolveMaybe(items, reference, how) {
   const needle = reference.trim().toLowerCase();
   if (!needle) return { ambiguous: `Which ${how.noun}?${how.hint ? ` ${how.hint}` : ""}` };
@@ -18346,12 +18349,17 @@ function resolveMaybe(items, reference, how) {
     (item) => how.exact(item).some((value) => value?.toLowerCase() === needle)
   );
   if (exact.length === 1) return { found: exact[0] };
-  const partial2 = items.filter((item) => how.text(item).toLowerCase().includes(needle));
+  const byPrefix = how.prefix && needle.length >= MIN_PREFIX && exact.length === 0 ? items.filter(
+    (item) => how.prefix(item).some((value) => value?.toLowerCase().startsWith(needle))
+  ) : [];
+  if (byPrefix.length === 1) return { found: byPrefix[0] };
+  const partial2 = byPrefix.length > 1 ? [] : items.filter((item) => how.text(item).toLowerCase().includes(needle));
   if (partial2.length === 1) return { found: partial2[0] };
-  if (partial2.length > 1 || exact.length > 1) {
-    const candidates = (exact.length > 1 ? exact : partial2).slice(0, MAX_CANDIDATES);
+  if (partial2.length > 1 || exact.length > 1 || byPrefix.length > 1) {
+    const collided = exact.length > 1 ? exact : byPrefix.length > 1 ? byPrefix : partial2;
+    const candidates = collided.slice(0, MAX_CANDIDATES);
     const shown = candidates.map((item) => `  ${how.label(item)}`).join("\n");
-    const total = exact.length > 1 ? exact.length : partial2.length;
+    const total = collided.length;
     const more = total > candidates.length ? `
   \u2026and ${total - candidates.length} more` : "";
     return { ambiguous: `"${reference}" matches ${total} ${how.noun}s:
@@ -18403,6 +18411,7 @@ var BLURB = 200;
 function projectSummary(project, directory) {
   return {
     ref: project.addr,
+    short: short(project.id),
     title: project.title,
     status: status(PROJECT_STATUSES, project.status),
     lead: who(directory, project.lead),
@@ -18442,6 +18451,10 @@ function projectSummary(project, directory) {
 function issueSummary(issue2, directory) {
   return {
     ref: issue2.ref ?? issue2.addr,
+    // Printed in every listing so the next command can name the issue by it
+    // rather than by a ref that collides (SHI-4) or an address typed from
+    // memory. Every resolver here accepts it back.
+    short: short(issue2.id),
     addr: issue2.addr,
     title: issue2.title,
     status: status(ISSUE_STATUSES, issue2.status),
@@ -18476,16 +18489,20 @@ async function coverage(context2, reachable) {
 var ISSUE_BY = {
   noun: "issue",
   exact: (issue2) => [issue2.addr, issue2.id, issue2.ref],
+  prefix: (issue2) => [issue2.id],
   text: (issue2) => issue2.title,
-  label: (issue2) => `${issue2.ref ?? issue2.addr} \u2014 ${issue2.title}`,
-  hint: "Pass a ref, an address or part of a title."
+  // The short id is in the label so a refusal hands back something that
+  // cannot collide the way the ref it lists beside does.
+  label: (issue2) => `${issue2.ref ?? issue2.addr} ${short(issue2.id)} \u2014 ${issue2.title}`,
+  hint: "Pass a ref, an address, the first 8 characters of its id, or part of a title."
 };
 var PROJECT_BY = {
   noun: "project",
   exact: (project) => [project.addr, project.id, project.title],
+  prefix: (project) => [project.id],
   text: (project) => project.title,
-  label: (project) => project.title,
-  hint: "Pass a project name or part of one."
+  label: (project) => `${short(project.id)} \u2014 ${project.title}`,
+  hint: "Pass a project name or part of one, or the first 8 characters of its id."
 };
 function findIssue(issues, reference) {
   return resolveOne(issues, reference, ISSUE_BY);
@@ -18597,6 +18614,57 @@ async function resolveIssueFor(context2, reference) {
   const state = await store(context2).loadAll();
   const issue2 = findIssue(state.issues, reference);
   return { state, issue: issue2 };
+}
+var LINE_QUOTE = 80;
+var LAST_COMMENT = 200;
+function clip(text2, max) {
+  const flat = text2.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
+}
+function commentsOn(state, addr2) {
+  return conversationsAbout(state.conversations, addr2).flatMap((thread) => [thread.root, ...thread.replies]).map((message) => ({
+    id: message.id,
+    author: message.author,
+    at: message.ts ?? message.createdAt * 1e3,
+    body: edited(state.edits, message).body
+  })).sort((a, b) => a.at - b.at);
+}
+function pullRequestOn(texts) {
+  for (const text2 of texts) {
+    const found = text2.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g);
+    if (found) return found[found.length - 1];
+  }
+  return void 0;
+}
+function issueLine(issue2, assignee) {
+  const count = issue2.comments.length;
+  const last = issue2.comments[count - 1];
+  return [
+    issue2.ref,
+    short(issue2.id),
+    issue2.status || DEFAULT_ISSUE_STATUS,
+    assignee ?? "unassigned",
+    `${count} comment${count === 1 ? "" : "s"}`,
+    ...last ? [`last: "${clip(last.body, LINE_QUOTE)}"`] : []
+  ].join(" \xB7 ");
+}
+async function stateAfter(context2, state, issue2, after) {
+  const assignee = after.assignee === void 0 ? issue2.assignee : after.assignee || void 0;
+  const directory = await directoryFor(context2, [assignee]);
+  const comments = commentsOn(state, issue2.addr);
+  if (after.comment !== void 0) {
+    comments.push({ id: "", author: context2.signer.pubkey, at: Date.now(), body: after.comment });
+  }
+  return issueLine(
+    {
+      ref: issue2.ref ?? issue2.addr,
+      id: issue2.id,
+      status: after.status ?? issue2.status,
+      assignee,
+      comments
+    },
+    who(directory, assignee)
+  );
 }
 async function resolveFolder(context2, reference, noun) {
   const events = await context2.relay.queryAll([{ kinds: [KIND2.FOLDER] }]);
@@ -18889,6 +18957,36 @@ var shipApp = {
       }
     },
     {
+      name: "status",
+      summary: "where one issue is now, in a few lines \u2014 not its description or conversation",
+      usage: "status <ref>",
+      async run(context2, args2) {
+        const reference = args2.positional[0];
+        if (!reference) throw new BadRequest("status needs a reference \u2014 try `ship issues` first.");
+        const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
+        const comments = commentsOn(state, issue2.addr);
+        const last = comments[comments.length - 1];
+        const directory = await directoryFor(context2, [issue2.assignee, last?.author]);
+        return {
+          state: issueLine({ ...issue2, ref: issue2.ref ?? issue2.addr, comments }, who(directory, issue2.assignee)),
+          ref: issue2.ref ?? issue2.addr,
+          short: short(issue2.id),
+          addr: issue2.addr,
+          title: issue2.title,
+          status: issue2.status || DEFAULT_ISSUE_STATUS,
+          assignee: who(directory, issue2.assignee),
+          pullRequest: pullRequestOn([...comments.map((c) => c.body).reverse(), issue2.description]),
+          comments: comments.length,
+          lastComment: last && {
+            id: last.id,
+            by: who(directory, last.author),
+            at: new Date(last.at).toISOString(),
+            body: clip(last.body, LAST_COMMENT)
+          }
+        };
+      }
+    },
+    {
       name: "show",
       summary: "one issue or project, folded, with its conversation and history",
       usage: "show <ref>",
@@ -18995,14 +19093,14 @@ Pass an address to say which.`
         if (!reference) throw new BadRequest("comment needs an issue reference.");
         const body = flagValue(args2, "body");
         if (!body) throw new BadRequest("comment needs --body.");
-        const { issue: issue2 } = await resolveIssueFor(context2, reference);
+        const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
         const result = await store(context2).postMessage({
           folder: issue2.folder,
           body,
           about: issue2.addr
         });
         published(result, `a comment on ${issue2.ref ?? issue2.addr}`);
-        return { commented: { ref: issue2.ref, addr: issue2.addr, title: issue2.title }, eventId: result.eventId };
+        return { state: await stateAfter(context2, state, issue2, { comment: body }), eventId: result.eventId };
       }
     },
     {
@@ -19092,7 +19190,7 @@ Pass an address to say which.`
             `Unknown status "${status2}". Try: ${ISSUE_STATUSES.map((s) => s.value).join(", ")}`
           );
         }
-        const { issue: issue2 } = await resolveIssueFor(context2, reference);
+        const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
         const result = await store(context2).setField({
           folder: issue2.folder,
           target: issue2.addr,
@@ -19104,10 +19202,8 @@ Pass an address to say which.`
         });
         published(result, `a status change on ${issue2.ref ?? issue2.addr}`);
         return {
-          changed: { ref: issue2.ref, addr: issue2.addr, title: issue2.title },
-          field: "status",
-          from: issue2.status,
-          to: wanted,
+          state: await stateAfter(context2, state, issue2, { status: wanted }),
+          from: issue2.status || DEFAULT_ISSUE_STATUS,
           eventId: result.eventId
         };
       }
@@ -19121,7 +19217,7 @@ Pass an address to say which.`
         const [reference, who3] = args2.positional;
         if (!reference || !who3) throw new BadRequest('assign needs a reference and a pubkey, "me", or "none".');
         const assignee = assigneeFor(who3, context2.signer.pubkey);
-        const { issue: issue2 } = await resolveIssueFor(context2, reference);
+        const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
         const result = await store(context2).setField({
           folder: issue2.folder,
           target: issue2.addr,
@@ -19141,10 +19237,8 @@ Pass an address to say which.`
         });
         published(result, `an assignment on ${issue2.ref ?? issue2.addr}`);
         return {
-          changed: { ref: issue2.ref, addr: issue2.addr, title: issue2.title },
-          field: "assignee",
+          state: await stateAfter(context2, state, issue2, { assignee: assignee.toLowerCase() }),
           from: issue2.assignee,
-          to: assignee.toLowerCase(),
           eventId: result.eventId
         };
       }

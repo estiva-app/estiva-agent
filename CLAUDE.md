@@ -14,7 +14,20 @@ npx tsx scripts/agent.ts ship projects
 npx tsx scripts/agent.ts peek topics
 npx tsx scripts/agent.ts ship issues --project "Peek: Feedback" --status open
 npx tsx scripts/agent.ts ship show PEE-1
+npx tsx scripts/agent.ts ship status 42d82497   # where it is now, in a few lines
 ```
+
+**Name an issue by its `short` id** — the first eight characters of its `d`,
+printed in every listing and on every write. Any unique prefix of four or more
+characters resolves; one that two issues share is refused with both listed
+(MAK-1). Refs collide and addresses are 110 characters; a short id is neither.
+
+**A write echoes the state it produced**, on one line — `MAK-1 · a57c26e3 ·
+in_progress · Claude · 4 comments · last: "…"` — so there is nothing to read
+back after a `set-status`, `comment` or `assign`. `status <ref>` answers the
+same question for an issue nobody has just written to: state, assignee, the
+newest PR URL in its text, and the last comment clipped to 200 characters.
+`show` is for the description and the whole conversation.
 
 Claude Desktop reaches the same commands through `scripts/mcp-server.ts`, and a
 packaged extension (`npm run extension:pack`) is the same server with no
