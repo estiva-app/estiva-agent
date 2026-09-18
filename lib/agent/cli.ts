@@ -66,6 +66,38 @@ export interface AgentCommand {
    * later without being rewritten.
    */
   run(context: AgentContext, args: ParsedArgs): Promise<unknown>
+  /**
+   * The result as lines of text, for a listing somebody greps rather than
+   * pipes (MAK-2). Rendered by the app — the runner knows nothing about what
+   * the lines contain — and only for the CLI: an MCP tool gets the result
+   * `run` returned. `--json` on the command line asks for that instead.
+   *
+   * Absent on every command that is not a listing; JSON is still the default.
+   */
+  lines?(result: unknown): string[]
+}
+
+/**
+ * Flags the runner itself understands, accepted by every command.
+ *
+ * Any other flag has to appear in the command's `usage` — that string is the
+ * documented contract, and reading the accepted set from it means the two
+ * cannot drift. A flag outside it is refused: before this, `--projekt x` was
+ * silently ignored and `issues` answered for the whole workspace.
+ */
+const RUNNER_FLAGS = ['help', 'json']
+
+export function acceptedFlags(command: AgentCommand): string[] {
+  const declared = [...(command.usage ?? '').matchAll(/--([a-z-]+)/g)].map((match) => match[1])
+  return [...new Set([...RUNNER_FLAGS, ...declared])]
+}
+
+/** The one line an unknown flag gets: the flag, the command, its usage. */
+export function unknownFlag(command: AgentCommand, flags: Record<string, unknown>): string | undefined {
+  const accepted = acceptedFlags(command)
+  const unknown = Object.keys(flags).filter((flag) => !accepted.includes(flag))
+  if (unknown.length === 0) return undefined
+  return `Unknown flag --${unknown[0]}. Usage: ${command.usage ?? command.name}`
 }
 
 export interface AgentApp {
@@ -616,10 +648,22 @@ export async function connectionStatus(
  *
  * Output is indented JSON on stdout and nothing else, so a caller can pipe it
  * without stripping banners. Diagnostics go to stderr for the same reason.
+ *
+ * The one exception is a command that offers `lines`: a listing prints as
+ * text, one row per line, unless `--json` asks for the shape it pipes. The
+ * text is the app's rendering of the same result; nothing is computed twice.
  */
 export async function run(apps: AgentApp[], argv: string[]): Promise<never> {
   const args = parseArgs(argv)
   const [appName, commandName] = args.positional
+
+  // `ship issues --help` is a question about one command, and the answer is
+  // its usage line — not the 3.7K characters of everything (MAK-2).
+  const asked = apps.find((candidate) => candidate.name === appName)?.commands.find((candidate) => candidate.name === commandName)
+  if (args.flags.help && asked) {
+    console.error(`${appName} ${asked.usage ?? asked.name}\n  ${asked.summary}`)
+    process.exit(0)
+  }
 
   if (!appName || args.flags.help) {
     console.error(usage(apps))
@@ -643,6 +687,14 @@ export async function run(apps: AgentApp[], argv: string[]): Promise<never> {
     process.exit(1)
   }
 
+  // Refused before connecting: a typo in a flag costs one line, not a relay
+  // round trip and a listing of the whole workspace.
+  const rejected = unknownFlag(command, args.flags)
+  if (rejected) {
+    console.error(rejected)
+    process.exit(1)
+  }
+
   try {
     const context = await connect()
 
@@ -659,7 +711,11 @@ export async function run(apps: AgentApp[], argv: string[]): Promise<never> {
       ...args,
       positional: args.positional.slice(2),
     })
-    console.log(JSON.stringify(result, null, 2))
+    if (command.lines && !args.flags.json) {
+      console.log(command.lines(result).join('\n'))
+    } else {
+      console.log(JSON.stringify(result, null, 2))
+    }
     process.exit(0)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

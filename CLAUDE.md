@@ -38,6 +38,17 @@ grown its own copy of something and that is the bug.
 Output is indented JSON on stdout and nothing else, so it pipes. Diagnostics go
 to stderr. Every failure exits non-zero.
 
+**Except the two listings.** `issues` and `projects` print one row per line —
+`FOL-19   todo         42d82497 A ?file= URL does not open…` — because they are
+grepped, not piped, and a 32-issue project is 2.6K chars this way against
+15.5K as JSON (MAK-2). Pass `--json` for the old shape. The coverage note
+still prints as the last line when it applies.
+
+**A flag the command does not take is refused in one line**, before anything
+connects, with that command's usage. The accepted flags are read from the
+`usage` string, so a new flag has to be in it or the runner refuses it.
+`ship <command> --help` prints that one usage line, not everything.
+
 `--status open` means todo **and** in_progress — use it for any question about
 outstanding work. The individual values are for when somebody asks for one
 specifically.

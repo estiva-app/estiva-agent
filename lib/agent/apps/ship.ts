@@ -62,6 +62,40 @@ export function resolvePubkeys(directory: Directory, value: string): string {
  * inventing agreement that does not exist.
  */
 const status = (vocab: typeof ISSUE_STATUSES, value: string) => lookupStatus(vocab, value).label
+/** The label back to its value — what `set-status` takes — for a text row. */
+const statusValue = (vocab: typeof ISSUE_STATUSES, label: string) =>
+  vocab.find((entry) => entry.label === label)?.value ?? label
+
+/** How much of a title a listing row shows; the whole thing is one `status` away. */
+const ROW_TITLE = 68
+
+/**
+ * A listing as lines somebody greps (MAK-2): ref, status, short id, title.
+ *
+ *     FOL-19   todo         42d82497  A ?file= URL does not open…
+ *
+ * The status is the value rather than the label for the same reason the
+ * state line uses it. The row is built from the JSON summary, not from the
+ * issue, so `--json` and the text can never disagree about what was listed.
+ */
+export function issueRow(issue: ReturnType<typeof issueSummary>): string {
+  return [
+    issue.ref.padEnd(8),
+    statusValue(ISSUE_STATUSES, issue.status).padEnd(12),
+    issue.short,
+    clip(issue.title, ROW_TITLE),
+  ].join(' ')
+}
+
+export function projectRow(project: ReturnType<typeof projectSummary> & { issues: number }): string {
+  return [
+    project.short,
+    statusValue(PROJECT_STATUSES, project.status).padEnd(12),
+    `${String(project.issues).padStart(3)} issues`,
+    clip(project.title, ROW_TITLE) + (project.archived ? ' (archived)' : ''),
+    project.lead ? `— ${project.lead}` : '',
+  ].join(' ').trimEnd()
+}
 
 /** Enough to answer "what happened" without returning the workspace's whole history. */
 const DEFAULT_ACTIVITY = 50
@@ -847,7 +881,12 @@ export const shipApp: AgentApp = {
     {
       name: 'projects',
       summary: 'every project, with status and lead',
-      usage: 'projects [--archived]',
+      usage: 'projects [--archived] [--json]',
+      lines(result: { projects: Parameters<typeof projectRow>[0][]; hidden: { note?: string } }) {
+        // The hidden-archived note survives the text form: a listing that
+        // drops it is exactly the "every project" claim the note exists to stop.
+        return [...result.projects.map(projectRow), ...(result.hidden.note ? [result.hidden.note] : [])]
+      },
       async run(context, args) {
         const state = await store(context).loadAll()
         const directory = await directoryFor(context, state.projects.map((p) => p.lead))
@@ -892,7 +931,14 @@ export const shipApp: AgentApp = {
     {
       name: 'issues',
       summary: 'issues, newest first',
-      usage: 'issues [--project <ref>] [--status <value>]',
+      usage: 'issues [--project <ref>] [--status <value>] [--json]',
+      lines(result: { issues: Parameters<typeof issueRow>[0][]; coverage: { unreachable: number; note?: string } }) {
+        return [
+          ...result.issues.map(issueRow),
+          `${result.issues.length} listed`,
+          ...(result.coverage.note ? [result.coverage.note] : []),
+        ]
+      },
       async run(context, args) {
         const state = await store(context).loadAll()
         const wantedProject = flagValue(args, 'project')
@@ -1893,8 +1939,11 @@ export const shipApp: AgentApp = {
         })
         published(created.result, `a new issue in ${project.title}`)
 
+        // The same line every other write echoes, so the short id the next
+        // command needs is on screen without a `show` (MAK-2).
         return {
-          created: { ref, addr: created.addr, title, project: project.title },
+          state: issueLine({ ref, id: created.id, status: DEFAULT_ISSUE_STATUS, comments: [] }, undefined),
+          created: { ref, short: short(created.id), addr: created.addr, title, project: project.title },
           eventId: created.result.eventId,
         }
       },

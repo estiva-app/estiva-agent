@@ -12,12 +12,13 @@
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { BadRequest, flagValue, parseArgs } from '../lib/agent/cli'
+import { BadRequest, acceptedFlags, flagValue, parseArgs, unknownFlag } from '../lib/agent/cli'
 import { resolveMaybe } from '../lib/agent/resolve'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, participants, parseSince, projectEdits, pullRequestOn, resolvePubkeys, statusesFor } from '../lib/agent/apps/ship'
+import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
+import { peekApp } from '../lib/agent/apps/peek'
 import type { Project } from '../src/fold'
 import { findTopic, replyTarget, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
@@ -148,6 +149,43 @@ check('a long comment is clipped with an ellipsis', clip('a'.repeat(100), 80).le
 check('a short one is not', clip('short', 80) === 'short')
 check('the newest PR named wins', pullRequestOn(['see https://github.com/o/r/pull/2 and https://github.com/o/r/pull/3', 'https://github.com/o/r/pull/1']) === 'https://github.com/o/r/pull/3')
 check('no PR is undefined, not a string', pullRequestOn(['nothing here', 'https://github.com/o/r/issues/4']) === undefined)
+
+/*
+  A flag outside the command's usage is refused in one line, before anything
+  connects (MAK-2). Before this, `--projekt x` was silently ignored and the
+  listing answered for the whole workspace — the wrong answer at 14K chars,
+  followed by a retry. The accepted set is read from `usage` so it cannot
+  drift from what is documented.
+*/
+console.log('\n— a flag the command does not take —')
+
+const listing = { name: 'issues', summary: 's', usage: 'issues [--project <ref>] [--status <value>] [--json]', run: async () => ({}) }
+check('flags are read from the usage line', acceptedFlags(listing).includes('project') && acceptedFlags(listing).includes('status'))
+check('help and json are accepted everywhere', acceptedFlags({ name: 'x', summary: 's', run: async () => ({}) }).join() === 'help,json')
+check('a declared flag passes', unknownFlag(listing, { project: 'x' }) === undefined)
+const refused = unknownFlag(listing, { projekt: 'x' })
+check('an undeclared one is refused in one line naming it and the usage', refused === 'Unknown flag --projekt. Usage: issues [--project <ref>] [--status <value>] [--json]', refused)
+check('the refusal is one line, not the help', refused !== undefined && !refused.includes('\n'))
+
+/*
+  Every command that reads a flag must declare it, or the runner refuses what
+  the command would have honoured. Checked over both apps rather than trusted.
+*/
+for (const app of [shipApp, peekApp]) {
+  for (const command of app.commands) {
+    const read = [...command.run.toString().matchAll(/flagValue\(args, '([a-z-]+)'\)|args\.flags\.([a-z]+)/g)].map((m) => m[1] ?? m[2])
+    const undeclared = read.filter((flag) => !acceptedFlags(command).includes(flag))
+    check(`${app.name} ${command.name} declares every flag it reads`, undeclared.length === 0, undeclared.join(', '))
+  }
+}
+
+console.log('\n— listing rows —')
+
+const row = issueRow({ ref: 'FOL-19', short: '42d82497', addr: 'x', title: 'A ?file= URL does not open the file it names when the Folder is a team Folder and the file is old', status: 'In Progress', assignee: undefined, author: 'A', project: undefined })
+check('an issue row is ref, status value, short id, clipped title', row.startsWith('FOL-19   in_progress  42d82497 A ?file= URL') && row.endsWith('…'), row)
+check('and under 100 chars', row.length < 100, String(row.length))
+const prow = projectRow({ ref: 'x', short: '2385fd92', title: 'Make Agent more token efficient', status: 'Planned', lead: 'Miky', archived: true, folder: 'f', relinked: undefined, recordFolder: undefined, issues: 2 } as never)
+check('a project row carries short, status, count, title, archived and lead', prow === '2385fd92 planned        2 issues Make Agent more token efficient (archived) — Miky', prow)
 
 console.log('\n— resolving a project (the one that used to guess) —')
 
