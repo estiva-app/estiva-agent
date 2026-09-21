@@ -17567,17 +17567,30 @@ function foldFolder(events, resolveRefs = () => []) {
 }
 
 // src/references.ts
-function taggedIndex(events) {
+function namedInBody(body) {
+  const out = /* @__PURE__ */ new Set();
+  for (const naddr of findNaddrs(body)) {
+    try {
+      out.add(naddrToAddr(naddr));
+    } catch {
+    }
+  }
+  return out;
+}
+function anchorIndex(events) {
   const index = {};
   for (const event of events) {
     if (event.kind !== KIND2.MESSAGE && event.kind !== KIND2.COMMENT) continue;
-    const named = /* @__PURE__ */ new Set();
-    for (const tag2 of event.tags) {
-      if (tag2[0] === "a" || event.kind === KIND2.COMMENT && tag2[0] === "A") {
-        if (tag2[1]) named.add(tag2[1]);
-      }
+    const values = (name) => event.tags.filter((t) => t[0] === name && t[1]).map((t) => t[1]);
+    let anchors;
+    if (event.kind === KIND2.COMMENT) {
+      const roots = values("A");
+      anchors = roots.length ? roots : values("a");
+    } else {
+      const named = namedInBody(event.content);
+      anchors = values("a").filter((address) => !named.has(address));
     }
-    if (named.size) index[event.id] = [...named];
+    if (anchors.length) index[event.id] = [...new Set(anchors)];
   }
   return index;
 }
@@ -17708,7 +17721,7 @@ function referencedAddresses(body) {
 function read(events, folders) {
   return {
     ...foldFolder(events, referencedAddresses),
-    tagged: taggedIndex(events),
+    anchors: anchorIndex(events),
     edits: foldEdits(events),
     attachments: foldAttachments(events),
     // A parameter rather than derived from the events: the set that was
