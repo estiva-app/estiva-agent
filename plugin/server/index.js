@@ -17732,6 +17732,12 @@ function read(events, folders) {
     folders: [...new Set(folders)]
   };
 }
+function foldWorkspace(snapshot) {
+  return read(snapshot.events, snapshot.folders);
+}
+function folderOfEvent(event) {
+  return event.tags.find((t) => t[0] === "h")?.[1];
+}
 var Store = class {
   constructor(relay, signer) {
     this.relay = relay;
@@ -18263,11 +18269,42 @@ ${args2.aboutRef}` : args2.body;
    * different Folders, and folding those separately would drop changes.
    */
   async loadAll() {
-    let events = await this.relay.queryAll([
+    return foldWorkspace(await this.loadAllEvents());
+  }
+  /** `loadAll` without the fold, for a caller that will re-read part of it — see `reloadFolders`. */
+  async loadAllEvents() {
+    const events = await this.relay.queryAll([
       { kinds: [KIND2.PROJECT] },
       { kinds: [KIND2.ISSUE] }
     ]);
-    const fetched = /* @__PURE__ */ new Set();
+    return this.widen(events, /* @__PURE__ */ new Set());
+  }
+  /**
+   * Re-read only `folders`, keeping the rest of a previous read as it was —
+   * PER-17.
+   *
+   * Every event of the previous read that carries one of these `h` is dropped
+   * and the Folders are read again, so a deletion, an edit or a replaced record
+   * in them shows exactly as `loadAll` would show it. Then the same widening
+   * pass runs, so a Folder this change introduced — an issue filed into one
+   * not read before — is fetched rather than folded without its changes.
+   *
+   * What it cannot see is anything *outside* those Folders: a global project
+   * record (`buzz-channel`, no `h`) or a Folder the discovery query would newly
+   * turn up. A write to either needs `loadAll`, which is why the app still
+   * reads everything on load and on focus.
+   */
+  async reloadFolders(previous, folders) {
+    const scope = new Set(folders);
+    if (!scope.size) return previous;
+    const kept = previous.events.filter((event) => {
+      const folder = folderOfEvent(event);
+      return !folder || !scope.has(folder);
+    });
+    const fresh = await this.rawFolders([...scope]);
+    return this.widen([...kept, ...fresh], /* @__PURE__ */ new Set([...previous.folders, ...scope]));
+  }
+  async widen(events, fetched) {
     for (let pass = 0; pass < 4; pass++) {
       const state = foldFolder(events, referencedAddresses);
       const wanted = /* @__PURE__ */ new Set();
@@ -18283,7 +18320,7 @@ ${args2.aboutRef}` : args2.body;
       for (const folder of wanted) fetched.add(folder);
       events = [...events, ...await this.rawFolders([...wanted])];
     }
-    return read(events, [...fetched]);
+    return { events, folders: [...fetched] };
   }
   /**
    * Raw events for one or more Folders — for debugging and verification.
