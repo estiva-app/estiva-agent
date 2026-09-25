@@ -466,20 +466,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'ship_create_project',
       description:
         'Start a new project in Estiva Ship. Prefer filing an issue in an existing project when there is one — a project is a container other people navigate by, and an extra one for work that belonged in an existing project is harder to undo than an extra issue. ' +
-        'Pass `topic` to pair the project with a Peek conversation that already exists, so the discussion and the work share one container instead of being two things about the same subject. Without it a new container is created. ' +
+        'A project is filed into a team — one of the Folders the sidebar lists — and its issues and conversation live in that team. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
         properties: {
+          team: {
+            type: 'string',
+            description: 'The team to file it into: its name or Folder id. Refuses if it matches more than one.',
+          },
           title: { type: 'string', description: 'A short name for the project.' },
           description: { type: 'string', description: 'Optional. What the project is for.' },
-          topic: {
-            type: 'string',
-            description:
-              'Optional. The name of an existing Peek topic to pair with, or a Folder id. Refuses if it matches more than one.',
-          },
         },
-        required: ['title'],
+        required: ['team', 'title'],
         additionalProperties: false,
       },
     },
@@ -748,7 +747,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'ship_create_project':
-        return dispatch(command('create-project'), args(flagsFrom(input, ['title', 'description', 'topic'])))
+        return dispatch(command('create-project'), args(flagsFrom(input, ['team', 'title', 'description'])))
 
       case 'ship_create_issue':
         return dispatch(command('create-issue'), args(flagsFrom(input, ['project', 'title', 'description'])))
