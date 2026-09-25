@@ -20,6 +20,7 @@ import {
   type UnsignedEvent,
 } from '@estiva-app/protocol'
 import { KIND } from './kinds'
+import { attachmentsInDocument } from './attachments'
 
 /**
  * The Folder id.
@@ -243,10 +244,45 @@ export function buildChange(
       // order. An app that does not know `ts` ignores it and still folds — just
       // at one-second resolution.
       ['ts', String(Math.floor(createdAtMs))],
+      /*
+        Every file the document places inline, named again as an `imeta` —
+        SPEC §13.3, SHI-2.
+
+        **Derived here rather than passed in**, so no caller can omit it. Ingest
+        verifies `imeta` *tags* and never parses `content`, and the check is not
+        gated on kind — so this tag is what makes a `kind:1851` carrying a
+        description obey the same rule a message does: a document naming a blob
+        the relay does not hold is refused outright, instead of published and
+        rendering as a broken file for every reader.
+
+        Nothing to do for a scalar field. `attachmentsInDocument` answers with
+        an empty list for anything that is not a block document, which `status`
+        and `assignee` are not.
+      */
+      ...attachmentsInDocument(args.value, args.contentFormat).map(imetaTag),
+      /*
+        A change that places a person on the object names them — `assignee`
+        on an issue, `lead` on a project — as a `p` tag, the way a comment
+        names the people it mentions (FOL-30). Being placed on something is
+        being told about it, and `p` is how the relay tells: the mention index
+        and the inbox are `p`-based, and so is the one read Peek makes for
+        "what am I named in" to fill a person's followed set. Without it the
+        assignment is findable only by folding every `kind:1851` in reach —
+        measured at the relay's 1,000 cap over 90 days on production, with
+        64 assignee changes among them. Appended after `ts`, so the fixed
+        four keep their order; an app that does not know `p` here ignores it.
+
+        Only a value that is a key: clearing an assignment carries an empty
+        value and names nobody.
+      */
+      ...(PLACEMENT_FIELDS.has(args.field) && /^[0-9a-f]{64}$/.test(args.value) ? [['p', args.value]] : []),
     ],
     content: args.note ?? '',
   }
 }
+
+/** The fields whose value is a person being placed on the object — see `buildChange`. */
+const PLACEMENT_FIELDS = new Set(['assignee', 'lead'])
 
 /**
  * kind:9 conversation message — the same kind Peek writes for a topic message.
@@ -365,7 +401,7 @@ export function buildConversationMessage(
      * answers about the stored blob, so the upload has to have happened before
      * this is called. `verify_imeta_blobs` refuses a message naming a blob the
      * relay does not already hold, which makes the order a requirement rather
-     * than a preference — see `uploadAttachment` in `web/src/api/blobs.ts`.
+     * than a preference — see `uploadAttachment` in `src/api/blobs.ts`.
      */
     files?: readonly Imeta[]
   },

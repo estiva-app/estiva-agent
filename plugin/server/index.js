@@ -6301,9 +6301,9 @@ var require_discriminator = __commonJS({
         function validateMapping() {
           const mapping = getMapping();
           gen.if(false);
-          for (const tagValue2 in mapping) {
-            gen.elseIf((0, codegen_1._)`${tag2} === ${tagValue2}`);
-            gen.assign(valid, applyTagSchema(mapping[tagValue2]));
+          for (const tagValue3 in mapping) {
+            gen.elseIf((0, codegen_1._)`${tag2} === ${tagValue3}`);
+            gen.assign(valid, applyTagSchema(mapping[tagValue3]));
           }
           gen.else();
           cxt.error(false, { discrError: types_1.DiscrError.Mapping, tag: tag2, tagName });
@@ -6347,18 +6347,18 @@ var require_discriminator = __commonJS({
             if (sch.const) {
               addMapping(sch.const, i);
             } else if (sch.enum) {
-              for (const tagValue2 of sch.enum) {
-                addMapping(tagValue2, i);
+              for (const tagValue3 of sch.enum) {
+                addMapping(tagValue3, i);
               }
             } else {
               throw new Error(`discriminator: "properties/${tagName}" must have "const" or "enum"`);
             }
           }
-          function addMapping(tagValue2, i) {
-            if (typeof tagValue2 != "string" || tagValue2 in oneOfMapping) {
+          function addMapping(tagValue3, i) {
+            if (typeof tagValue3 != "string" || tagValue3 in oneOfMapping) {
               throw new Error(`discriminator: "${tagName}" values must be unique strings`);
             }
-            oneOfMapping[tagValue2] = i;
+            oneOfMapping[tagValue3] = i;
           }
         }
       }
@@ -15835,229 +15835,6 @@ var sha256 = /* @__PURE__ */ createHasher(() => new SHA256());
 // node_modules/@noble/hashes/esm/sha256.js
 var sha2562 = sha256;
 
-// node_modules/@estiva-app/protocol/dist/events.js
-var KIND = {
-  PROFILE: 0,
-  DELETION: 5,
-  REACTION: 7,
-  STREAM_MESSAGE: 9,
-  NIP29_PUT_USER: 9e3,
-  NIP29_EDIT_METADATA: 9002,
-  NIP29_CREATE_GROUP: 9007,
-  NIP29_DELETE_GROUP: 9008,
-  /**
-   * Estiva assertion — a statement *about* something in the channel, rather
-   * than a message in it (PEEK-128). `resolution` is the first and, for now,
-   * only subtype; the `t` tag names it so later subtypes can join without a
-   * new kind.
-   *
-   * The number sits in the **regular** range (1000–9999), which is what makes
-   * it stored and append-only. A replaceable kind would overwrite the previous
-   * assertion and destroy exactly the history this exists to keep. It clears
-   * NIP-29's 9000–9030 block on purpose.
-   */
-  ASSERTION: 9101,
-  /**
-   * NIP-22 comment (REW-10). Ship's comments are posted into the project's
-   * Folder — which *is* a Peek topic's channel — so they arrive in a channel as
-   * ordinary messages and must be read alongside `STREAM_MESSAGE`.
-   *
-   * Both kinds, permanently: a `kind:9` is not replaceable, so every comment
-   * written before Ship flipped stays `kind:9` forever and this pair can never
-   * shrink to one.
-   */
-  COMMENT: 1111,
-  /** NIP-84 highlight. */
-  HIGHLIGHT: 9802,
-  /**
-   * NIP-78 arbitrary custom app data — and **it is not reserved for read state**,
-   * despite the relay naming its own constant `KIND_READ_STATE`.
-   *
-   * The relay's NIP-RS handling is a narrow predicate: kind 30078, exactly one
-   * `d` matching `read-state:<32 lowercase hex>`, and exactly one
-   * `["t","read-state"]`. Ingest performs no other `d`-tag validation on the
-   * kind, so anything outside that predicate is an ordinary addressable event
-   * with ordinary replaceable semantics.
-   *
-   * Two uses in the suite, and the constant is here so neither invents its own
-   * number: NIP-RS read state (SPEC §11.6) and app-private user-owned storage
-   * (SPEC §12). A `d` beginning `read-state:` brings hard-deletion of superseded
-   * blobs with it, which is a property app data must not acquire by accident.
-   */
-  APP_DATA: 30078,
-  /** NIP-FC File — see docs/buzz-compat/nips/NIP-FC.md in the Peek repo. */
-  FILE: 30840,
-  /** NIP-FC Component. */
-  COMPONENT: 30841,
-  /**
-   * NIP-42 relay auth — the challenge response that turns a connected socket
-   * into an authenticated one (`Kind::Authentication`, PEE-5).
-   *
-   * Unlike every other kind here, this one is **never published**: Buzz builds
-   * it into `buzz-auth/src/nip42.rs`, never stores it, and never logs it —
-   * "AUTH events are never stored or logged (may contain bearer tokens)" is a
-   * comment in that file. It goes over the socket and is gone.
-   */
-  RELAY_AUTH: 22242,
-  HTTP_AUTH: 27235,
-  /**
-   * Blossom authorization (BUD-01/BUD-11) — `HTTP_AUTH` for blobs.
-   *
-   * Never stored and never published: it is signed, carried in an
-   * `Authorization: Nostr <base64url(event)>` header, and read once. See
-   * `media.ts`, which builds it and the `imeta` tag that references the blob.
-   */
-  BLOSSOM_AUTH: 24242,
-  /**
-   * Buzz's message edit (`KIND_STREAM_MESSAGE_EDIT`) — RFC 0.4 §7.2.1.
-   *
-   * A `kind:9` and a `kind:1111` are both non-replaceable, so an edit cannot
-   * overwrite what it edits. It is a separate event naming its target, and what
-   * an app shows as "edited" is a fold over the pair.
-   *
-   * **Channel-scoped.** 40003 is in the relay's `requires_h_channel_scope`, so
-   * an edit without an `h` comes back `accepted: false` even when the kind is
-   * granted and the signature is fine — two gates, and the kind ceiling is only
-   * the first.
-   */
-  MESSAGE_EDIT: 40003
-};
-var MAX_EMOJI_CHARS = 64;
-var MAX_MESSAGE_BYTES = 64 * 1024;
-var MAX_MENTIONS = 50;
-function toNostrSeconds(ms) {
-  return Math.floor(ms / 1e3);
-}
-function assertHex64(value, label) {
-  if (!/^[0-9a-f]{64}$/.test(value)) {
-    throw new Error(`${label} must be 64 lowercase hex chars, got: ${value.slice(0, 16)}\u2026`);
-  }
-}
-function canonicalChannelName(name) {
-  return name.replace(/^[#\s]+/, "").replace(/\s+$/, "");
-}
-function addr(kind, pubkey, dTag) {
-  return `${kind}:${pubkey}:${dTag}`;
-}
-function buildCreateChannel(pubkey, createdAtMs, args2) {
-  assertHex64(pubkey, "pubkey");
-  const name = canonicalChannelName(args2.name);
-  if (name.trim() === "")
-    throw new Error("channel name is required");
-  const tags2 = [
-    ["h", args2.channelUuid],
-    ["name", name]
-  ];
-  if (args2.visibility)
-    tags2.push(["visibility", args2.visibility]);
-  if (args2.channelType)
-    tags2.push(["channel_type", args2.channelType]);
-  if (args2.about)
-    tags2.push(["about", args2.about]);
-  if (args2.ttlSeconds !== void 0)
-    tags2.push(["ttl", String(args2.ttlSeconds)]);
-  return {
-    pubkey,
-    created_at: toNostrSeconds(createdAtMs),
-    kind: KIND.NIP29_CREATE_GROUP,
-    tags: tags2,
-    content: ""
-  };
-}
-function buildReaction(pubkey, createdAtMs, args2) {
-  assertHex64(pubkey, "pubkey");
-  assertHex64(args2.targetEventId, "targetEventId");
-  if ([...args2.emoji].length > MAX_EMOJI_CHARS) {
-    throw new Error(`emoji longer than ${MAX_EMOJI_CHARS} chars`);
-  }
-  return {
-    pubkey,
-    created_at: toNostrSeconds(createdAtMs),
-    kind: KIND.REACTION,
-    tags: [["e", args2.targetEventId]],
-    content: args2.emoji
-  };
-}
-function buildDeletion(pubkey, createdAtMs, args2) {
-  assertHex64(pubkey, "pubkey");
-  assertHex64(args2.targetEventId, "targetEventId");
-  return {
-    pubkey,
-    created_at: toNostrSeconds(createdAtMs),
-    kind: KIND.DELETION,
-    tags: [["e", args2.targetEventId]],
-    content: ""
-  };
-}
-function buildEdit(pubkey, createdAtMs, args2) {
-  assertHex64(pubkey, "pubkey");
-  assertHex64(args2.targetEventId, "targetEventId");
-  const bytes = utf8ToBytes(args2.body).length;
-  if (bytes > MAX_MESSAGE_BYTES) {
-    throw new Error(`content is ${bytes} bytes, max ${MAX_MESSAGE_BYTES}`);
-  }
-  return {
-    pubkey,
-    created_at: toNostrSeconds(createdAtMs),
-    kind: KIND.MESSAGE_EDIT,
-    tags: [
-      ["h", args2.channelUuid],
-      ["e", args2.targetEventId],
-      // Floor, not round: `created_at` is `toNostrSeconds` of the same instant,
-      // and a rounded `ts` could land in the next second and be discarded by
-      // its own agreement rule.
-      ["ts", String(Math.floor(createdAtMs))]
-    ],
-    content: args2.body
-  };
-}
-function threadTags(ref) {
-  if (ref.rootId === ref.parentId) {
-    return [["e", ref.rootId, "", "reply"]];
-  }
-  return [
-    ["e", ref.rootId, "", "root"],
-    ["e", ref.parentId, "", "reply"]
-  ];
-}
-function buildMessage(pubkey, createdAtMs, args2) {
-  assertHex64(pubkey, "pubkey");
-  const bytes = utf8ToBytes(args2.content).length;
-  if (bytes > MAX_MESSAGE_BYTES) {
-    throw new Error(`content is ${bytes} bytes, max ${MAX_MESSAGE_BYTES}`);
-  }
-  const tags2 = [["h", args2.channelUuid]];
-  if (args2.threadRef)
-    tags2.push(...threadTags(args2.threadRef));
-  for (const address of [...new Set(args2.about ?? [])])
-    tags2.push(["a", address]);
-  if (args2.mentions && args2.mentions.length > 0) {
-    if (args2.mentions.length > MAX_MENTIONS) {
-      throw new Error(`too many mentions: ${args2.mentions.length} > ${MAX_MENTIONS}`);
-    }
-    const seen = /* @__PURE__ */ new Set();
-    for (const hex of args2.mentions) {
-      const lower = hex.toLowerCase();
-      assertHex64(lower, "mention pubkey");
-      if (!seen.has(lower)) {
-        seen.add(lower);
-        tags2.push(["p", lower]);
-      }
-    }
-  }
-  if (args2.broadcast)
-    tags2.push(["broadcast", "1"]);
-  for (const mt of args2.mediaTags ?? [])
-    tags2.push(mt);
-  return {
-    pubkey,
-    created_at: toNostrSeconds(createdAtMs),
-    kind: KIND.STREAM_MESSAGE,
-    tags: tags2,
-    content: args2.content
-  };
-}
-
 // node_modules/@estiva-app/protocol/dist/nip19.js
 var CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 var GENERATOR = [996825010, 642813549, 513874426, 1027748829, 705979059];
@@ -16173,12 +15950,348 @@ function decodeNaddr(encoded) {
 function pointerToAddress(pointer) {
   return `${pointer.kind}:${pointer.pubkey}:${pointer.identifier}`;
 }
+function addressToPointer(address) {
+  const first = address.indexOf(":");
+  const second = address.indexOf(":", first + 1);
+  if (first < 1 || second < 0)
+    throw new Error(`not an address: ${address.slice(0, 40)}`);
+  const kind = Number(address.slice(0, first));
+  const pubkey = address.slice(first + 1, second);
+  const identifier = address.slice(second + 1);
+  if (!Number.isInteger(kind) || !/^[0-9a-f]{64}$/i.test(pubkey)) {
+    throw new Error(`not an address: ${address.slice(0, 40)}`);
+  }
+  return { kind, pubkey: pubkey.toLowerCase(), identifier, relays: [] };
+}
 function naddrToAddr(encoded) {
   return pointerToAddress(decodeNaddr(encoded));
+}
+function referenceToPointer(input) {
+  const trimmed = input.replace(/^nostr:/i, "");
+  return trimmed.toLowerCase().startsWith("naddr1") ? decodeNaddr(trimmed) : addressToPointer(trimmed);
 }
 var NADDR_RE = /nostr:(naddr1[023456789acdefghjklmnpqrstuvwxyz]+)/gi;
 function findNaddrs(text2) {
   return [...text2.matchAll(NADDR_RE)].map((m) => m[1]);
+}
+
+// node_modules/@estiva-app/protocol/dist/events.js
+var KIND = {
+  PROFILE: 0,
+  DELETION: 5,
+  REACTION: 7,
+  STREAM_MESSAGE: 9,
+  NIP29_PUT_USER: 9e3,
+  NIP29_EDIT_METADATA: 9002,
+  NIP29_CREATE_GROUP: 9007,
+  NIP29_DELETE_GROUP: 9008,
+  /**
+   * Folder command — `KIND_FOLDER_COMMAND` (RFC 0.4 §4.1). A client never signs
+   * a Folder's state; it sends one of these and the relay emits the new
+   * relay-signed `kind:30890`. See {@link buildFolderCommand}.
+   */
+  FOLDER_COMMAND: 1852,
+  /**
+   * Estiva assertion — a statement *about* something in the channel, rather
+   * than a message in it (PEEK-128). `resolution` is the first and, for now,
+   * only subtype; the `t` tag names it so later subtypes can join without a
+   * new kind.
+   *
+   * The number sits in the **regular** range (1000–9999), which is what makes
+   * it stored and append-only. A replaceable kind would overwrite the previous
+   * assertion and destroy exactly the history this exists to keep. It clears
+   * NIP-29's 9000–9030 block on purpose.
+   */
+  ASSERTION: 9101,
+  /**
+   * NIP-22 comment (REW-10). Ship's comments are posted into the project's
+   * Folder — which *is* a Peek topic's channel — so they arrive in a channel as
+   * ordinary messages and must be read alongside `STREAM_MESSAGE`.
+   *
+   * Both kinds, permanently: a `kind:9` is not replaceable, so every comment
+   * written before Ship flipped stays `kind:9` forever and this pair can never
+   * shrink to one.
+   */
+  COMMENT: 1111,
+  /** NIP-84 highlight. */
+  HIGHLIGHT: 9802,
+  /**
+   * NIP-78 arbitrary custom app data — and **it is not reserved for read state**,
+   * despite the relay naming its own constant `KIND_READ_STATE`.
+   *
+   * The relay's NIP-RS handling is a narrow predicate: kind 30078, exactly one
+   * `d` matching `read-state:<32 lowercase hex>`, and exactly one
+   * `["t","read-state"]`. Ingest performs no other `d`-tag validation on the
+   * kind, so anything outside that predicate is an ordinary addressable event
+   * with ordinary replaceable semantics.
+   *
+   * Two uses in the suite, and the constant is here so neither invents its own
+   * number: NIP-RS read state (SPEC §11.6) and app-private user-owned storage
+   * (SPEC §12). A `d` beginning `read-state:` brings hard-deletion of superseded
+   * blobs with it, which is a property app data must not acquire by accident.
+   */
+  APP_DATA: 30078,
+  /** NIP-FC File — see docs/buzz-compat/nips/NIP-FC.md in the Peek repo. */
+  FILE: 30840,
+  /** NIP-FC Component. */
+  COMPONENT: 30841,
+  /**
+   * NIP-42 relay auth — the challenge response that turns a connected socket
+   * into an authenticated one (`Kind::Authentication`, PEE-5).
+   *
+   * Unlike every other kind here, this one is **never published**: Buzz builds
+   * it into `buzz-auth/src/nip42.rs`, never stores it, and never logs it —
+   * "AUTH events are never stored or logged (may contain bearer tokens)" is a
+   * comment in that file. It goes over the socket and is gone.
+   */
+  RELAY_AUTH: 22242,
+  HTTP_AUTH: 27235,
+  /**
+   * Blossom authorization (BUD-01/BUD-11) — `HTTP_AUTH` for blobs.
+   *
+   * Never stored and never published: it is signed, carried in an
+   * `Authorization: Nostr <base64url(event)>` header, and read once. See
+   * `media.ts`, which builds it and the `imeta` tag that references the blob.
+   */
+  BLOSSOM_AUTH: 24242,
+  /**
+   * Buzz's message edit (`KIND_STREAM_MESSAGE_EDIT`) — RFC 0.4 §7.2.1.
+   *
+   * A `kind:9` and a `kind:1111` are both non-replaceable, so an edit cannot
+   * overwrite what it edits. It is a separate event naming its target, and what
+   * an app shows as "edited" is a fold over the pair.
+   *
+   * **Channel-scoped.** 40003 is in the relay's `requires_h_channel_scope`, so
+   * an edit without an `h` comes back `accepted: false` even when the kind is
+   * granted and the signature is fine — two gates, and the kind ceiling is only
+   * the first.
+   */
+  MESSAGE_EDIT: 40003,
+  /**
+   * Open a DM — `KIND_DM_OPEN` (`buzz-core/src/kind.rs:423`).
+   *
+   * A **command**, not a record, and the difference decides how a client uses
+   * it. There is no `h`, because the channel does not exist yet and the client
+   * does not choose its id: the relay mints it and answers with it. A topic
+   * mints its own uuid client-side and creates it with a `9007`; a DM cannot,
+   * and {@link buildDmOpen} is the whole of the client's side of that.
+   *
+   * **The uuid is random, and only the lookup is by participants.**
+   * `create_dm` takes `Uuid::new_v4()` (`buzz-db/src/dm.rs`); what
+   * `compute_participant_hash` — sha256 over the sorted, deduplicated pubkey
+   * bytes of self + the `p` tags — produces is the *key* `find_dm_by_participants`
+   * resolves, not the id itself. So re-opening is idempotent, because the same
+   * participants always hash to the same row and therefore name the same
+   * channel; but the uuid cannot be computed offline from the participants,
+   * and a client that tried would be inventing a channel nobody else has.
+   *
+   * Idempotence is what the caller gets to rely on: "message this person" never
+   * has to ask whether a DM already exists. Publish and use what comes back —
+   * see `commandPayload`, including the one case where nothing comes back.
+   */
+  DM_OPEN: 41010,
+  /**
+   * Hide a DM from the signer's own sidebar — `KIND_DM_HIDE`
+   * (`buzz-core/src/kind.rs`). A command like {@link KIND.DM_OPEN}: one `h`
+   * naming the DM channel, no content, and the caller must be a member of it.
+   *
+   * **Hiding is neither leaving nor deleting.** `handle_dm_hide` sets the
+   * caller's own `hidden_at` on their membership row and nothing else: the
+   * channel, every participant and every message survive, and the other
+   * participants are not told. What changes is the signer's
+   * {@link KIND.DM_VISIBILITY} snapshot, which the relay republishes after the
+   * hide.
+   *
+   * **There is no unhide command.** `open_dm` clears the caller's `hidden_at`
+   * when the DM already exists (`buzz-db/src/dm.rs`), so re-publishing the
+   * same {@link buildDmOpen} is how a hidden DM comes back — the relay
+   * republishes the snapshot on that path too. A message arriving in a hidden
+   * DM does *not* resurface it: nothing on the `kind:9` path touches
+   * `hidden_at`.
+   */
+  DM_HIDE: 41012,
+  /**
+   * The relay's per-viewer hidden-DM set — `KIND_DM_VISIBILITY`
+   * (`buzz-core/src/kind.rs`). **Relay-signed, and only ever read.** There is
+   * no builder for it here on purpose: `ingest.rs` refuses a client-authored
+   * one, and an app that signed one would be forging the relay's answer.
+   *
+   * Parameterized replaceable with `d` = the viewer's pubkey, carrying one `h`
+   * per hidden DM channel and a `p` = the viewer. It is result-gated on that
+   * `p` (`RESULT_GATED_KINDS`, `filter.rs:reader_authorized_for_event`): the
+   * read that works is `{ kinds: [30622], '#p': [me], limit: 1 }`, and a
+   * `#p` naming anybody else is refused rather than answered empty.
+   *
+   * The newest event is the whole set. The relay writes it again after every
+   * hide and every re-open, so a client applies the latest one wholesale and
+   * never merges successive snapshots.
+   */
+  DM_VISIBILITY: 30622
+};
+var MAX_EMOJI_CHARS = 64;
+var MAX_MESSAGE_BYTES = 64 * 1024;
+var MAX_MENTIONS = 50;
+function toNostrSeconds(ms) {
+  return Math.floor(ms / 1e3);
+}
+function assertHex64(value, label) {
+  if (!/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${label} must be 64 lowercase hex chars, got: ${value.slice(0, 16)}\u2026`);
+  }
+}
+function canonicalChannelName(name) {
+  return name.replace(/^[#\s]+/, "").replace(/\s+$/, "");
+}
+function addr(kind, pubkey, dTag) {
+  return `${kind}:${pubkey}:${dTag}`;
+}
+function buildCreateChannel(pubkey, createdAtMs, args2) {
+  assertHex64(pubkey, "pubkey");
+  const name = canonicalChannelName(args2.name);
+  if (name.trim() === "")
+    throw new Error("channel name is required");
+  const tags2 = [
+    ["h", args2.channelUuid],
+    ["name", name]
+  ];
+  if (args2.visibility)
+    tags2.push(["visibility", args2.visibility]);
+  if (args2.channelType)
+    tags2.push(["channel_type", args2.channelType]);
+  if (args2.about)
+    tags2.push(["about", args2.about]);
+  if (args2.ttlSeconds !== void 0)
+    tags2.push(["ttl", String(args2.ttlSeconds)]);
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND.NIP29_CREATE_GROUP,
+    tags: tags2,
+    content: ""
+  };
+}
+var FOLDER_OPS = ["add", "remove", "set"];
+function buildFolderCommand(pubkey, createdAtMs, args2) {
+  assertHex64(pubkey, "pubkey");
+  if (!args2.folder)
+    throw new Error("a folder command names the folder");
+  if (!FOLDER_OPS.includes(args2.op))
+    throw new Error(`unknown folder op: ${String(args2.op)}`);
+  const tags2 = [
+    ["h", args2.folder],
+    ["op", args2.op]
+  ];
+  for (const address of args2.addresses ?? []) {
+    if (!address)
+      throw new Error("a folder command address must not be empty");
+    tags2.push(["a", address]);
+  }
+  if (args2.name !== void 0) {
+    const name = canonicalChannelName(args2.name);
+    if (name.trim() === "")
+      throw new Error("folder name is required");
+    tags2.push(["name", name]);
+  }
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND.FOLDER_COMMAND,
+    tags: tags2,
+    content: ""
+  };
+}
+function buildReaction(pubkey, createdAtMs, args2) {
+  assertHex64(pubkey, "pubkey");
+  assertHex64(args2.targetEventId, "targetEventId");
+  if ([...args2.emoji].length > MAX_EMOJI_CHARS) {
+    throw new Error(`emoji longer than ${MAX_EMOJI_CHARS} chars`);
+  }
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND.REACTION,
+    tags: [["e", args2.targetEventId]],
+    content: args2.emoji
+  };
+}
+function buildDeletion(pubkey, createdAtMs, args2) {
+  assertHex64(pubkey, "pubkey");
+  assertHex64(args2.targetEventId, "targetEventId");
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND.DELETION,
+    tags: [["e", args2.targetEventId]],
+    content: ""
+  };
+}
+function buildEdit(pubkey, createdAtMs, args2) {
+  assertHex64(pubkey, "pubkey");
+  assertHex64(args2.targetEventId, "targetEventId");
+  const bytes = utf8ToBytes(args2.body).length;
+  if (bytes > MAX_MESSAGE_BYTES) {
+    throw new Error(`content is ${bytes} bytes, max ${MAX_MESSAGE_BYTES}`);
+  }
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND.MESSAGE_EDIT,
+    tags: [
+      ["h", args2.channelUuid],
+      ["e", args2.targetEventId],
+      // Floor, not round: `created_at` is `toNostrSeconds` of the same instant,
+      // and a rounded `ts` could land in the next second and be discarded by
+      // its own agreement rule.
+      ["ts", String(Math.floor(createdAtMs))]
+    ],
+    content: args2.body
+  };
+}
+function threadTags(ref) {
+  if (ref.rootId === ref.parentId) {
+    return [["e", ref.rootId, "", "reply"]];
+  }
+  return [
+    ["e", ref.rootId, "", "root"],
+    ["e", ref.parentId, "", "reply"]
+  ];
+}
+function buildMessage(pubkey, createdAtMs, args2) {
+  assertHex64(pubkey, "pubkey");
+  const bytes = utf8ToBytes(args2.content).length;
+  if (bytes > MAX_MESSAGE_BYTES) {
+    throw new Error(`content is ${bytes} bytes, max ${MAX_MESSAGE_BYTES}`);
+  }
+  const tags2 = [["h", args2.channelUuid]];
+  if (args2.threadRef)
+    tags2.push(...threadTags(args2.threadRef));
+  for (const address of [...new Set(args2.about ?? [])])
+    tags2.push(["a", address]);
+  if (args2.mentions && args2.mentions.length > 0) {
+    if (args2.mentions.length > MAX_MENTIONS) {
+      throw new Error(`too many mentions: ${args2.mentions.length} > ${MAX_MENTIONS}`);
+    }
+    const seen = /* @__PURE__ */ new Set();
+    for (const hex of args2.mentions) {
+      const lower = hex.toLowerCase();
+      assertHex64(lower, "mention pubkey");
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        tags2.push(["p", lower]);
+      }
+    }
+  }
+  if (args2.broadcast)
+    tags2.push(["broadcast", "1"]);
+  for (const mt of args2.mediaTags ?? [])
+    tags2.push(mt);
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND.STREAM_MESSAGE,
+    tags: tags2,
+    content: args2.content
+  };
 }
 
 // node_modules/@estiva-app/protocol/dist/nip98.js
@@ -16244,7 +16357,13 @@ function parsePublishResponse(status2, text2) {
     const duplicate = (parsed.message ?? "").startsWith("duplicate:");
     return { ok: duplicate, duplicate, eventId: parsed.event_id, reason: parsed.message, httpStatus: status2 };
   }
-  return { ok: true, eventId: parsed.event_id, httpStatus: status2 };
+  const result = { ok: true, eventId: parsed.event_id, httpStatus: status2 };
+  if (parsed.message !== void 0) {
+    result.message = parsed.message;
+    if (parsed.message.startsWith("duplicate:"))
+      result.duplicate = true;
+  }
+  return result;
 }
 function parseQueryResponse(status2, text2) {
   if (status2 < 200 || status2 >= 300) {
@@ -16635,6 +16754,14 @@ var SignerTokenExpired = class extends Error {
     this.name = "SignerTokenExpired";
   }
 };
+var SignRefused = class extends Error {
+  status;
+  constructor(status2, message) {
+    super(message);
+    this.status = status2;
+    this.name = "SignRefused";
+  }
+};
 async function signViaEstivaId(unsigned, options) {
   const send = options.fetch ?? fetch;
   const origin = options.base.replace(/\/+$/, "");
@@ -16668,7 +16795,7 @@ async function signViaEstivaId(unsigned, options) {
       reason = body.error?.message ?? reason;
     } catch {
     }
-    throw new Error(`Estiva ID refused to sign kind:${unsigned.kind} \u2014 ${reason}`);
+    throw new SignRefused(response.status, `Estiva ID refused to sign kind:${unsigned.kind} \u2014 ${reason}`);
   }
   const event = JSON.parse(text2).event;
   if (!event)
@@ -16679,7 +16806,9 @@ async function signViaEstivaId(unsigned, options) {
   return event;
 }
 function estivaIdSigner({ base, pubkey, token, renew, fetch: send }) {
-  let bearer = token;
+  const read2 = typeof token === "function" ? token : void 0;
+  let held = typeof token === "string" ? token : void 0;
+  const bearerNow = () => read2 ? read2() : held;
   return {
     pubkey,
     kind: "estiva-id",
@@ -16695,6 +16824,9 @@ function estivaIdSigner({ base, pubkey, token, renew, fetch: send }) {
         expectedPubkey: pubkey,
         ...send ? { fetch: send } : {}
       });
+      const bearer = bearerNow();
+      if (bearer === void 0)
+        throw new SignerTokenExpired();
       try {
         return await once(bearer);
       } catch (error2) {
@@ -16703,8 +16835,9 @@ function estivaIdSigner({ base, pubkey, token, renew, fetch: send }) {
         const renewed = await renew();
         if (!renewed)
           throw error2;
-        bearer = renewed;
-        return await once(bearer);
+        if (read2 === void 0)
+          held = renewed;
+        return await once(renewed);
       }
     }
   };
@@ -17176,6 +17309,115 @@ function lookupStatus(vocab, value) {
   };
 }
 
+// src/edits.ts
+function orderingTime(event) {
+  const raw = Number.parseInt(event.tags.find((t) => t[0] === "ts")?.[1] ?? "", 10);
+  if (Number.isFinite(raw) && Math.floor(raw / 1e3) === event.created_at) return raw;
+  return event.created_at * 1e3;
+}
+function laterThan(a, b) {
+  const at = orderingTime(a);
+  const bt = orderingTime(b);
+  if (at !== bt) return at > bt;
+  if (a.created_at !== b.created_at) return a.created_at > b.created_at;
+  return a.id > b.id;
+}
+function editsByTarget(events) {
+  const out = /* @__PURE__ */ new Map();
+  for (const event of events) {
+    if (event.kind !== KIND2.MESSAGE_EDIT) continue;
+    const target = event.tags.find((t) => t[0] === "e")?.[1];
+    if (!target) continue;
+    const list = out.get(target);
+    if (list) list.push(event);
+    else out.set(target, [event]);
+  }
+  for (const list of out.values()) list.sort((a, b) => laterThan(a, b) ? 1 : laterThan(b, a) ? -1 : 0);
+  return out;
+}
+function foldEdits(events) {
+  const originals = /* @__PURE__ */ new Map();
+  for (const event of events) {
+    if (event.kind === KIND2.MESSAGE || event.kind === KIND2.COMMENT) originals.set(event.id, event.content);
+  }
+  const out = {};
+  for (const [target, list] of editsByTarget(events)) {
+    const latest = list[list.length - 1];
+    let current = originals.get(target);
+    let edited2 = false;
+    let at = orderingTime(latest);
+    for (const event of list) {
+      if (current === void 0 || event.content !== current) {
+        edited2 = true;
+        at = orderingTime(event);
+      }
+      current = event.content;
+    }
+    out[target] = { body: latest.content, at, edited: edited2 };
+  }
+  return out;
+}
+
+// src/attachments.ts
+function foldAttachments(events) {
+  const out = {};
+  for (const event of events) {
+    if (event.kind !== KIND2.MESSAGE && event.kind !== KIND2.COMMENT) continue;
+    const files = imetaOf(event);
+    if (files.length > 0) out[event.id] = files;
+  }
+  for (const [target, list] of editsByTarget(events)) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const files = imetaOf(list[i]);
+      if (files.length === 0) continue;
+      out[target] = files;
+      break;
+    }
+  }
+  return out;
+}
+function attachmentsInDocument(value, contentFormat) {
+  if (contentFormat !== BLOCK_DOCUMENT_FORMAT || !value) return [];
+  let document;
+  try {
+    document = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  const out = [];
+  walk(document.content, out);
+  return out;
+}
+function walk(nodes, out) {
+  if (!Array.isArray(nodes)) return;
+  for (const node of nodes) {
+    const block = node;
+    if (block.type === "attachment") {
+      const file = imetaFromAttrs(block.attrs);
+      if (file) out.push(file);
+    }
+    walk(block.content, out);
+  }
+}
+function imetaFromAttrs(attrs) {
+  if (!attrs) return void 0;
+  const { url, m, x, size, dim, thumb, alt, filename } = attrs;
+  if (typeof url !== "string" || !url) return void 0;
+  if (typeof m !== "string" || !m) return void 0;
+  if (typeof x !== "string" || !x) return void 0;
+  if (typeof size !== "number" || !Number.isFinite(size)) return void 0;
+  return {
+    url,
+    m,
+    x,
+    size,
+    ...typeof dim === "string" && dim ? { dim } : {},
+    ...typeof thumb === "string" && thumb ? { thumb } : {},
+    ...typeof alt === "string" && alt ? { alt } : {},
+    ...typeof filename === "string" && filename ? { filename } : {}
+  };
+}
+
 // src/events.ts
 function assertFolderId(folder) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(folder)) {
@@ -17236,11 +17478,44 @@ function buildChange(pubkey, createdAtMs, args2) {
       // Appended last so the four tags the spec fixes keep their documented
       // order. An app that does not know `ts` ignores it and still folds — just
       // at one-second resolution.
-      ["ts", String(Math.floor(createdAtMs))]
+      ["ts", String(Math.floor(createdAtMs))],
+      /*
+              Every file the document places inline, named again as an `imeta` —
+              SPEC §13.3, SHI-2.
+      
+              **Derived here rather than passed in**, so no caller can omit it. Ingest
+              verifies `imeta` *tags* and never parses `content`, and the check is not
+              gated on kind — so this tag is what makes a `kind:1851` carrying a
+              description obey the same rule a message does: a document naming a blob
+              the relay does not hold is refused outright, instead of published and
+              rendering as a broken file for every reader.
+      
+              Nothing to do for a scalar field. `attachmentsInDocument` answers with
+              an empty list for anything that is not a block document, which `status`
+              and `assignee` are not.
+            */
+      ...attachmentsInDocument(args2.value, args2.contentFormat).map(imetaTag),
+      /*
+              A change that places a person on the object names them — `assignee`
+              on an issue, `lead` on a project — as a `p` tag, the way a comment
+              names the people it mentions (FOL-30). Being placed on something is
+              being told about it, and `p` is how the relay tells: the mention index
+              and the inbox are `p`-based, and so is the one read Peek makes for
+              "what am I named in" to fill a person's followed set. Without it the
+              assignment is findable only by folding every `kind:1851` in reach —
+              measured at the relay's 1,000 cap over 90 days on production, with
+              64 assignee changes among them. Appended after `ts`, so the fixed
+              four keep their order; an app that does not know `p` here ignores it.
+      
+              Only a value that is a key: clearing an assignment carries an empty
+              value and names nobody.
+            */
+      ...PLACEMENT_FIELDS.has(args2.field) && /^[0-9a-f]{64}$/.test(args2.value) ? [["p", args2.value]] : []
     ],
     content: args2.note ?? ""
   };
 }
+var PLACEMENT_FIELDS = /* @__PURE__ */ new Set(["assignee", "lead"]);
 function buildNip22Comment(pubkey, createdAtMs, args2) {
   const [kind, author] = args2.about.split(":");
   return {
@@ -17313,6 +17588,278 @@ function projectAddr(pubkey, projectId) {
 }
 function issueAddr(pubkey, issueId) {
   return addr(KIND2.ISSUE, pubkey, issueId);
+}
+
+// node_modules/@estiva-app/interop/dist/projection.js
+var PROFILE_HIT_TTL_MS = 10 * 6e4;
+var KIND_COMMENT = 1111;
+var KIND_DELETION = 5;
+var KIND_CHANNEL_METADATA = 39e3;
+var tagValue = (e, name) => e.tags.find((t) => t[0] === name)?.[1];
+function folderOf(root) {
+  if (root.kind === KIND_CHANNEL_METADATA) {
+    return tagValue(root, "h") ?? tagValue(root, "buzz-channel") ?? tagValue(root, "d") ?? null;
+  }
+  return tagValue(root, "h") ?? tagValue(root, "buzz-channel") ?? null;
+}
+var KIND_BARE_FILE = 30840;
+var BARE_FILE_PARENT_FIELD = "parent";
+var BARE_FILE_MANIFEST = {
+  name: "File",
+  about: "A file no app owns. Its conversation is what every file has; its type adds nothing.",
+  records: {
+    changeKind: 1851,
+    targetTag: "a",
+    fieldTag: "field",
+    valueTag: "value",
+    order: ["ts", "created_at", "id"],
+    rule: "last-write-wins-per-field",
+    hiddenWhen: { field: "archived", equals: "true" }
+  },
+  projections: {
+    [String(KIND_BARE_FILE)]: {
+      widget: "card",
+      slots: {
+        title: { tag: "title", fold: "title" },
+        body: { field: "content" },
+        // A bare file may hold bare files — a sub-topic under a topic. Children
+        // of *other* kinds are found the other way round, by their own `a`
+        // (`parentRefOf` below), which is FOL-4's generic direction; this slot
+        // is the one the existing `list` machinery can draw today.
+        list: { children: { kind: KIND_BARE_FILE, via: "a", limit: 200 } }
+      }
+    },
+    /*
+      A comment is drawn from here for the same reason a bare file is: no app
+      owns `kind:1111` (NIP-22, and SPEC §6.4 — every app writes it and none
+      claims it with a `k` tag), so a link to one resolves through no manifest
+      on the relay. Before FOL-38 `resolveForeignEvent` on a comment answered
+      null, and a pasted thread link stayed a plain link. Drawn the way Peek
+      draws a `kind:9` — the author as the title, the text as the body — so a
+      consumer that already has a `message` widget draws a comment with it.
+    */
+    [String(KIND_COMMENT)]: {
+      widget: ["message", "card"],
+      slots: {
+        title: { field: "pubkey", as: "pubkey" },
+        body: { field: "content" }
+      }
+    }
+  },
+  /*
+      Four actions, and the manifest is the only place a consumer learns of any
+      of them (FOL-33; `move` from FOL-4). A Peek page offering Rename and Delete on a bare file and
+      nothing on a Ship issue does so because *this* list says `rename` and
+      `delete` and Ship's does not — never because the kind is 30840. The rule is
+      the one FOL-31 set for `comment`: a control is drawn from a declaration.
+  
+      `rename` is a `kind:1851` change to the `title` field, not a re-publish of
+      the `30840`. The title slot already folds `title`, so a rename by anyone in
+      the team lands for every reader the way a re-parent does; a re-publish
+      could only ever be the author's, because a `30840` from another pubkey is a
+      different address and not a refusal. `delete` is NIP-09's `kind:5` naming
+      the address — the relay decides who may (the author, or the owner of an
+      authoring agent; SPEC §6.5), so a consumer offers it and reports the answer
+      rather than judging first.
+    */
+  actions: [
+    {
+      id: "comment",
+      label: "Comment",
+      description: "Say something about this file. The comment lands in the team Folder the file lives in, and is what every reader of the file sees under it.",
+      effect: "writes",
+      appliesTo: [String(KIND_BARE_FILE)],
+      emits: { kind: KIND_COMMENT, scope: "address" },
+      input: { type: "string" }
+    },
+    {
+      id: "rename",
+      label: "Rename",
+      description: "Give this file a new title. A change event, so anyone in the team may, and every app reading the file folds it into the title.",
+      effect: "writes",
+      appliesTo: [String(KIND_BARE_FILE)],
+      emits: { kind: 1851, field: "title" },
+      input: { type: "string" }
+    },
+    /*
+      `move` is the `parent` field SPEC §6.7 already defines, declared so a
+      consumer draws the control from here as it draws Rename (FOL-4). The value
+      is the new parent's address, or empty for the top of the team. A move
+      never changes `h`: nesting organises and never grants access, so a file
+      moved under another stays readable by exactly the team it was.
+    */
+    {
+      id: "move",
+      label: "Move",
+      description: "Put this file under another file in the same team, or back at the top. A change event, so anyone in the team may; who can read the file does not change.",
+      effect: "writes",
+      appliesTo: [String(KIND_BARE_FILE)],
+      emits: { kind: 1851, field: BARE_FILE_PARENT_FIELD },
+      input: { type: "string" }
+    },
+    {
+      id: "delete",
+      label: "Delete",
+      description: "Ask the relay to delete this file. The relay decides \u2014 only its author, or the owner of an agent that wrote it, may \u2014 and its comments stay as separate events.",
+      effect: "destructive",
+      appliesTo: [String(KIND_BARE_FILE)],
+      emits: { kind: KIND_DELETION }
+    }
+  ]
+};
+var MANIFEST_TTL_MS = 5 * 6e4;
+var OPEN_STATUSES = /* @__PURE__ */ new Set([
+  "todo",
+  "to do",
+  "in progress",
+  "started",
+  "doing",
+  "in review",
+  "review"
+]);
+var DONE_STATUSES = /* @__PURE__ */ new Set([
+  "done",
+  "completed",
+  "complete",
+  "closed",
+  "cancelled",
+  "canceled",
+  "duplicate"
+]);
+var normalizeStatus = (value) => value.trim().toLowerCase().replace(/[-_\s]+/g, " ");
+var inSet = (set) => (raw, label) => [raw, label].some((v) => v !== void 0 && set.has(normalizeStatus(v)));
+var isOpenStatusByLabel = inSet(OPEN_STATUSES);
+var isDoneStatusByLabel = inSet(DONE_STATUSES);
+var STARTED = /* @__PURE__ */ new Set(["in progress", "started", "doing", "in review", "review"]);
+var isStartedByLabel = inSet(STARTED);
+var KIND_FOLDER_STATE = 30890;
+var KIND_CHANNEL = 39e3;
+async function listFolders(query) {
+  const events = await query([
+    { kinds: [KIND_FOLDER_STATE], limit: 500 },
+    { kinds: [KIND_CHANNEL], limit: 500 }
+  ]);
+  const byId = /* @__PURE__ */ new Map();
+  for (const event of events) {
+    const id = tagValue(event, "d");
+    if (!id)
+      continue;
+    const state = event.kind === KIND_FOLDER_STATE;
+    const existing = byId.get(id);
+    if (existing && !state)
+      continue;
+    byId.set(id, {
+      id,
+      name: tagValue(event, "name") ?? existing?.name,
+      hasState: state || (existing?.hasState ?? false)
+    });
+  }
+  const listedIn = /* @__PURE__ */ new Map();
+  for (const event of events) {
+    if (event.kind !== KIND_FOLDER_STATE)
+      continue;
+    const container = tagValue(event, "d");
+    if (!container)
+      continue;
+    for (const tag2 of event.tags) {
+      if (tag2[0] !== "a" || !tag2[1])
+        continue;
+      const [kind, , identifier] = tag2[1].split(":");
+      if (Number(kind) !== KIND_CHANNEL || !identifier || identifier === container)
+        continue;
+      const containers = listedIn.get(identifier) ?? [];
+      if (!containers.includes(container))
+        containers.push(container);
+      listedIn.set(identifier, containers);
+    }
+  }
+  await placeRecordChannels(events, byId, listedIn, query);
+  for (const [id, containers] of listedIn) {
+    const folder = byId.get(id);
+    if (folder)
+      folder.listedIn = containers;
+  }
+  return [...byId.values()].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
+}
+async function placeRecordChannels(events, byId, listedIn, query) {
+  const containersOf = /* @__PURE__ */ new Map();
+  for (const event of events) {
+    if (event.kind !== KIND_FOLDER_STATE)
+      continue;
+    const container = tagValue(event, "d");
+    if (!container)
+      continue;
+    for (const tag2 of event.tags) {
+      if (tag2[0] !== "a" || !tag2[1])
+        continue;
+      let pointer;
+      try {
+        pointer = referenceToPointer(tag2[1]);
+      } catch {
+        continue;
+      }
+      if (pointer.kind === KIND_CHANNEL)
+        continue;
+      const key = `${pointer.kind}:${pointer.pubkey}:${pointer.identifier}`;
+      const entry = containersOf.get(key) ?? { pointer, containers: [] };
+      if (!entry.containers.includes(container))
+        entry.containers.push(container);
+      containersOf.set(key, entry);
+    }
+  }
+  if (containersOf.size === 0)
+    return;
+  const groups = /* @__PURE__ */ new Map();
+  for (const { pointer } of containersOf.values()) {
+    const key = `${pointer.kind}:${pointer.pubkey}`;
+    const group = groups.get(key) ?? { kind: pointer.kind, pubkey: pointer.pubkey, identifiers: [] };
+    group.identifiers.push(pointer.identifier);
+    groups.set(key, group);
+  }
+  const filters = [];
+  for (const { kind, pubkey, identifiers } of groups.values()) {
+    for (let start = 0; start < identifiers.length; start += RELAY_PAGE_CEILING) {
+      const chunk = identifiers.slice(start, start + RELAY_PAGE_CEILING);
+      filters.push({ kinds: [kind], authors: [pubkey], "#d": chunk, limit: chunk.length });
+    }
+  }
+  const roots = [];
+  for (let start = 0; start < filters.length; start += MAX_FILTERS_PER_QUERY) {
+    roots.push(...await query(filters.slice(start, start + MAX_FILTERS_PER_QUERY)));
+  }
+  const newest = /* @__PURE__ */ new Map();
+  for (const root of roots) {
+    const key = `${root.kind}:${root.pubkey}:${tagValue(root, "d") ?? ""}`;
+    const held = newest.get(key);
+    if (!held || root.created_at > held.created_at)
+      newest.set(key, root);
+  }
+  for (const [key, { containers }] of containersOf) {
+    const root = newest.get(key);
+    const channel = root && folderOf(root);
+    if (!channel || byId.get(channel)?.hasState)
+      continue;
+    for (const container of containers) {
+      if (container === channel)
+        continue;
+      const placed = listedIn.get(channel) ?? [];
+      if (!placed.includes(container))
+        placed.push(container);
+      listedIn.set(channel, placed);
+    }
+  }
+}
+
+// node_modules/@estiva-app/interop/dist/folders.js
+function planPlaceFile(pubkey, createdAtMs, args2) {
+  if (!args2.hasState)
+    return [];
+  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", addresses: [args2.address] })];
+}
+function planUnlistFile(pubkey, createdAtMs, args2) {
+  if (!args2.hasState)
+    return [];
+  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "remove", addresses: [args2.address] })];
 }
 
 // src/fold.ts
@@ -17595,46 +18142,6 @@ function anchorIndex(events) {
   return index;
 }
 
-// src/edits.ts
-function orderingTime(event) {
-  const raw = Number.parseInt(event.tags.find((t) => t[0] === "ts")?.[1] ?? "", 10);
-  if (Number.isFinite(raw) && Math.floor(raw / 1e3) === event.created_at) return raw;
-  return event.created_at * 1e3;
-}
-function laterThan(a, b) {
-  const at = orderingTime(a);
-  const bt = orderingTime(b);
-  if (at !== bt) return at > bt;
-  if (a.created_at !== b.created_at) return a.created_at > b.created_at;
-  return a.id > b.id;
-}
-function foldEdits(events) {
-  const winners = {};
-  for (const event of events) {
-    if (event.kind !== KIND2.MESSAGE_EDIT) continue;
-    const target = event.tags.find((t) => t[0] === "e")?.[1];
-    if (!target) continue;
-    const held = winners[target];
-    if (!held || laterThan(event, held)) winners[target] = event;
-  }
-  const out = {};
-  for (const [target, event] of Object.entries(winners)) {
-    out[target] = { body: event.content, at: orderingTime(event) };
-  }
-  return out;
-}
-
-// src/attachments.ts
-function foldAttachments(events) {
-  const out = {};
-  for (const event of events) {
-    if (event.kind !== KIND2.MESSAGE && event.kind !== KIND2.COMMENT) continue;
-    const files = imetaOf(event);
-    if (files.length > 0) out[event.id] = files;
-  }
-  return out;
-}
-
 // src/reactions.ts
 var REACTION_EVENT_LIMIT = 500;
 
@@ -17774,9 +18281,10 @@ var Store = class {
    *
    * The trade-off is real and belongs in the UI rather than buried here: on this
    * relay `open` also bypasses the write gate, so anyone on the relay can write
-   * into the Folder, not just read it. For a Folder that should be restricted,
-   * pair with an existing one (`adoptFolder`) whose membership already means
-   * something.
+   * into the Folder, not just read it.
+   *
+   * No project is created this way any more: a project is filed into its
+   * team's Folder (`createProject`, FOL-2).
    */
   async ensureFolder(folder, name) {
     assertFolderId(folder);
@@ -17791,60 +18299,30 @@ var Store = class {
     );
   }
   /**
-   * Open a Folder somebody else already created — typically a Peek topic.
+   * Create a project in a team — SPEC §6.7, RFC 0.5 §10.5 (FOL-2).
    *
-   * This is the case the RFC actually describes: "the Peek topic, the Linear
-   * project, the messages all carry the same `h`. One container, many
-   * projections" (RFC_UPDATES.md §1.1). Creating a *new* Folder for a project
-   * that already has a Peek topic produces two containers for one thing, and
-   * then nobody in the topic can see the issues.
+   * **No Folder of its own.** It used to be paired with one: a fresh
+   * `project-…` channel (`ensureFolder`) or a pasted Peek topic. A project
+   * belongs to a team now, and its issues, changes and conversation carry the
+   * team's `h` — the record's `buzz-channel` names the team, so `contentFolder`
+   * and `originFolder` both fold to it and nothing downstream changes meaning.
    *
-   * Deliberately does NOT publish a `kind:9007`. The channel exists; re-creating
-   * it would either be a no-op duplicate or, worse, hand ownership questions to
-   * whoever clicked last. Access is whatever the Folder's owner already decided,
-   * which is the point of pairing rather than forking.
-   */
-  async adoptFolder(folder) {
-    assertFolderId(folder);
-    try {
-      await this.relay.query([{ kinds: [KIND2.ISSUE], "#h": [folder], limit: 1 }]);
-      return { ok: true };
-    } catch (error2) {
-      return { ok: false, reason: error2.message };
-    }
-  }
-  /**
-   * Create a project — which is to say, create a Folder and put a project
-   * record in it.
+   * **Then it is listed in the team**, which the record alone never does. A
+   * Folder with state lists only what its `kind:30890` names, and filing by `h`
+   * never updates it, so without the `kind:1852` Peek does not place the
+   * project — which is how 6 of 17 active projects came to be in no team.
+   * Record first: `planPlaceFile` lists a file that was just published, and a
+   * listing that names a record the relay refused would point at nothing.
    *
-   * Pass `folder` to use one that **already exists**, in practice a Peek topic.
-   * That path deliberately does not publish a `kind:9007`: the container is
-   * already there, and re-creating it would fork one thing into two, which is
-   * the exact failure pairing exists to avoid. It is also all that "linking a
-   * topic to a project" needs to be — the project is created *in* the topic,
-   * so there is no second container and nothing to reconcile afterwards.
-   *
-   * When creating a new Folder the order matters: it has to exist before
-   * anything can be written into it (FRICTION.md A4).
-   *
-   * That ordering survives REW-11 even though the reason narrowed. The project
-   * record is global now, so it no longer needs the channel to exist — but its
-   * issues, changes and conversation all still carry an `h`, so a project whose
-   * Folder was never created is a project nothing can be filed into. Bailing out
-   * when `ensureFolder` fails is therefore still right: publishing the record
-   * anyway would advertise a container that does not exist, and advertising it
-   * *globally* would put that claim in front of everyone rather than only the
-   * person who tried.
+   * `placed` is reported separately rather than folded into `result`, because
+   * the two failures differ: a refused record is no project at all, a refused
+   * listing is a project Ship shows under its team and Peek does not.
    */
   async createProject(args2) {
+    assertFolderId(args2.team.folder);
     const id = crypto.randomUUID();
-    const folder = args2.folder ?? crypto.randomUUID();
-    if (!args2.folder) {
-      const created = await this.ensureFolder(folder, `project-${folder.slice(0, 8)}`);
-      if (!created.ok) {
-        return { result: created, addr: projectAddr(this.signer.pubkey, id), id, folder };
-      }
-    }
+    const folder = args2.team.folder;
+    const addr2 = projectAddr(this.signer.pubkey, id);
     const result = await this.publish(
       buildProject(this.signer.pubkey, Date.now(), {
         projectId: id,
@@ -17854,7 +18332,13 @@ var Store = class {
         folder
       })
     );
-    return { result, addr: projectAddr(this.signer.pubkey, id), id, folder };
+    if (!result.ok) return { result, addr: addr2, id, folder };
+    let placed;
+    for (const command2 of planPlaceFile(this.signer.pubkey, Date.now(), { folder, address: addr2, hasState: args2.team.hasState })) {
+      placed = await this.publish(command2);
+      if (!placed.ok) break;
+    }
+    return { result, placed, addr: addr2, id, folder };
   }
   /**
    * Hide a project from the lists, or bring it back.
@@ -17884,15 +18368,34 @@ var Store = class {
    * the NIP-OA owner of an authoring agent (SPEC §6.5, corrected 2026-09-06).
    * This comment used to say "only the project's author can do this", which is
    * the rule SHI-14 found wrong and CON-3 withdrew.
+   *
+   * **Then it is unlisted from its team** (FOL-48), `createProject` in
+   * reverse. A Folder with state lists what its `kind:30890` names, deleted or
+   * not, so without the `kind:1852` remove the team keeps a row pointing at
+   * nothing — measured on production on 2026-09-24. Delete first, as
+   * `planUnlistFile` says: a refused remove then leaves a stale row, where the
+   * other order would unlist a project the relay kept. A team without state
+   * lists by `h` and needs nothing.
+   *
+   * `unlisted` is reported separately, as `placed` is: a refused delete is a
+   * project that still exists, a refused unlist is a deleted project Peek
+   * still shows a row for.
    */
-  deleteProject(args2) {
-    return this.publish(
+  async deleteProject(args2) {
+    const result = await this.publish(
       buildDeletion2(this.signer.pubkey, Date.now(), {
         target: args2.project,
         folder: args2.recordFolder,
         reason: args2.reason
       })
     );
+    if (!result.ok) return { result };
+    let unlisted;
+    for (const command2 of planUnlistFile(this.signer.pubkey, Date.now(), { folder: args2.team.folder, address: args2.project, hasState: args2.team.hasState })) {
+      unlisted = await this.publish(command2);
+      if (!unlisted.ok) break;
+    }
+    return { result, unlisted };
   }
   /**
    * Ask the relay to drop an issue's record.
@@ -18669,14 +19172,14 @@ function issueEdits(issue2, args2, projects) {
   }
   return edits;
 }
-var OPEN_STATUSES = ["todo", "in_progress"];
-var STATUS_ALIASES = { open: OPEN_STATUSES };
+var OPEN_STATUSES2 = ["todo", "in_progress"];
+var STATUS_ALIASES = { open: OPEN_STATUSES2 };
 function statusesFor(requested) {
   const alias = STATUS_ALIASES[requested];
   if (alias) return alias;
   if (ISSUE_STATUSES.some((entry) => entry.value === requested)) return [requested];
   throw new BadRequest(
-    `Unknown status "${requested}". Try: ${ISSUE_STATUSES.map((s) => s.value).join(", ")}, or "open" for ${OPEN_STATUSES.join(" and ")}.`
+    `Unknown status "${requested}". Try: ${ISSUE_STATUSES.map((s) => s.value).join(", ")}, or "open" for ${OPEN_STATUSES2.join(" and ")}.`
   );
 }
 async function resolveIssueFor(context2, reference) {
@@ -18752,6 +19255,19 @@ async function resolveFolder(context2, reference, noun) {
       hint: `Pass a ${noun} name or a Folder id.`
     }
   );
+}
+function readFolders(context2) {
+  return listFolders((filters) => context2.relay.queryAll(filters));
+}
+async function resolveTeam(context2, reference) {
+  const teams = (await readFolders(context2)).filter((folder) => folder.hasState && !folder.listedIn?.length);
+  return resolveOne(teams, reference, {
+    noun: "team",
+    exact: (team) => [team.id],
+    text: (team) => team.name ?? "",
+    label: (team) => `${team.name ?? "unnamed"} (${team.id.slice(0, 8)}\u2026)`,
+    hint: "Pass a team name or its Folder id."
+  });
 }
 function published(result, what) {
   if (!result.ok) throw new BadRequest(`The relay refused ${what}: ${result.reason ?? "no reason given"}`);
@@ -19559,7 +20075,7 @@ Pass an address to say which.`
     },
     {
       name: "delete-project",
-      signs: [KIND2.DELETION],
+      signs: [KIND2.DELETION, KIND.FOLDER_COMMAND],
       summary: "ask the relay to drop a project record \u2014 irreversible; prefer archive-project",
       usage: 'delete-project <ref> [--yes] [--reason "\u2026"]',
       async run(context2, args2) {
@@ -19578,15 +20094,21 @@ Pass an address to say which.`
             note: "Nothing was published. Archiving is reversible and usually what is wanted \u2014 see `archive-project`. Pass --yes to send the deletion request."
           };
         }
-        const result = await store(context2).deleteProject({
+        const team = project.contentFolder;
+        const hasState = (await readFolders(context2)).find((f) => f.id === team)?.hasState ?? false;
+        const { result, unlisted } = await store(context2).deleteProject({
           recordFolder: folder,
           project: project.addr,
-          reason: flagValue(args2, "reason")
+          reason: flagValue(args2, "reason"),
+          team: { folder: team, hasState }
         });
         published(result, `deleting \u201C${project.title}\u201D`);
         return {
           deleted: { title: project.title, addr: project.addr },
           eventId: result.eventId,
+          // Apart from the delete, as Ship reports it: a refused unlist is a
+          // deleted project its team still shows a row for.
+          unlisted: unlisted ? unlisted.ok ? { from: team, eventId: unlisted.eventId } : { from: team, refused: unlisted.reason ?? "no reason given" } : void 0,
           survives,
           note: "NIP-09 is a request. The relay may decline it, and copies held elsewhere are untouched."
         };
@@ -19595,51 +20117,36 @@ Pass an address to say which.`
     {
       name: "create-project",
       /*
-              Two kinds, because creating a project usually creates its container
-              too: `Store.createProject` calls `ensureFolder` when no Folder is given,
-              and that publishes a `kind:9007`. Declaring only 30850 would let the
-              runner wave this through and let it fail at `/sign` on the second
-              publish — after the Folder existed, which is the worst of both.
+              The record, then its listing in the team (FOL-2, FOL-47). No `kind:9007`
+              any more: a project has no Folder of its own, its record's
+              `buzz-channel` names the team and its issues carry the team's `h`.
       
-              Declared for the widest path it can take rather than the narrowest, so a
-              credential that cannot make a Folder is told before anything is written
-              rather than halfway through (PEEK-172).
+              Both kinds are declared, so a credential that cannot list in a team is
+              told before the record is written rather than after (PEEK-172).
             */
-      signs: [KIND2.PROJECT, KIND2.FOLDER],
-      summary: "start a new project",
-      usage: 'create-project --title "..." [--description "..."] [--topic <name|folder>]',
+      signs: [KIND2.PROJECT, KIND.FOLDER_COMMAND],
+      summary: "start a new project in a team",
+      usage: 'create-project --team <name|folder> --title "..." [--description "..."]',
       async run(context2, args2) {
         const title = flagValue(args2, "title");
         if (!title) throw new BadRequest("create-project needs --title.");
-        const store2 = new Store(context2.relay, context2.signer);
-        const topic = flagValue(args2, "topic");
-        let folder;
-        if (topic) {
-          const match = await resolveFolder(context2, topic, "topic");
-          const adopted = await store2.adoptFolder(match.folder);
-          if (!adopted.ok) {
-            throw new BadRequest(
-              `That Folder cannot be read with this credential: ${adopted.reason ?? "no reason given"}`
-            );
-          }
-          folder = match.folder;
-        }
-        const created = await store2.createProject({
+        const reference = flagValue(args2, "team");
+        if (!reference) throw new BadRequest("create-project needs --team: the team the project is filed into.");
+        const team = await resolveTeam(context2, reference);
+        const created = await new Store(context2.relay, context2.signer).createProject({
           title,
           description: flagValue(args2, "description"),
-          folder
+          team: { folder: team.id, hasState: team.hasState }
         });
         published(created.result, `a new project "${title}"`);
         return {
-          created: {
-            title,
-            addr: created.addr,
-            folder: created.folder,
-            // Said back, because "did it make a new container or use the one I
-            // meant" is the question a caller actually has.
-            pairedWithExistingTopic: Boolean(folder)
-          },
-          eventId: created.result.eventId
+          created: { title, addr: created.addr, team: { id: team.id, name: team.name } },
+          eventId: created.result.eventId,
+          /*
+            Apart from the record, as Ship reports it: a refused listing is a
+            project Ship shows under its team and Peek does not place.
+          */
+          placed: created.placed ? created.placed.ok ? { in: team.id, eventId: created.placed.eventId } : { in: team.id, refused: created.placed.reason ?? "no reason given" } : void 0
         };
       }
     },
@@ -19691,17 +20198,17 @@ var KIND3 = {
    */
   MESSAGE_EDIT: 40003
 };
-var tagValue = (event, name) => event.tags.find((tag2) => tag2[0] === name)?.[1];
+var tagValue2 = (event, name) => event.tags.find((tag2) => tag2[0] === name)?.[1];
 function parseTopic(event) {
-  const folder = tagValue(event, "h");
-  const name = tagValue(event, "name");
+  const folder = tagValue2(event, "h");
+  const name = tagValue2(event, "name");
   if (!folder || !name) return null;
   return {
     folder,
     name,
-    about: tagValue(event, "about"),
-    visibility: tagValue(event, "visibility"),
-    type: tagValue(event, "channel_type"),
+    about: tagValue2(event, "about"),
+    visibility: tagValue2(event, "visibility"),
+    type: tagValue2(event, "channel_type"),
     createdBy: event.pubkey,
     createdAt: event.created_at
   };
@@ -19786,7 +20293,7 @@ var peekApp = {
         const messages = await context2.relay.queryAll([{ kinds: [KIND3.MESSAGE] }]);
         const counts = /* @__PURE__ */ new Map();
         for (const message of messages) {
-          const folder = tagValue(message, "h");
+          const folder = tagValue2(message, "h");
           if (folder) counts.set(folder, (counts.get(folder) ?? 0) + 1);
         }
         const wanted = args2.flags.all ? topics : topics.filter((topic) => topic.type !== "forum");
@@ -19860,7 +20367,7 @@ var peekApp = {
         ]);
         const directory = speakers.length ? await new Store(context2.relay, context2.signer).profiles([...new Set(speakers)]) : /* @__PURE__ */ new Map();
         const resolved = new Set(
-          events.filter((event) => event.kind === KIND3.ASSERTION).map((event) => tagValue(event, "e")).filter(Boolean)
+          events.filter((event) => event.kind === KIND3.ASSERTION).map((event) => tagValue2(event, "e")).filter(Boolean)
         );
         return {
           folder: topic.folder,
@@ -20342,18 +20849,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_create_project",
-      description: "Start a new project in Estiva Ship. Prefer filing an issue in an existing project when there is one \u2014 a project is a container other people navigate by, and an extra one for work that belonged in an existing project is harder to undo than an extra issue. Pass `topic` to pair the project with a Peek conversation that already exists, so the discussion and the work share one container instead of being two things about the same subject. Without it a new container is created. " + WRITE_NOTE,
+      description: "Start a new project in Estiva Ship. Prefer filing an issue in an existing project when there is one \u2014 a project is a container other people navigate by, and an extra one for work that belonged in an existing project is harder to undo than an extra issue. A project is filed into a team \u2014 one of the Folders the sidebar lists \u2014 and its issues and conversation live in that team. " + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
-          title: { type: "string", description: "A short name for the project." },
-          description: { type: "string", description: "Optional. What the project is for." },
-          topic: {
+          team: {
             type: "string",
-            description: "Optional. The name of an existing Peek topic to pair with, or a Folder id. Refuses if it matches more than one."
-          }
+            description: "The team to file it into: its name or Folder id. Refuses if it matches more than one."
+          },
+          title: { type: "string", description: "A short name for the project." },
+          description: { type: "string", description: "Optional. What the project is for." }
         },
-        required: ["title"],
+        required: ["team", "title"],
         additionalProperties: false
       }
     },
@@ -20544,7 +21051,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return dispatch(command("edit-project"), args(flags, [str(input.ref)]));
       }
       case "ship_create_project":
-        return dispatch(command("create-project"), args(flagsFrom(input, ["title", "description", "topic"])));
+        return dispatch(command("create-project"), args(flagsFrom(input, ["team", "title", "description"])));
       case "ship_create_issue":
         return dispatch(command("create-issue"), args(flagsFrom(input, ["project", "title", "description"])));
       case "peek_list_topics":

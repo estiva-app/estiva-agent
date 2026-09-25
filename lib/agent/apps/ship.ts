@@ -26,6 +26,8 @@ import type { Directory } from '../../../src/profiles'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage } from '../conversation'
 import { resolveMaybe, resolveOne, short } from '../resolve'
+import { KIND as PROTOCOL_KIND } from '@estiva-app/protocol'
+import { listFolders, type FolderSummary } from '@estiva-app/interop'
 
 const store = (context: AgentContext) => new Store(context.relay, context.signer)
 
@@ -682,6 +684,32 @@ async function resolveFolder(
       hint: `Pass a ${noun} name or a Folder id.`,
     },
   )
+}
+
+/**
+ * Every Folder this credential can see, and whether each has state — the read
+ * Ship's sidebar and its New project dialog make (`readFolders`), so the two
+ * agree on what a team is and on `hasState`, which a `kind:1852` must never
+ * guess: an `add` to a Folder without state emits state listing only that one
+ * file, and everything already in it disappears.
+ */
+function readFolders(context: AgentContext): Promise<FolderSummary[]> {
+  return listFolders((filters) => context.relay.queryAll(filters as never))
+}
+
+/**
+ * A team by name or Folder id (FOL-47): the Folders with state that no other
+ * Folder lists — `topLevelFolders` in Ship and Peek, the five a person sees.
+ */
+async function resolveTeam(context: AgentContext, reference: string): Promise<FolderSummary> {
+  const teams = (await readFolders(context)).filter((folder) => folder.hasState && !folder.listedIn?.length)
+  return resolveOne(teams, reference, {
+    noun: 'team',
+    exact: (team) => [team.id],
+    text: (team) => team.name ?? '',
+    label: (team) => `${team.name ?? 'unnamed'} (${team.id.slice(0, 8)}…)`,
+    hint: 'Pass a team name or its Folder id.',
+  })
 }
 
 function published<T extends { ok: boolean; reason?: string; duplicate?: boolean }>(
@@ -1799,7 +1827,7 @@ export const shipApp: AgentApp = {
     },
     {
       name: 'delete-project',
-      signs: [KIND.DELETION],
+      signs: [KIND.DELETION, PROTOCOL_KIND.FOLDER_COMMAND],
       summary: 'ask the relay to drop a project record — irreversible; prefer archive-project',
       usage: 'delete-project <ref> [--yes] [--reason "…"]',
       async run(context, args) {
@@ -1830,16 +1858,27 @@ export const shipApp: AgentApp = {
           }
         }
 
-        const result = await store(context).deleteProject({
+        /*
+          Then unlisted from its team (FOL-48): a Folder with state lists what
+          its 30890 names, deleted or not. Whether it has state is read, never
+          assumed; a Folder this credential cannot see has none to change.
+        */
+        const team = project.contentFolder
+        const hasState = (await readFolders(context)).find((f) => f.id === team)?.hasState ?? false
+        const { result, unlisted } = await store(context).deleteProject({
           recordFolder: folder,
           project: project.addr,
           reason: flagValue(args, 'reason'),
+          team: { folder: team, hasState },
         })
         published(result, `deleting “${project.title}”`)
 
         return {
           deleted: { title: project.title, addr: project.addr },
           eventId: result.eventId,
+          // Apart from the delete, as Ship reports it: a refused unlist is a
+          // deleted project its team still shows a row for.
+          unlisted: unlisted ? (unlisted.ok ? { from: team, eventId: unlisted.eventId } : { from: team, refused: unlisted.reason ?? 'no reason given' }) : undefined,
           survives,
           note: 'NIP-09 is a request. The relay may decline it, and copies held elsewhere are untouched.',
         }
@@ -1848,65 +1887,43 @@ export const shipApp: AgentApp = {
     {
       name: 'create-project',
       /*
-        Two kinds, because creating a project usually creates its container
-        too: `Store.createProject` calls `ensureFolder` when no Folder is given,
-        and that publishes a `kind:9007`. Declaring only 30850 would let the
-        runner wave this through and let it fail at `/sign` on the second
-        publish — after the Folder existed, which is the worst of both.
+        The record, then its listing in the team (FOL-2, FOL-47). No `kind:9007`
+        any more: a project has no Folder of its own, its record's
+        `buzz-channel` names the team and its issues carry the team's `h`.
 
-        Declared for the widest path it can take rather than the narrowest, so a
-        credential that cannot make a Folder is told before anything is written
-        rather than halfway through (PEEK-172).
+        Both kinds are declared, so a credential that cannot list in a team is
+        told before the record is written rather than after (PEEK-172).
       */
-      signs: [KIND.PROJECT, KIND.FOLDER],
-      summary: 'start a new project',
-      usage: 'create-project --title "..." [--description "..."] [--topic <name|folder>]',
+      signs: [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND],
+      summary: 'start a new project in a team',
+      usage: 'create-project --team <name|folder> --title "..." [--description "..."]',
       async run(context, args) {
         const title = flagValue(args, 'title')
         if (!title) throw new BadRequest('create-project needs --title.')
+        const reference = flagValue(args, 'team')
+        if (!reference) throw new BadRequest('create-project needs --team: the team the project is filed into.')
 
-        const store = new Store(context.relay, context.signer)
-
-        /*
-          `--topic` pairs the project to a Peek topic that already exists rather
-          than making a second container for one thing.
-
-          This is the case RFC_UPDATES.md §1.1 actually describes — "the Peek
-          topic, the Linear project, the messages all carry the same `h`" — and
-          the failure it prevents is specific: a project created in its own new
-          Folder alongside a topic about the same work gives two containers, and
-          nobody in the topic can see the issues.
-        */
-        const topic = flagValue(args, 'topic')
-        let folder: string | undefined
-        if (topic) {
-          const match = await resolveFolder(context, topic, 'topic')
-          const adopted = await store.adoptFolder(match.folder)
-          if (!adopted.ok) {
-            throw new BadRequest(
-              `That Folder cannot be read with this credential: ${adopted.reason ?? 'no reason given'}`,
-            )
-          }
-          folder = match.folder
-        }
-
-        const created = await store.createProject({
+        // Resolved against the Folders that have state, so `hasState` is the read's answer.
+        const team = await resolveTeam(context, reference)
+        const created = await new Store(context.relay, context.signer).createProject({
           title,
           description: flagValue(args, 'description'),
-          folder,
+          team: { folder: team.id, hasState: team.hasState },
         })
         published(created.result, `a new project "${title}"`)
 
         return {
-          created: {
-            title,
-            addr: created.addr,
-            folder: created.folder,
-            // Said back, because "did it make a new container or use the one I
-            // meant" is the question a caller actually has.
-            pairedWithExistingTopic: Boolean(folder),
-          },
+          created: { title, addr: created.addr, team: { id: team.id, name: team.name } },
           eventId: created.result.eventId,
+          /*
+            Apart from the record, as Ship reports it: a refused listing is a
+            project Ship shows under its team and Peek does not place.
+          */
+          placed: created.placed
+            ? created.placed.ok
+              ? { in: team.id, eventId: created.placed.eventId }
+              : { in: team.id, refused: created.placed.reason ?? 'no reason given' }
+            : undefined,
         }
       },
     },

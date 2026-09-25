@@ -94,7 +94,7 @@
     },
     {
       "name": "ship_create_project",
-      "description": "Start a new project, optionally paired with an existing Peek topic"
+      "description": "Start a new project in a team"
     },
     {
       "name": "estiva_ping",

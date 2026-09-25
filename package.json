@@ -2,7 +2,7 @@
   "name": "estiva-agent",
   "private": true,
   "type": "module",
-  "description": "Read and act on the Estiva ecosystem as a service identity \u2014 MCP server, CLI, and Claude Desktop extension",
+  "description": "Read and act on the Estiva ecosystem as a service identity — MCP server, CLI, and Claude Desktop extension",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "agent": "tsx scripts/agent.ts",
@@ -19,8 +19,9 @@
     "plugin:validate": "node scripts/build-extension.mjs && tsx scripts/plugin.test.ts"
   },
   "dependencies": {
-    "@estiva-app/identity": "^0.2.0",
-    "@estiva-app/protocol": "^0.18.0",
+    "@estiva-app/identity": "^0.2.2",
+    "@estiva-app/interop": "^0.32.0",
+    "@estiva-app/protocol": "^0.23.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@noble/curves": "1.9.2",
     "@noble/hashes": "1.8.0"
