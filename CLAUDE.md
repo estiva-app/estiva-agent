@@ -184,10 +184,10 @@ the gate would never open.
 uppercase `A`/`K`/`P` still name the file (SPEC §6.4). A reply that kept the
 file's `a` would arrive on the file's `#a` read as a second conversation.
 
-**The thread read and the reply transform are copies of Peek's app code**
-(`threadsAsViewer`, `replyToCommentAsViewer`), since this repository cannot
-import the app. If Peek changes either, this drifts; the fix is moving them into
-interop, not a third copy.
+**The thread read and the reply are interop's** (PRO-20): `threadsOf` and
+`buildActionEvent({ replyTo })`, the same calls behind Peek's `threadsAsViewer`
+and `replyToCommentAsViewer`. Do not restate either here; a change to what a
+reply is belongs in the package.
 
 **Reads are metered.** `topics` costs about 40 relay requests (one
 `resolveFolderContents` per Folder in the tree), against a key allowed ~300 a

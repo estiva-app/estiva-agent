@@ -20,7 +20,8 @@ import { loadCredentials } from '../lib/agent/credentials'
 import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
 import type { Project } from '../src/fold'
-import { asReplyTo, findTopic, topLevelFolders, type Topic } from '../lib/agent/apps/peek'
+import { buildActionEvent, topLevelFolders } from '@estiva-app/interop'
+import { findTopic, replyToOf, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
 import { foldEdits } from '../src/edits'
 import { KIND } from '../src/kinds'
@@ -599,34 +600,29 @@ console.log('— where a Peek write lands (AGE-1) —')
 
 {
   /*
-    AGE-1. `say` and `reply` wrote `kind:9` carrying only `h` into topic
-    channels, which Peek draws only in a DM: every write succeeded and nobody
-    could see it. A reply is now NIP-22's shape, as Peek's
-    `replyToCommentAsViewer` writes it — uppercase naming the file, lowercase
-    naming the comment answered.
+    AGE-1, PRO-20. A reply names the comment answered — its id, its own kind
+    (a Ship reply's is 9) and its author — and `buildActionEvent` turns that
+    into NIP-22's shape. Wrong fields here and it lands as a second root.
   */
-  const topLevel = {
-    kind: 1111,
-    content: 'hi',
-    created_at: 0,
+  const opening = { id: 'comment-id', author: 'someone', body: 'hi', createdAt: 0, kind: 9, folder: 'folder' }
+  const reply = buildActionEvent({
+    manifest: { actions: [{ id: 'comment', label: 'Comment', appliesTo: '30840', emits: { kind: 1111 } }], records: { targetTag: 'a', fieldTag: 'field', valueTag: 'value' } } as never,
+    kind: 30840,
+    address: '30840:owner:t',
+    objectAuthor: 'owner',
+    folder: 'folder',
+    actionId: 'comment',
+    value: 'ok',
+    replyTo: replyToOf(opening),
     pubkey: 'agent',
-    tags: [
-      ['A', '30840:owner:t'],
-      ['K', '30840'],
-      ['P', 'owner'],
-      ['a', '30840:owner:t'],
-      ['k', '30840'],
-      ['p', 'owner'],
-      ['h', 'folder'],
-    ],
-  }
-  const reply = asReplyTo({ id: 'comment-id', kind: 1111, author: 'someone' })(topLevel)
-  const tag = (name: string) => reply.tags.filter((t) => t[0] === name).map((t) => t[1])
-  check('the root is still the file', tag('A')[0] === '30840:owner:t' && tag('K')[0] === '30840')
-  check('the parent is the comment', tag('e')[0] === 'comment-id' && tag('k')[0] === '1111')
+    createdAtMs: 0,
+  })
+  const tag = (name: string) => (typeof reply === 'string' ? [] : reply.tags.filter((t) => t[0] === name).map((t) => t[1]))
+  check('a reply is built', typeof reply !== 'string', typeof reply === 'string' ? reply : '')
+  check('the root is still the file', tag('A')[0] === '30840:owner:t')
+  check('the parent is the comment, with its own kind', tag('e')[0] === 'comment-id' && tag('k')[0] === '9')
   check('and its author', tag('p').length === 1 && tag('p')[0] === 'someone')
-  check('with no lowercase a left naming the file', tag('a').length === 0, 'a reply on the #a read would be a second root')
-  check('in the same Folder', tag('h')[0] === 'folder')
+  check('with no lowercase a naming the file', tag('a').length === 0, 'a reply on the #a read would be a second root')
 
   /*
     Where `create-topic` may put one: a Folder at the top of Peek's tree. A
