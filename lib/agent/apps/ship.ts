@@ -1628,10 +1628,12 @@ export const shipApp: AgentApp = {
         project is filed into a top-level Folder and placed by that Folder's
         state; this re-points only the record's content Folder and touches no
         Folder's state, so a project a state lists stays drawn under it in
-        both apps. Moving a project between Folders is FOL-7 (a 1852 remove
-        and add), not this.
+        both apps. (One no state lists is placed by Ship from its content
+        Folder, so there it does follow the link; Peek draws it nowhere
+        either way.) Moving a project between Folders is FOL-7 (a 1852
+        remove and add), not this.
       */
-      summary: 'repair a project record whose content Folder is wrong — does not move it between Folders',
+      summary: 'repair a project record whose content Folder is wrong — not how a project moves between Folders',
       usage: 'link-project <ref> --folder <name|id>',
       async run(context, args) {
         const reference = args.positional[0]
