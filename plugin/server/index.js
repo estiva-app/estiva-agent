@@ -16248,6 +16248,27 @@ function buildCreateChannel(pubkey, createdAtMs, args2) {
     content: ""
   };
 }
+function buildEditChannelMetadata(pubkey, createdAtMs, args2) {
+  assertHex64(pubkey, "pubkey");
+  const tags2 = [["h", args2.channelUuid]];
+  if (args2.name !== void 0) {
+    const name = canonicalChannelName(args2.name);
+    if (name.trim() === "")
+      throw new Error("channel name is required");
+    tags2.push(["name", name]);
+  }
+  if (args2.about !== void 0)
+    tags2.push(["about", args2.about]);
+  if (tags2.length === 1)
+    throw new Error("nothing to edit");
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND.NIP29_EDIT_METADATA,
+    tags: tags2,
+    content: ""
+  };
+}
 var FOLDER_OPS = ["add", "remove", "set"];
 function buildFolderCommand(pubkey, createdAtMs, args2) {
   assertHex64(pubkey, "pubkey");
@@ -18949,6 +18970,22 @@ async function addressesByContainment(folder, query) {
 }
 
 // node_modules/@estiva-app/interop/dist/folders.js
+function planCreateFolder(pubkey, createdAtMs, args2) {
+  return [
+    buildCreateChannel(pubkey, createdAtMs, {
+      channelUuid: args2.folder,
+      name: args2.name,
+      ...args2.visibility ? { visibility: args2.visibility } : {}
+    }),
+    buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", name: args2.name })
+  ];
+}
+function planRenameFolder(pubkey, createdAtMs, args2) {
+  const rename = buildEditChannelMetadata(pubkey, createdAtMs, { channelUuid: args2.folder, name: args2.name });
+  if (!args2.hasState)
+    return [rename];
+  return [rename, buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", name: args2.name })];
+}
 function planPlaceFile(pubkey, createdAtMs, args2) {
   if (!args2.hasState)
     return [];
@@ -19412,6 +19449,45 @@ var Store = class {
     );
   }
   /**
+   * Create a top-level Folder — FOL-8, RFC 0.4 §4.1: `kind:9007`, then
+   * `kind:1852 add + name` listing nothing, planned by `planCreateFolder`.
+   *
+   * **Peek's `createFolderAsViewer`, event for event**, so a Folder made here
+   * and one made there are the same wire object: no visibility (the relay's
+   * default, open) and no channel type. The command gives it state from birth,
+   * which is what makes it a top-level Folder in both apps' navigation — the
+   * listings show only Folders with state that nothing lists.
+   *
+   * Published in order, stopping at the first refusal; `refusedAt` is its
+   * index. 0 is no Folder at all; 1 is a channel that exists by its id and is
+   * listed nowhere.
+   */
+  async createFolder(name) {
+    const id = crypto.randomUUID();
+    const { refusedAt, result } = await this.publishInOrder(planCreateFolder(this.signer.pubkey, Date.now(), { folder: id, name }));
+    return { id, ...refusedAt === void 0 ? {} : { refusedAt }, result };
+  }
+  /**
+   * Rename a Folder — FOL-8: `kind:9002`, and `kind:1852 add + name` when it
+   * has state, planned by `planRenameFolder` as Peek's `renameFolderAsViewer`
+   * does. A Folder's name has two homes and the state's shadows the channel's,
+   * so both are written; `hasState` is from a read, because a command against a
+   * Folder with none would empty it.
+   */
+  async renameFolder(args2) {
+    assertFolderId(args2.folder);
+    return this.publishInOrder(planRenameFolder(this.signer.pubkey, Date.now(), args2));
+  }
+  /** Publish a Folder plan in order, stopping at the first refusal — each later event assumes the earlier ones were accepted. */
+  async publishInOrder(events) {
+    let result = { ok: true };
+    for (const [index, event] of events.entries()) {
+      result = await this.publish(event);
+      if (!result.ok) return { refusedAt: index, result };
+    }
+    return { result };
+  }
+  /**
    * Create a project in a team — SPEC §6.7, RFC 0.5 §10.5 (FOL-2).
    *
    * **No Folder of its own.** It used to be paired with one: a fresh
@@ -19446,11 +19522,7 @@ var Store = class {
       })
     );
     if (!result.ok) return { result, addr: addr2, id, folder };
-    let placed;
-    for (const command2 of planPlaceFile(this.signer.pubkey, Date.now(), { folder, address: addr2, hasState: args2.team.hasState })) {
-      placed = await this.publish(command2);
-      if (!placed.ok) break;
-    }
+    const { result: placed } = await this.publishInOrder(planPlaceFile(this.signer.pubkey, Date.now(), { folder, address: addr2, hasState: args2.team.hasState }));
     return { result, placed, addr: addr2, id, folder };
   }
   /**
