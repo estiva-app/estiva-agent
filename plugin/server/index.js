@@ -20191,10 +20191,10 @@ var KIND3 = {
   /**
    * Buzz's `KIND_STREAM_MESSAGE_EDIT` — RFC 0.4 §7.2.1, CON-4.
    *
-   * Peek's own edit is a Convex patch that publishes nothing, so until CON-8
-   * landed this kind appeared nowhere in the app. It is here because the agent
-   * has no Convex: the relay is the only record it has, which makes 40003 the
-   * only way it can edit anything at all.
+   * Peek's own edit was once a Convex patch that published nothing, so until
+   * CON-8 landed this kind appeared nowhere in the app. The relay is the only
+   * record the agent has, which makes 40003 the only way it can edit anything
+   * at all.
    */
   MESSAGE_EDIT: 40003
 };
@@ -20314,11 +20314,11 @@ var peekApp = {
                       Peek by its owner, and carries no deletion request, yet the app does
                       not list it.
           
-                      The cause is that **Peek's topics live in Convex and nothing imports
-                      `kind:9007` back from the relay.** Peek publishes channel creates
-                      outward; the index it renders from is its own. So a topic removed in
-                      Peek, or never known to it, stays perfectly readable and writable
-                      here forever.
+                      Since FOL-23/26 the gap is total: **Peek shows no relay channel as a
+                      topic.** A Peek topic is a file in a team Folder, the Topics view is
+                      gone, FOL-28 unlisted every topic channel, and a `kind:9` carrying
+                      only `h` is drawn only in a DM. So every channel listed here stays
+                      readable and writable, and nobody in Peek sees what is written to it.
           
                       Reported rather than filtered, for the same reason `ship issues`
                       reports coverage instead of hiding the gap: an agent asked "which
@@ -20331,7 +20331,7 @@ var peekApp = {
           coverage: {
             listed: wanted.length,
             source: "relay",
-            note: "These topics come from kind:9007 events on the relay. Peek renders its own list from Convex and does not import topics back, so some of these may not appear in the app at all \u2014 a message posted to one of those is readable here and invisible to everybody else. Do not tell somebody a topic exists without saying where you looked."
+            note: "These topics come from kind:9007 events on the relay. Peek no longer shows relay channels as topics (a Peek topic is a file in a team Folder, since FOL-23/26), so none of these appear in the app as topics \u2014 a message posted to one is readable here and invisible to everybody in Peek. Do not tell somebody a topic exists without saying where you looked."
           }
         };
       }
@@ -20500,7 +20500,7 @@ var peekApp = {
             replaced: message.body.slice(0, 120)
           },
           eventId: result.eventId,
-          note: "The original event is untouched \u2014 an edit is a new kind:40003 naming it, and readers fold the pair. Peek renders its own timeline from Convex, so an edit published here may not change what the app shows until it reads the relay back."
+          note: "The original event is untouched \u2014 an edit is a new kind:40003 naming it, and readers fold the pair. Peek folds edits on read (a DM live, a file conversation on its next re-read), but draws no topic timeline, so an edit of a topic message changes nothing in Peek."
         };
       }
     },
@@ -20525,7 +20525,7 @@ var peekApp = {
         return {
           created: { topic: name, folder },
           eventId: result.eventId,
-          note: "Created on the relay. Peek renders its own topic list from Convex and does not import kind:9007 back, so this topic may not appear in the app \u2014 messages posted to it would be readable here and invisible to everybody else. Confirm it is visible in Peek before telling anybody to use it."
+          note: "Created on the relay. Peek no longer shows relay channels as topics (since FOL-23/26), so this topic will not appear in the app \u2014 messages posted to it are readable here and invisible to everybody in Peek. Confirm it is visible in Peek before telling anybody to use it."
         };
       }
     }
@@ -20880,7 +20880,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "peek_list_topics",
-      description: "List topics in Peek, the team chat, busiest first. Topics and Ship projects share one Folder space; this shows conversation topics rather than project Folders. Returns { topics, coverage }. **Read `coverage` before answering**: this list comes from the relay, and Peek renders its own list from a separate store without importing topics back, so some of these do not appear in the app at all. A message posted into one of those is readable by this tool and invisible to everybody else. Say where you looked rather than implying a person can see what you name.",
+      description: "List topics in Peek, the team chat, busiest first. Topics and Ship projects share one Folder space; this shows conversation topics rather than project Folders. Returns { topics, coverage }. **Read `coverage` before answering**: this list comes from the relay, and Peek no longer shows relay channels as topics (a Peek topic is a file in a team Folder), so none of these appear in the app as topics. A message posted into one is readable by this tool and invisible to everybody in Peek. Say where you looked rather than implying a person can see what you name.",
       inputSchema: { type: "object", properties: {}, additionalProperties: false }
     },
     {
@@ -20915,7 +20915,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "peek_edit_message",
-      description: "Replace the text of one message in a Peek conversation. Read the topic first and pass the `id` of the message you mean: `message` also takes a distinctive phrase, but an edit of the wrong message silently replaces text that was already true, and the version it replaced is not shown again. If it matches more than one this returns the candidates instead of choosing. `body` is the whole new text, not a patch. The original event stays on the relay untouched \u2014 an edit is a separate event naming it, and readers fold the pair. Peek renders its own timeline from its database, so an edit published here may not change what the app shows until it reads the relay back. Confirm in Peek before telling somebody the message now reads differently. " + PEEK_WRITE_NOTE,
+      description: "Replace the text of one message in a Peek conversation. Read the topic first and pass the `id` of the message you mean: `message` also takes a distinctive phrase, but an edit of the wrong message silently replaces text that was already true, and the version it replaced is not shown again. If it matches more than one this returns the candidates instead of choosing. `body` is the whole new text, not a patch. The original event stays on the relay untouched \u2014 an edit is a separate event naming it, and readers fold the pair. Peek folds edits on read (a DM live, a file conversation on its next re-read) but draws no topic timeline, so an edit of a topic message changes nothing in Peek. Confirm in Peek before telling somebody the message now reads differently. " + PEEK_WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
