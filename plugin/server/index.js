@@ -18959,6 +18959,21 @@ function planUnlistFile(pubkey, createdAtMs, args2) {
     return [];
   return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "remove", addresses: [args2.address] })];
 }
+function planMoveFile(pubkey, createdAtMs, args2) {
+  if (args2.from.id === args2.to.id)
+    return { ok: true, events: [] };
+  if (!args2.from.hasState)
+    return { ok: false, reason: "source-has-no-state" };
+  if (!args2.to.hasState)
+    return { ok: false, reason: "target-has-no-state" };
+  return {
+    ok: true,
+    events: [
+      buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "add", addresses: [args2.address] }),
+      buildFolderCommand(pubkey, createdAtMs, { folder: args2.from.id, op: "remove", addresses: [args2.address] })
+    ]
+  };
+}
 
 // src/fold.ts
 function tag(event, name) {
@@ -19439,6 +19454,46 @@ var Store = class {
     return { result, placed, addr: addr2, id, folder };
   }
   /**
+   * Move a project to another top-level Folder — FOL-7, RFC 0.4 §2.
+   *
+   * **Only the listings change.** One `kind:1852 add` to `to`, then one
+   * `kind:1852 remove` from each Folder in `from`, planned by `planMoveFile`.
+   * No `kind:1851` and no `buzz-channel` change: the conversation stays in the
+   * channel it was always in, so `contentFolder`, interop's `folderOf` and every
+   * comment's `h` still agree. The old "Pair with another Folder…" wrote the
+   * record's Folder instead, and that is how Ship and Peek came to read one
+   * project's conversation from two channels (PRO-21).
+   *
+   * `from` is every Folder that lists it now, not only one: a project a move
+   * left in two (below) is taken out of both by moving it again. Empty for a
+   * project no Folder lists, which is then only added.
+   *
+   * **Add first, and nothing at all if either side has no state** — the
+   * planner's rules. A refused `remove` leaves the project listed in both,
+   * which is visible and fixed by moving again; `removed` says which Folders
+   * still list it. `refused` is a move planned as unsafe, before anything was
+   * sent.
+   */
+  async moveProject(args2) {
+    assertFolderId(args2.to.id);
+    const sources = args2.from.filter((folder) => folder.id !== args2.to.id);
+    if (sources.length === 0 && args2.from.length > 0) return { removed: [] };
+    if (!args2.to.hasState) return { refused: "target-has-no-state", removed: [] };
+    const now = Date.now();
+    const plans = sources.map((from) => planMoveFile(this.signer.pubkey, now, { address: args2.project, from, to: args2.to }));
+    const unsafe = plans.find((plan) => !plan.ok);
+    if (unsafe && !unsafe.ok) return { refused: unsafe.reason, removed: [] };
+    const events = plans.map((plan) => plan.ok ? plan.events : []);
+    const add = events[0]?.[0] ?? planPlaceFile(this.signer.pubkey, now, { folder: args2.to.id, address: args2.project, hasState: true })[0];
+    const added = await this.publish(add);
+    const removed = [];
+    if (!added.ok) return { added, removed };
+    for (const [i, source] of sources.entries()) {
+      removed.push({ folder: source.id, result: await this.publish(events[i][1]) });
+    }
+    return { added, removed };
+  }
+  /**
    * Hide a project from the lists, or bring it back.
    *
    * A change event, so it is reversible, attributable and available to anyone
@@ -19478,6 +19533,12 @@ var Store = class {
    * `unlisted` is reported separately, as `placed` is: a refused delete is a
    * project that still exists, a refused unlist is a deleted project Peek
    * still shows a row for.
+   *
+   * **Every Folder that lists it**, not its `contentFolder` alone (FOL-7).
+   * Once a project can be moved, the Folder listing it and the Folder its
+   * conversation lives in are different Folders, and unlisting only the second
+   * leaves the first with a row pointing at nothing. `unlisted` is the first
+   * refusal, or the last answer when none was refused.
    */
   async deleteProject(args2) {
     const result = await this.publish(
@@ -19489,9 +19550,11 @@ var Store = class {
     );
     if (!result.ok) return { result };
     let unlisted;
-    for (const command2 of planUnlistFile(this.signer.pubkey, Date.now(), { folder: args2.team.folder, address: args2.project, hasState: args2.team.hasState })) {
-      unlisted = await this.publish(command2);
-      if (!unlisted.ok) break;
+    for (const listing of args2.folders) {
+      for (const command2 of planUnlistFile(this.signer.pubkey, Date.now(), { folder: listing.folder, address: args2.project, hasState: listing.hasState })) {
+        const answer = await this.publish(command2);
+        if (!unlisted || unlisted.ok) unlisted = answer;
+      }
     }
     return { result, unlisted };
   }
@@ -20358,7 +20421,9 @@ function readFolders(context2) {
   return listFolders((filters) => context2.relay.queryAll(filters));
 }
 async function resolveTeam(context2, reference) {
-  const teams = topLevelFolders(await readFolders(context2));
+  return resolveTeamIn(topLevelFolders(await readFolders(context2)), reference);
+}
+function resolveTeamIn(teams, reference) {
   return resolveOne(teams, reference, {
     noun: "team",
     exact: (team) => [team.id],
@@ -21025,8 +21090,8 @@ Pass an address to say which.`
         Folder's state, so a project a state lists stays drawn under it in
         both apps. (One no state lists is placed by Ship from its content
         Folder, so there it does follow the link; Peek draws it nowhere
-        either way.) Moving a project between Folders is FOL-7 (a 1852
-        remove and add), not this.
+        either way.) Moving a project between Folders is `move-project`
+        (FOL-7), not this.
       */
       summary: "repair a project record whose content Folder is wrong \u2014 not how a project moves between Folders",
       usage: "link-project <ref> --folder <name|id>",
@@ -21065,6 +21130,54 @@ Pass an address to say which.`
           announced: result.announced,
           announceReason: result.announceReason,
           note: `Issues already filed keep their Folder; new ones land in ${folder.name || folder.folder}. \`ship projects\` now reports this project as relinked.`
+        };
+      }
+    },
+    {
+      name: "move-project",
+      /*
+        Ship's "Move to Folder…" (FOL-7): a `kind:1852 add` to the new
+        top-level Folder, then a `remove` from each one that lists it now,
+        through `Store.moveProject` and interop's `planMoveFile`. No
+        `kind:1851` — the record, its issues and its conversation keep their
+        Folder, so a comment's `h` still names the channel both apps read.
+      */
+      signs: [KIND.FOLDER_COMMAND],
+      summary: "move a project to another top-level Folder \u2014 its issues and conversation stay where they are",
+      usage: "move-project <ref> --folder <name|id>",
+      async run(context2, args2) {
+        const reference = args2.positional[0];
+        const target = flagValue(args2, "folder");
+        if (!reference) throw new BadRequest("move-project needs a project reference.");
+        if (!target) throw new BadRequest("move-project needs --folder: a top-level Folder name or id.");
+        const state = await store(context2).loadAll();
+        const project = findProject(state.projects, reference);
+        const teams = topLevelFolders(await readFolders(context2));
+        const to = resolveTeamIn(teams, target);
+        const listing = teams.filter((team) => team.addresses?.includes(project.addr));
+        const from = listing.length > 0 ? listing : teams.filter((team) => team.id === project.contentFolder);
+        const name = (team) => team.name ?? team.id;
+        if (from.length === 1 && from[0].id === to.id) {
+          throw new BadRequest(`\u201C${project.title}\u201D is already in ${name(to)}, and only there. Nothing was published.`);
+        }
+        const moved = await store(context2).moveProject({
+          project: project.addr,
+          from: from.map((team) => ({ id: team.id, hasState: team.hasState })),
+          to: { id: to.id, hasState: to.hasState }
+        });
+        if (moved.refused === "target-has-no-state") throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`);
+        if (moved.refused === "source-has-no-state") throw new BadRequest(`A Folder \u201C${project.title}\u201D is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`);
+        if (moved.added) published(moved.added, `adding \u201C${project.title}\u201D to ${name(to)} (nothing else was sent; it is where it was)`);
+        const stillIn = moved.removed.filter(({ result }) => !result.ok).map(({ folder, result }) => ({ folder, name: teams.find((team) => team.id === folder)?.name, refused: result.reason ?? "no reason given" }));
+        return {
+          moved: { title: project.title, addr: project.addr },
+          from: from.map((team) => ({ id: team.id, name: team.name })),
+          to: { id: to.id, name: to.name },
+          added: moved.added?.eventId,
+          removed: moved.removed.filter(({ result }) => result.ok).map(({ folder, result }) => ({ folder, eventId: result.eventId })),
+          // A refused remove is still a move: it is in the new Folder and in these too. Run the same command again to retry.
+          stillIn: stillIn.length > 0 ? stillIn : void 0,
+          note: `Only the Folder listings changed. Its issues and conversation stay in ${project.contentFolder}.`
         };
       }
     },
@@ -21202,13 +21315,15 @@ Pass an address to say which.`
             note: "Nothing was published. Archiving is reversible and usually what is wanted \u2014 see `archive-project`. Pass --yes to send the deletion request."
           };
         }
-        const team = project.contentFolder;
-        const hasState = (await readFolders(context2)).find((f) => f.id === team)?.hasState ?? false;
+        const all = await readFolders(context2);
+        const listing = all.filter((f) => f.addresses?.includes(project.addr)).map((f) => ({ folder: f.id, hasState: f.hasState }));
+        const folders = listing.length > 0 ? listing : [{ folder: project.contentFolder, hasState: all.find((f) => f.id === project.contentFolder)?.hasState ?? false }];
+        const from = folders.map((f) => f.folder).join(", ");
         const { result, unlisted } = await store(context2).deleteProject({
           recordFolder: folder,
           project: project.addr,
           reason: flagValue(args2, "reason"),
-          team: { folder: team, hasState }
+          folders
         });
         published(result, `deleting \u201C${project.title}\u201D`);
         return {
@@ -21216,7 +21331,7 @@ Pass an address to say which.`
           eventId: result.eventId,
           // Apart from the delete, as Ship reports it: a refused unlist is a
           // deleted project its team still shows a row for.
-          unlisted: unlisted ? unlisted.ok ? { from: team, eventId: unlisted.eventId } : { from: team, refused: unlisted.reason ?? "no reason given" } : void 0,
+          unlisted: unlisted ? unlisted.ok ? { from, eventId: unlisted.eventId } : { from, refused: unlisted.reason ?? "no reason given" } : void 0,
           survives,
           note: "NIP-09 is a request. The relay may decline it, and copies held elsewhere are untouched."
         };
