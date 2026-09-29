@@ -257,7 +257,8 @@ async function readConversation(context: AgentContext, topic: Topic, cache: Proj
   const rootIds = ((await conversationsOf([topic.object], query, cache))[topic.address] ?? []).map((message) => message.id)
   if (!rootIds.length) return { conversations: [] as Conversation[], edits: foldEdits([]), resolved: new Set<string>() }
 
-  const threads = await threadsOf(topic.address, rootIds, query, cache)
+  // 1000, not Peek's 200: an agent answering from a topic needs its oldest replies too.
+  const threads = await threadsOf(topic.address, rootIds, query, cache, 1000)
   const conversations = rootIds
     .filter((id) => threads.roots[id])
     .map((id) => ({ root: asMessage(threads.roots[id]), replies: (threads.replies[id] ?? []).map(asMessage) }))
@@ -283,6 +284,9 @@ async function readConversation(context: AgentContext, topic: Topic, cache: Proj
     resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved)),
   }
 }
+
+/** What `buildActionEvent`'s `replyTo` needs of the comment answered: its id, its own kind, its author. */
+export const replyToOf = (message: Message) => ({ id: message.id, kind: message.kind, author: message.author })
 
 /**
  * One conversation from whatever the caller typed — an id, a prefix, or a
@@ -487,8 +491,7 @@ export const peekApp: AgentApp = {
           to a reply would be on the relay and on no page — the bug this module
           was rewritten to remove. There is no `--to` for that reason.
         */
-        const { id, kind, author } = thread.root
-        const result = await comment(context, topic, body, { id, kind, author })
+        const result = await comment(context, topic, body, replyToOf(thread.root))
         published(result, `a reply on ${topic.title}`)
 
         return {

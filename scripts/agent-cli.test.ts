@@ -20,8 +20,8 @@ import { loadCredentials } from '../lib/agent/credentials'
 import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
 import type { Project } from '../src/fold'
-import { topLevelFolders } from '@estiva-app/interop'
-import { findTopic, type Topic } from '../lib/agent/apps/peek'
+import { buildActionEvent, topLevelFolders } from '@estiva-app/interop'
+import { findTopic, replyToOf, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
 import { foldEdits } from '../src/edits'
 import { KIND } from '../src/kinds'
@@ -599,6 +599,31 @@ console.log('— editing an issue —')
 console.log('— where a Peek write lands (AGE-1) —')
 
 {
+  /*
+    AGE-1, PRO-20. A reply names the comment answered — its id, its own kind
+    (a Ship reply's is 9) and its author — and `buildActionEvent` turns that
+    into NIP-22's shape. Wrong fields here and it lands as a second root.
+  */
+  const opening = { id: 'comment-id', author: 'someone', body: 'hi', createdAt: 0, kind: 9, folder: 'folder' }
+  const reply = buildActionEvent({
+    manifest: { actions: [{ id: 'comment', label: 'Comment', appliesTo: '30840', emits: { kind: 1111 } }], records: { targetTag: 'a', fieldTag: 'field', valueTag: 'value' } } as never,
+    kind: 30840,
+    address: '30840:owner:t',
+    objectAuthor: 'owner',
+    folder: 'folder',
+    actionId: 'comment',
+    value: 'ok',
+    replyTo: replyToOf(opening),
+    pubkey: 'agent',
+    createdAtMs: 0,
+  })
+  const tag = (name: string) => (typeof reply === 'string' ? [] : reply.tags.filter((t) => t[0] === name).map((t) => t[1]))
+  check('a reply is built', typeof reply !== 'string', typeof reply === 'string' ? reply : '')
+  check('the root is still the file', tag('A')[0] === '30840:owner:t')
+  check('the parent is the comment, with its own kind', tag('e')[0] === 'comment-id' && tag('k')[0] === '9')
+  check('and its author', tag('p').length === 1 && tag('p')[0] === 'someone')
+  check('with no lowercase a naming the file', tag('a').length === 0, 'a reply on the #a read would be a second root')
+
   /*
     Where `create-topic` may put one: a Folder at the top of Peek's tree. A
     Folder another lists, or a bare channel, is not on every person's tree.

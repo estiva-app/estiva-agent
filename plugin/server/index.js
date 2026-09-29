@@ -17797,7 +17797,7 @@ async function conversationsOf(files, query, cache) {
     messages.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
   return conversations;
 }
-async function threadsOf(reference, rootIds, query, cache) {
+async function threadsOf(reference, rootIds, query, cache, limit = CONVERSATION_LIMIT) {
   const empty = { roots: {}, replies: {} };
   if (rootIds.length === 0)
     return empty;
@@ -17814,7 +17814,7 @@ async function threadsOf(reference, rootIds, query, cache) {
   const ids = [...new Set(rootIds)];
   const events = await query([
     { ids, limit: ids.length },
-    { kinds, "#e": ids, limit: CONVERSATION_LIMIT }
+    { kinds, "#e": ids, limit }
   ]);
   const wanted = new Set(ids);
   const roots = {};
@@ -21358,7 +21358,7 @@ async function readConversation(context2, topic, cache) {
   const query = relayQuery(context2);
   const rootIds = ((await conversationsOf([topic.object], query, cache))[topic.address] ?? []).map((message) => message.id);
   if (!rootIds.length) return { conversations: [], edits: foldEdits([]), resolved: /* @__PURE__ */ new Set() };
-  const threads = await threadsOf(topic.address, rootIds, query, cache);
+  const threads = await threadsOf(topic.address, rootIds, query, cache, 1e3);
   const conversations = rootIds.filter((id) => threads.roots[id]).map((id) => ({ root: asMessage(threads.roots[id]), replies: (threads.replies[id] ?? []).map(asMessage) }));
   const originals = [...Object.values(threads.roots), ...Object.values(threads.replies).flat()];
   const all = conversations.flatMap((thread) => [thread.root, ...thread.replies]);
@@ -21378,6 +21378,7 @@ async function readConversation(context2, topic, cache) {
     resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved))
   };
 }
+var replyToOf = (message) => ({ id: message.id, kind: message.kind, author: message.author });
 function findThread(threads, reference) {
   return resolveOne(threads, reference, {
     noun: "conversation",
@@ -21537,8 +21538,7 @@ var peekApp = {
           })),
           threadRef
         );
-        const { id, kind, author } = thread.root;
-        const result = await comment(context2, topic, body, { id, kind, author });
+        const result = await comment(context2, topic, body, replyToOf(thread.root));
         published2(result, `a reply on ${topic.title}`);
         return {
           repliedTo: { topic: topic.title, conversation: thread.id, opening: thread.opening.slice(0, 80), url: topic.url },
