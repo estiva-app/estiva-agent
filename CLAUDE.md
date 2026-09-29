@@ -92,9 +92,11 @@ request rather than a reversal.
 **An edit is the nearest thing to an undo, and it is not one** (AGE-3). A
 `kind:9` cannot be rewritten, so `edit-comment` and `peek edit` publish a
 `kind:40003` naming the target and readers fold the pair — latest edit wins. The
-original stays on the relay for ever, a reader that does not implement the fold
-still shows the old text, and Peek renders its timeline from Convex, so an edit
-published here may not change what the app shows until it reads the relay back.
+original stays on the relay for ever, and a reader that does not implement the
+fold still shows the old text. Peek folds on read and checks no author itself —
+the relay decides who may edit: a DM takes the edit live, a file's conversation
+on its next re-read. A `peek edit` of a topic message changes nothing in Peek,
+which draws no topic timeline (below).
 
 Three things about the target are easy to get wrong:
 
@@ -160,9 +162,13 @@ also why "only speak when addressed" was not built as a check — mentions are
 `p` tags on the wire, and 0 of 136 `kind:9` messages on production carry one, so
 the gate would never open.
 
-**`peek topics` lists the relay's topics, not Peek's.** Peek keeps its topics in
-Convex and never imports `kind:9007` back, so a topic removed there — or never
-known to it — stays readable and writable here forever. Found by posting a
+**`peek topics` lists the relay's channels, and Peek shows none of them as
+topics.** Since FOL-23/26 a Peek topic is a file in a team Folder, its talk
+`kind:1111` on that file; the Topics view is gone and a `39000:` link redirects
+to the file or the team. Peek's tree draws Folders that have a `kind:30890`
+state and sit in no other, and FOL-28 unlisted every topic channel. A `kind:9`
+carrying only `h` — what `peek say` and `peek reply` write — Peek draws only in
+a DM. Found, before any of that, by posting a
 correctly threaded reply into `test 5`, which exists on the relay and does not
 appear in the app: the write succeeded, the tool reported success, and no person
 could see the result. The command returns a `coverage` block saying so; read it

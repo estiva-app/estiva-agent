@@ -502,7 +502,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'peek_list_topics',
       description:
         'List topics in Peek, the team chat, busiest first. Topics and Ship projects share one Folder space; this shows conversation topics rather than project Folders. ' +
-        'Returns { topics, coverage }. **Read `coverage` before answering**: this list comes from the relay, and Peek renders its own list from a separate store without importing topics back, so some of these do not appear in the app at all. A message posted into one of those is readable by this tool and invisible to everybody else. Say where you looked rather than implying a person can see what you name.',
+        'Returns { topics, coverage }. **Read `coverage` before answering**: this list comes from the relay, and Peek no longer shows relay channels as topics (a Peek topic is a file in a team Folder), so none of these appear in the app as topics. A message posted into one is readable by this tool and invisible to everybody in Peek. Say where you looked rather than implying a person can see what you name.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
@@ -545,7 +545,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'Replace the text of one message in a Peek conversation. Read the topic first and pass the `id` of the message you mean: `message` also takes a distinctive phrase, but an edit of the wrong message silently replaces text that was already true, and the version it replaced is not shown again. If it matches more than one this returns the candidates instead of choosing. ' +
         '`body` is the whole new text, not a patch. The original event stays on the relay untouched — an edit is a separate event naming it, and readers fold the pair. ' +
-        'Peek renders its own timeline from its database, so an edit published here may not change what the app shows until it reads the relay back. Confirm in Peek before telling somebody the message now reads differently. ' +
+        'Peek folds edits on read (a DM live, a file conversation on its next re-read) but draws no topic timeline, so an edit of a topic message changes nothing in Peek. Confirm in Peek before telling somebody the message now reads differently. ' +
         PEEK_WRITE_NOTE,
       inputSchema: {
         type: 'object',
