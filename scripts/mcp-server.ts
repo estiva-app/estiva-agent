@@ -501,9 +501,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'peek_list_topics',
       description:
-        'List topics in Peek, the team chat, busiest first. Topics and Ship projects share one Folder space; this shows conversation topics rather than project Folders. ' +
-        'Returns { topics, coverage }. **Read `coverage` before answering**: this list comes from the relay, and Peek no longer shows relay channels as topics (a Peek topic is a file in a team Folder), so none of these appear in the app as topics. A message posted into one is readable by this tool and invisible to everybody in Peek. Say where you looked rather than implying a person can see what you name.',
-      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        'List the topics people see in Peek, the one with the newest conversation first: each is a file in a Folder of Peek\'s tree, with how many conversations it holds and a link to open it. Replies are not counted, so a busy thread under an old conversation does not move its topic up. ' +
+        'Returns { topics, coverage }. Old topic channels from before Folders still exist on the relay and appear nowhere in Peek, so they are not listed.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          folder: { type: 'string', description: 'Optional. A Folder name or id, to list only the topics in it.' },
+        },
+        additionalProperties: false,
+      },
     },
     {
       name: 'peek_read_topic',
@@ -512,7 +518,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          topic: { type: 'string', description: 'Topic name or part of one, or a Folder id.' },
+          topic: { type: 'string', description: 'Topic title or part of one, or its id from `peek_list_topics`.' },
         },
         required: ['topic'],
         additionalProperties: false,
@@ -521,20 +527,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'peek_reply',
       description:
-        'Reply inside one existing Peek conversation, or to one message within it. Read the topic first and pass the conversation you mean; if the reference matches more than one this returns the candidates instead of choosing. ' +
-        'Pass `to` to answer a particular message rather than the conversation as a whole — without it the reply attaches to the opening message, which in a thread with several people reads as answering whoever started it rather than whoever was being answered. ' +
+        'Reply inside one existing conversation on a Peek topic. Read the topic first and pass the conversation you mean; if the reference matches more than one this returns the candidates instead of choosing. ' +
+        'The reply goes under the conversation\'s opening message, as every reply in Peek does — Peek draws one level of replies. To answer somebody in particular, say who in the text. ' +
         PEEK_WRITE_NOTE,
       inputSchema: {
         type: 'object',
         properties: {
-          topic: { type: 'string', description: 'Topic name or part of one.' },
+          topic: { type: 'string', description: 'Topic title or part of one, or its id.' },
           conversation: { type: 'string', description: 'Conversation id, or a distinctive phrase from its first message.' },
           body: { type: 'string', description: 'The reply text.' },
-          to: {
-            type: 'string',
-            description:
-              'Optional. A message id from `peek_read_topic`, or a distinctive phrase from one. Resolved within the chosen conversation only; refuses if it matches more than one message.',
-          },
         },
         required: ['topic', 'conversation', 'body'],
         additionalProperties: false,
@@ -545,12 +546,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       description:
         'Replace the text of one message in a Peek conversation. Read the topic first and pass the `id` of the message you mean: `message` also takes a distinctive phrase, but an edit of the wrong message silently replaces text that was already true, and the version it replaced is not shown again. If it matches more than one this returns the candidates instead of choosing. ' +
         '`body` is the whole new text, not a patch. The original event stays on the relay untouched — an edit is a separate event naming it, and readers fold the pair. ' +
-        'Peek folds edits on read (a DM live, a file conversation on its next re-read) but draws no topic timeline, so an edit of a topic message changes nothing in Peek. Confirm in Peek before telling somebody the message now reads differently. ' +
+        'Peek shows the new text the next time the topic is read. ' +
         PEEK_WRITE_NOTE,
       inputSchema: {
         type: 'object',
         properties: {
-          topic: { type: 'string', description: 'Topic name or part of one.' },
+          topic: { type: 'string', description: 'Topic title or part of one, or its id.' },
           conversation: { type: 'string', description: 'Conversation id, or a distinctive phrase from its first message.' },
           message: {
             type: 'string',
@@ -566,12 +567,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'peek_say',
       description:
-        'Start a new conversation in a Peek topic. Prefer replying to an existing conversation when there is a relevant one — a new conversation appears at the top of the topic for everybody in it. ' +
+        'Start a new conversation on a Peek topic. Prefer replying to an existing conversation when there is a relevant one — a new conversation appears on the topic for everybody who follows it. ' +
         PEEK_WRITE_NOTE,
       inputSchema: {
         type: 'object',
         properties: {
-          topic: { type: 'string', description: 'Topic name or part of one.' },
+          topic: { type: 'string', description: 'Topic title or part of one, or its id.' },
           body: { type: 'string', description: 'The message text.' },
         },
         required: ['topic', 'body'],
@@ -581,16 +582,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'peek_create_topic',
       description:
-        'Create a new Peek topic. Prefer an existing topic almost always — a new one is a container everybody sees, and the conversation that justified it usually belonged in a topic that already existed. ' +
-        'Know before using this: Peek renders its topic list from its own database and does not import topic-creation events back from the relay, so a topic created here may never appear in the Peek app. It is readable and writable through these tools, and possibly invisible to every human being. Do not tell somebody a topic is ready without confirming they can see it. ' +
+        'Create a new Peek topic — a file in one of the Folders at the top of Peek\'s tree, listed there for everybody. Prefer an existing topic almost always: the conversation that justified a new one usually belonged in a topic that already existed. ' +
         PEEK_WRITE_NOTE,
       inputSchema: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'What the topic is called.' },
-          about: { type: 'string', description: 'Optional. A line describing what it is for.' },
+          folder: { type: 'string', description: 'The Folder to create it in, by name or id — one at the top of Peek\'s tree.' },
+          title: { type: 'string', description: 'What the topic is called.' },
         },
-        required: ['name'],
+        required: ['folder', 'title'],
         additionalProperties: false,
       },
     },
@@ -664,7 +664,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         promise would make it fail in exactly the case it exists for.
       */
       case 'peek_create_topic':
-        return dispatch(command('create-topic', peekApp), args(flagsFrom(input, ['name', 'about'])))
+        return dispatch(command('create-topic', peekApp), args(flagsFrom(input, ['folder', 'title'])))
 
       case 'estiva_ping':
         return text({ at: new Date().toISOString(), ...(await connectionStatus(shipApp, { client: callingClient() })) })
@@ -753,7 +753,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return dispatch(command('create-issue'), args(flagsFrom(input, ['project', 'title', 'description'])))
 
       case 'peek_list_topics':
-        return dispatch(command('topics', peekApp), args({}))
+        return dispatch(command('topics', peekApp), args(flagsFrom(input, ['folder'])))
 
       case 'peek_read_topic':
         return dispatch(command('topic', peekApp), args({}, [str(input.topic)]))
@@ -761,7 +761,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'peek_reply':
         return dispatch(
           command('reply', peekApp),
-          args(flagsFrom(input, ['body', 'to']), [str(input.topic), str(input.conversation)]),
+          args(flagsFrom(input, ['body']), [str(input.topic), str(input.conversation)]),
         )
 
       case 'peek_edit_message':

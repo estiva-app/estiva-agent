@@ -95,8 +95,7 @@ request rather than a reversal.
 original stays on the relay for ever, and a reader that does not implement the
 fold still shows the old text. Peek folds on read and checks no author itself —
 the relay decides who may edit: a DM takes the edit live, a file's conversation
-on its next re-read. A `peek edit` of a topic message changes nothing in Peek,
-which draws no topic timeline (below).
+— a topic's included — on its next re-read.
 
 Three things about the target are easy to get wrong:
 
@@ -130,12 +129,30 @@ that places on writes is far cheaper to design for than to retrofit.
 ## Writing into Peek, and when the agent may speak
 
 ```bash
-npx tsx scripts/agent.ts peek topic "Feedback on Peek"
-npx tsx scripts/agent.ts peek reply "Feedback on Peek" <conversation> --body "..."
-npx tsx scripts/agent.ts peek edit "Feedback on Peek" <conversation> --message <id|phrase> --body "..."
-npx tsx scripts/agent.ts peek say "Feedback on Peek" --body "..."
-npx tsx scripts/agent.ts peek create-topic --name "..." [--about "..."]
+npx tsx scripts/agent.ts peek topics [--folder "Estiva HQ"]
+npx tsx scripts/agent.ts peek topic "Planning and sequencing"
+npx tsx scripts/agent.ts peek reply "Planning and sequencing" <conversation> --body "..."
+npx tsx scripts/agent.ts peek edit "Planning and sequencing" <conversation> --message <id|phrase> --body "..."
+npx tsx scripts/agent.ts peek say "Planning and sequencing" --body "..."
+npx tsx scripts/agent.ts peek create-topic --folder "Estiva HQ" --title "..."
 ```
+
+**A Peek topic is a file** — a bare `kind:30840` listed by a Folder in Peek's
+tree — and its conversation is NIP-22 `kind:1111` comments on that file
+(FOL-23/26). `topics` walks the tree the way Peek draws it: the top-level
+Folders, and every Folder row they list. `say` is the file owner's `comment`
+action, `reply` is that comment with NIP-22's lowercase tags naming the
+conversation's opening comment, and `create-topic` is the file plus the
+`kind:1852` that lists it — each the event Peek's own composer writes, built
+through the same interop runtime. A reply always attaches to the opening
+comment, because Peek's thread pane draws one level and a reply to a reply
+would be on no page.
+
+Until AGE-1 these verbs wrote relay channels (`kind:9007`) and `kind:9`
+carrying only `h`, which Peek draws only in a DM: every write succeeded,
+reported success, and nobody could see it. Those channels are still on the
+relay and appear nowhere in Peek, so nothing here lists them. Proven by an
+agent write read back in Peek as QA-1 (`peek-app scripts/probe.mjs --as qa1`).
 
 **The agent is a delegate of one person, not an organisational bot.** Its
 identity is `claude-<somebody>`, created for them and steered by them, so it has
@@ -153,8 +170,8 @@ So the rule is not a smaller vocabulary. It is:
   permits. `docs/untrusted-content.md` argues tool shape is the strongest
   control because it removes the capability rather than governing it.
 - **Prefer a reply to a new conversation.** A reply lands in context somebody
-  already opened; `say` puts a new conversation at the top of the topic for
-  everyone in it. Read the topic first.
+  already opened; `say` starts a new conversation on the topic for everyone
+  who follows it. Read the topic first.
 
 Chattiness is not available: this process has no inbox, no subscription and no
 loop. It speaks when a person is talking to it and at no other time. That is
@@ -162,22 +179,21 @@ also why "only speak when addressed" was not built as a check — mentions are
 `p` tags on the wire, and 0 of 136 `kind:9` messages on production carry one, so
 the gate would never open.
 
-**`peek topics` lists the relay's channels, and Peek shows none of them as
-topics.** Since FOL-23/26 a Peek topic is a file in a team Folder, its talk
-`kind:1111` on that file; the Topics view is gone and a `39000:` link redirects
-to the file or the team. Peek's tree draws Folders that have a `kind:30890`
-state and sit in no other, and FOL-28 unlisted every topic channel. A `kind:9`
-carrying only `h` — what `peek say` and `peek reply` write — Peek draws only in
-a DM. Found, before any of that, by posting a
-correctly threaded reply into `test 5`, which exists on the relay and does not
-appear in the app: the write succeeded, the tool reported success, and no person
-could see the result. The command returns a `coverage` block saying so; read it
-before telling anybody a topic exists.
+**The lowercase tags are what make a comment a reply.** A top-level comment's
+`a`/`k`/`p` repeat the file; a reply's name the comment it answers, and the
+uppercase `A`/`K`/`P` still name the file (SPEC §6.4). A reply that kept the
+file's `a` would arrive on the file's `#a` read as a second conversation.
 
-**An `e` tag is what makes a message a reply.** `peek reply` sets it through
-`threadTags`, which emits the single `"reply"`-marked tag Buzz's own builder
-emits for a direct reply. Without it the message is not a reply at all — it is a
-new conversation at the top of somebody's app.
+**The thread read and the reply transform are copies of Peek's app code**
+(`threadsAsViewer`, `replyToCommentAsViewer`), since this repository cannot
+import the app. If Peek changes either, this drifts; the fix is moving them into
+interop, not a third copy.
+
+**Reads are metered.** `topics` costs about 40 relay requests (one
+`resolveFolderContents` per Folder in the tree), against a key allowed ~300 a
+minute that other sessions share. `topic`, `say`, `reply` and `edit` each start
+with the same listing to resolve the title — pass the topic's id and it still
+does, so do not loop.
 
 ### The open part: attribution
 
