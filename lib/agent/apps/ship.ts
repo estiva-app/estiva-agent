@@ -657,17 +657,11 @@ async function stateAfter(
 /**
  * A Folder by name or id, from the create events on the relay.
  *
- * The same lookup for `create-project --topic` and `link-project --folder`,
- * through `resolveOne` like every other reference (CLAUDE.md): an ambiguous
- * name is refused with the candidates, never guessed. `noun` is only what the
- * refusal calls it — a "topic" to somebody pairing with a Peek topic, a
- * "folder" to somebody linking to a team.
+ * `link-project --folder`'s lookup, through `resolveOne` like every other
+ * reference (CLAUDE.md): an ambiguous name is refused with the candidates,
+ * never guessed.
  */
-async function resolveFolder(
-  context: AgentContext,
-  reference: string,
-  noun: 'topic' | 'folder',
-): Promise<{ folder: string; name: string }> {
+async function resolveFolder(context: AgentContext, reference: string): Promise<{ folder: string; name: string }> {
   const events = await context.relay.queryAll([{ kinds: [KIND.FOLDER] }])
   const channels = events.map((event) => ({
     folder: event.tags.find((tag) => tag[0] === 'h')?.[1] ?? '',
@@ -677,11 +671,11 @@ async function resolveFolder(
     channels.filter((channel) => channel.folder),
     reference,
     {
-      noun,
+      noun: 'folder',
       exact: (channel) => [channel.folder],
       text: (channel) => channel.name,
       label: (channel) => `${channel.name} (${channel.folder.slice(0, 8)}…)`,
-      hint: `Pass a ${noun} name or a Folder id.`,
+      hint: 'Pass a Folder name or id.',
     },
   )
 }
@@ -1629,7 +1623,15 @@ export const shipApp: AgentApp = {
     {
       name: 'link-project',
       signs: [KIND.CHANGE],
-      summary: 'point a project’s work at a Folder that already exists — a team, or a Peek topic',
+      /*
+        A record-repair tool, not how a project changes Folder (FOL-3). A
+        project is filed into a top-level Folder and placed by that Folder's
+        state; this re-points only the record's content Folder and touches no
+        Folder's state, so a project a state lists stays drawn under it in
+        both apps. Moving a project between Folders is FOL-7 (a 1852 remove
+        and add), not this.
+      */
+      summary: 'repair a project record whose content Folder is wrong — does not move it between Folders',
       usage: 'link-project <ref> --folder <name|id>',
       async run(context, args) {
         const reference = args.positional[0]
@@ -1639,7 +1641,7 @@ export const shipApp: AgentApp = {
 
         const state = await store(context).loadAll()
         const project = findProject(state.projects, reference)
-        const folder = await resolveFolder(context, target, 'folder')
+        const folder = await resolveFolder(context, target)
 
         /*
           Nothing is re-created and nothing moves. The record keeps the `h` it

@@ -20274,7 +20274,7 @@ async function stateAfter(context2, state, issue2, after) {
     who(directory, assignee)
   );
 }
-async function resolveFolder(context2, reference, noun) {
+async function resolveFolder(context2, reference) {
   const events = await context2.relay.queryAll([{ kinds: [KIND2.FOLDER] }]);
   const channels = events.map((event) => ({
     folder: event.tags.find((tag2) => tag2[0] === "h")?.[1] ?? "",
@@ -20284,11 +20284,11 @@ async function resolveFolder(context2, reference, noun) {
     channels.filter((channel) => channel.folder),
     reference,
     {
-      noun,
+      noun: "folder",
       exact: (channel) => [channel.folder],
       text: (channel) => channel.name,
       label: (channel) => `${channel.name} (${channel.folder.slice(0, 8)}\u2026)`,
-      hint: `Pass a ${noun} name or a Folder id.`
+      hint: "Pass a Folder name or id."
     }
   );
 }
@@ -20956,7 +20956,15 @@ Pass an address to say which.`
     {
       name: "link-project",
       signs: [KIND2.CHANGE],
-      summary: "point a project\u2019s work at a Folder that already exists \u2014 a team, or a Peek topic",
+      /*
+        A record-repair tool, not how a project changes Folder (FOL-3). A
+        project is filed into a top-level Folder and placed by that Folder's
+        state; this re-points only the record's content Folder and touches no
+        Folder's state, so a project a state lists stays drawn under it in
+        both apps. Moving a project between Folders is FOL-7 (a 1852 remove
+        and add), not this.
+      */
+      summary: "repair a project record whose content Folder is wrong \u2014 does not move it between Folders",
       usage: "link-project <ref> --folder <name|id>",
       async run(context2, args2) {
         const reference = args2.positional[0];
@@ -20965,7 +20973,7 @@ Pass an address to say which.`
         if (!target) throw new BadRequest("link-project needs --folder: a Folder name or id.");
         const state = await store(context2).loadAll();
         const project = findProject(state.projects, reference);
-        const folder = await resolveFolder(context2, target, "folder");
+        const folder = await resolveFolder(context2, target);
         if (project.contentFolder === folder.folder) {
           throw new BadRequest(
             `\u201C${project.title}\u201D is already linked to ${folder.name || "that Folder"} (${folder.folder}). Nothing was published.`
