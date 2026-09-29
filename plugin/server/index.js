@@ -17842,6 +17842,10 @@ var REACTION_HORIZON = 100;
 var KIND_REACTION = 7;
 var KIND_ASSERTION = 9101;
 var KIND_MESSAGE_EDIT = 40003;
+function editTargetOf(event) {
+  const tag2 = event.tags.find((t) => t[0] === "e" && typeof t[1] === "string" && /^[0-9a-fA-F]{64}$/.test(t[1]));
+  return tag2?.[1].toLowerCase();
+}
 var DECORATION_TARGETS_PER_FILTER = 100;
 async function commentDecorationsOf(targets, query) {
   const byId = {};
@@ -17881,8 +17885,9 @@ async function commentDecorationsOf(targets, query) {
       if (seen.has(event.id))
         continue;
       seen.add(event.id);
-      const target = event.tags.find((t) => t[0] === "e" && t[1] in byId && !t[3])?.[1];
-      if (!target)
+      const ours = (id) => id !== void 0 && Object.hasOwn(byId, id);
+      const target = event.kind === KIND_MESSAGE_EDIT ? editTargetOf(event) : event.tags.find((t) => t[0] === "e" && ours(t[1]) && !t[3])?.[1];
+      if (!ours(target))
         continue;
       const into = byId[target];
       if (event.kind === KIND_MESSAGE_EDIT) {
