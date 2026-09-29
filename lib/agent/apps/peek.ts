@@ -22,21 +22,16 @@
  *    listed forty channels no person could open;
  *  - **a comment** is the file owner's `comment` action, built by
  *    `buildActionEvent` exactly as Peek's `applyActionAsViewer` builds it;
- *  - **a reply** is that event with NIP-22's lowercase trio naming the comment
- *    (Peek's `replyToCommentAsViewer`), one level deep, because Peek's thread
- *    pane reads and writes one level;
+ *  - **a reply** is that action with `replyTo`, NIP-22's lowercase trio naming
+ *    the comment, one level deep, because Peek's thread pane reads and writes
+ *    one level — and **the thread read** is `threadsOf`, the `#e` read Peek's
+ *    pane uses. Both are interop's since PRO-20, so neither is a copy here;
  *  - **a new topic** is `buildBareFile` plus `planPlaceFile`, Peek's
  *    `createTopicAsViewer`.
- *
- * What is Peek's app code rather than a package — the thread read and the
- * reply transform — is restated here with its source named, since this
- * repository cannot import the app. If Peek changes either, this drifts; the
- * fix is moving them into interop, not a third copy.
  */
 import {
   buildActionEvent,
   commentDecorationsOf,
-  commentKindsOf,
   conversationsOf,
   createProjectionCache,
   folderOf,
@@ -46,12 +41,13 @@ import {
   planPlaceFile,
   resolveFolderContents,
   resolveManifest,
+  threadsOf,
+  topLevelFolders,
   type FolderSummary,
   type PeopleFn,
   type ForeignObject,
   type ProjectionCache,
   type QueryFn,
-  type UnsignedActionEvent,
 } from '@estiva-app/interop'
 import { buildBareFile, KIND, type SignedEvent } from '@estiva-app/protocol'
 import { foldEdits } from '../../../src/edits'
@@ -74,14 +70,6 @@ const noPeople: PeopleFn = async () => ({})
 
 function relayQuery(context: AgentContext): QueryFn {
   return (filters) => context.relay.queryAll(filters as never)
-}
-
-/**
- * The Folders at the top of Peek's tree: state, and listed by no other —
- * `topLevelFolders` in Peek and Ship, the ones a person sees first.
- */
-export function topLevelFolders(folders: FolderSummary[]): FolderSummary[] {
-  return folders.filter((folder) => folder.hasState && !folder.listedIn?.length)
 }
 
 export interface Topic {
@@ -250,8 +238,6 @@ const asMessage = (event: SignedEvent): Message => ({
   folder: tagValue(event, 'h'),
 })
 
-const byTime = (a: Message, b: Message) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1)
-
 /**
  * A topic's conversation as Peek's file page draws it — three reads, each for a
  * reason that is NIP-22's.
@@ -259,10 +245,10 @@ const byTime = (a: Message, b: Message) => a.createdAt - b.createdAt || (a.id < 
  * 1. The roots: `conversationsOf`, the `#a` read, which keeps only what SPEC
  *    §6.4 calls a comment on this file (CON-15) — a message that merely names
  *    it is *Mentioned in*, not its discussion.
- * 2. The roots' events and their direct replies by `#e`, in one request: a
- *    reply's lowercase tags name its parent, not the file, so it never arrives
- *    on the `#a` read (Peek's `threadsAsViewer`, FOL-19). One level only,
- *    because that is what Peek's thread pane reads.
+ * 2. The roots' events and their direct replies by `#e`, in one request —
+ *    interop's `threadsOf`, the read Peek's thread pane makes: a reply's
+ *    lowercase tags name its parent, not the file, so it never arrives on the
+ *    `#a` read. One level only, because that is what Peek's pane reads.
  * 3. What was done to each — edits and resolutions — which names the comment,
  *    so it is a third read (`commentDecorationsOf`).
  */
@@ -271,30 +257,11 @@ async function readConversation(context: AgentContext, topic: Topic, cache: Proj
   const rootIds = ((await conversationsOf([topic.object], query, cache))[topic.address] ?? []).map((message) => message.id)
   if (!rootIds.length) return { conversations: [] as Conversation[], edits: foldEdits([]), resolved: new Set<string>() }
 
-  const resolved = await resolveManifest(pointerOf(topic.address), query, cache)
-  const kinds = resolved ? commentKindsOf(resolved.manifest) : [KIND.COMMENT]
-  const events = await query([
-    { ids: rootIds, limit: rootIds.length },
-    { kinds, '#e': rootIds, limit: 1000 },
-  ])
-
-  const wanted = new Set(rootIds)
-  const roots = new Map<string, Message>()
-  const replies = new Map<string, Message[]>()
-  const seen = new Set<string>()
-  for (const event of events) {
-    if (seen.has(event.id)) continue
-    seen.add(event.id)
-    if (wanted.has(event.id)) {
-      roots.set(event.id, asMessage(event))
-      continue
-    }
-    const parent = event.tags.find((tag) => tag[0] === 'e' && wanted.has(tag[1]))?.[1]
-    if (parent) replies.set(parent, [...(replies.get(parent) ?? []), asMessage(event)])
-  }
+  const threads = await threadsOf(topic.address, rootIds, query, cache)
   const conversations = rootIds
-    .filter((id) => roots.has(id))
-    .map((id) => ({ root: roots.get(id)!, replies: (replies.get(id) ?? []).sort(byTime) }))
+    .filter((id) => threads.roots[id])
+    .map((id) => ({ root: asMessage(threads.roots[id]), replies: (threads.replies[id] ?? []).map(asMessage) }))
+  const originals = [...Object.values(threads.roots), ...Object.values(threads.replies).flat()]
 
   // The decorations read returns every edit on the way past; they are kept
   // for the vendored fold, which is the one `ship show` prints with.
@@ -308,7 +275,6 @@ async function readConversation(context: AgentContext, topic: Topic, cache: Proj
       return found
     },
   )
-  const originals = events.filter((event) => seen.has(event.id))
   const isResolved = (id: string) => decorations.byId[id]?.resolutions.at(-1)?.action === 'resolved'
 
   return {
@@ -341,14 +307,14 @@ function findThread<T extends { id: string; opening: string }>(threads: T[], ref
  * the agent — Peek's `applyActionAsViewer`, restated.
  *
  * The kind, whether a comment may be written at all, and the Folder all come
- * off the manifest and the file itself; nothing here names `1111`. `transform`
- * is the one place the bytes are amended, for a NIP-22 reply.
+ * off the manifest and the file itself; nothing here names `1111`. `replyTo`
+ * makes it NIP-22's reply to that comment, built by the runtime too (PRO-20).
  */
 async function comment(
   context: AgentContext,
   topic: Topic,
   body: string,
-  transform: (event: UnsignedActionEvent) => UnsignedActionEvent = (event) => event,
+  replyTo?: { id: string; kind: number; author: string },
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
   const query = relayQuery(context)
   const pointer = pointerOf(topic.address)
@@ -366,31 +332,16 @@ async function comment(
     folder,
     actionId: 'comment',
     value: body,
+    replyTo,
     pubkey: context.signer.pubkey,
     createdAtMs: Date.now(),
   })
   if (typeof built === 'string') throw new BadRequest(`${topic.title} does not take a comment: ${built}`)
-  const signed = await context.signer.sign(transform(built))
+  const signed = await context.signer.sign(built)
   const result = await context.relay.publish(signed)
   return { ...result, eventId: result.eventId ?? signed.id }
 }
 
-/**
- * NIP-22's reply: uppercase `A`/`K`/`P` still name the file, the lowercase trio
- * names the comment answered — Peek's `replyToCommentAsViewer`.
- */
-export function asReplyTo(parent: { id: string; kind: number; author: string }) {
-  const lowercase = new Set(['a', 'e', 'k', 'p'])
-  return (event: UnsignedActionEvent): UnsignedActionEvent => ({
-    ...event,
-    tags: [
-      ...event.tags.filter((tag) => !lowercase.has(tag[0])),
-      ['e', parent.id],
-      ['k', String(parent.kind)],
-      ['p', parent.author],
-    ],
-  })
-}
 
 export const peekApp: AgentApp = {
   name: 'peek',
@@ -536,7 +487,8 @@ export const peekApp: AgentApp = {
           to a reply would be on the relay and on no page — the bug this module
           was rewritten to remove. There is no `--to` for that reason.
         */
-        const result = await comment(context, topic, body, asReplyTo(thread.root))
+        const { id, kind, author } = thread.root
+        const result = await comment(context, topic, body, { id, kind, author })
         published(result, `a reply on ${topic.title}`)
 
         return {

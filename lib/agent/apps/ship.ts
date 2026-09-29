@@ -27,7 +27,7 @@ import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArg
 import { edited, findMessage } from '../conversation'
 import { resolveMaybe, resolveOne, short } from '../resolve'
 import { KIND as PROTOCOL_KIND } from '@estiva-app/protocol'
-import { listFolders, type FolderSummary } from '@estiva-app/interop'
+import { listFolders, topLevelFolders, type FolderSummary } from '@estiva-app/interop'
 
 const store = (context: AgentContext) => new Store(context.relay, context.signer)
 
@@ -702,7 +702,7 @@ function readFolders(context: AgentContext): Promise<FolderSummary[]> {
  * Folder lists — `topLevelFolders` in Ship and Peek, the five a person sees.
  */
 async function resolveTeam(context: AgentContext, reference: string): Promise<FolderSummary> {
-  const teams = (await readFolders(context)).filter((folder) => folder.hasState && !folder.listedIn?.length)
+  const teams = topLevelFolders(await readFolders(context))
   return resolveOne(teams, reference, {
     noun: 'team',
     exact: (team) => [team.id],

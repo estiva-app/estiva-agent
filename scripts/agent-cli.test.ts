@@ -20,7 +20,8 @@ import { loadCredentials } from '../lib/agent/credentials'
 import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
 import type { Project } from '../src/fold'
-import { asReplyTo, findTopic, topLevelFolders, type Topic } from '../lib/agent/apps/peek'
+import { topLevelFolders } from '@estiva-app/interop'
+import { findTopic, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
 import { foldEdits } from '../src/edits'
 import { KIND } from '../src/kinds'
@@ -598,36 +599,6 @@ console.log('— editing an issue —')
 console.log('— where a Peek write lands (AGE-1) —')
 
 {
-  /*
-    AGE-1. `say` and `reply` wrote `kind:9` carrying only `h` into topic
-    channels, which Peek draws only in a DM: every write succeeded and nobody
-    could see it. A reply is now NIP-22's shape, as Peek's
-    `replyToCommentAsViewer` writes it — uppercase naming the file, lowercase
-    naming the comment answered.
-  */
-  const topLevel = {
-    kind: 1111,
-    content: 'hi',
-    created_at: 0,
-    pubkey: 'agent',
-    tags: [
-      ['A', '30840:owner:t'],
-      ['K', '30840'],
-      ['P', 'owner'],
-      ['a', '30840:owner:t'],
-      ['k', '30840'],
-      ['p', 'owner'],
-      ['h', 'folder'],
-    ],
-  }
-  const reply = asReplyTo({ id: 'comment-id', kind: 1111, author: 'someone' })(topLevel)
-  const tag = (name: string) => reply.tags.filter((t) => t[0] === name).map((t) => t[1])
-  check('the root is still the file', tag('A')[0] === '30840:owner:t' && tag('K')[0] === '30840')
-  check('the parent is the comment', tag('e')[0] === 'comment-id' && tag('k')[0] === '1111')
-  check('and its author', tag('p').length === 1 && tag('p')[0] === 'someone')
-  check('with no lowercase a left naming the file', tag('a').length === 0, 'a reply on the #a read would be a second root')
-  check('in the same Folder', tag('h')[0] === 'folder')
-
   /*
     Where `create-topic` may put one: a Folder at the top of Peek's tree. A
     Folder another lists, or a bare channel, is not on every person's tree.

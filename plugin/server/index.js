@@ -17797,6 +17797,47 @@ async function conversationsOf(files, query, cache) {
     messages.sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
   return conversations;
 }
+async function threadsOf(reference, rootIds, query, cache) {
+  const empty = { roots: {}, replies: {} };
+  if (rootIds.length === 0)
+    return empty;
+  let pointer;
+  try {
+    pointer = referenceToPointer(reference);
+  } catch {
+    return empty;
+  }
+  const resolved = await resolveManifest(pointer, query, cache);
+  if (!resolved)
+    return empty;
+  const kinds = commentKindsOf(resolved.manifest);
+  const ids = [...new Set(rootIds)];
+  const events = await query([
+    { ids, limit: ids.length },
+    { kinds, "#e": ids, limit: CONVERSATION_LIMIT }
+  ]);
+  const wanted = new Set(ids);
+  const roots = {};
+  const replies = {};
+  const seen = /* @__PURE__ */ new Set();
+  for (const event of events) {
+    if (seen.has(event.id))
+      continue;
+    seen.add(event.id);
+    if (wanted.has(event.id)) {
+      roots[event.id] = event;
+      continue;
+    }
+    const es = event.tags.filter((tag2) => tag2[0] === "e" && tag2[1]);
+    const parent = (es.find((tag2) => tag2[3] === "reply") ?? es.find((tag2) => wanted.has(tag2[1])))?.[1];
+    if (parent && wanted.has(parent))
+      (replies[parent] ??= []).push(event);
+  }
+  for (const thread of Object.values(replies)) {
+    thread.sort((a, b) => a.created_at - b.created_at || (a.id < b.id ? -1 : 1));
+  }
+  return { roots, replies };
+}
 var REACTION_HORIZON = 100;
 var KIND_REACTION = 7;
 var KIND_ASSERTION = 9101;
@@ -18544,7 +18585,7 @@ function buildCreationEvent(args2) {
   };
 }
 function buildActionEvent(args2) {
-  const { manifest, kind, address, folder, actionId, value } = args2;
+  const { manifest, kind, address, folder, actionId, value, replyTo } = args2;
   const records = manifest.records;
   const declared = manifest.actions?.find((a) => a.id === actionId);
   if (!declared)
@@ -18553,7 +18594,11 @@ function buildActionEvent(args2) {
   if (!appliesTo.includes(String(kind))) {
     return `"${declared.label}" does not apply to a kind ${kind}.`;
   }
-  if (declared.input?.type === "object" && declared.input.properties) {
+  const isCreation = declared.input?.type === "object" && !!declared.input.properties;
+  if (replyTo && (isCreation || declared.emits.kind === KIND_DELETION || declared.emits.field)) {
+    return `"${declared.label}" is not a comment, so it cannot reply to one.`;
+  }
+  if (isCreation) {
     return buildCreationEvent({ ...args2, declared, vocabularies: manifest.vocabularies });
   }
   if (typeof value !== "string") {
@@ -18588,14 +18633,21 @@ function buildActionEvent(args2) {
     // NIP-22 comment. Built from the ratified NIP rather than from the
     // manifest, which is legitimate precisely because no app owns kind:1111 —
     // the same reason the owning app uses it. Uppercase tags name the thread
-    // root, lowercase the immediate parent.
+    // root, lowercase the immediate parent: the file again for a top-level
+    // comment, the comment answered for a reply (SPEC §6.4).
     [
       ["A", address],
       ["K", String(kind)],
       ["P", args2.objectAuthor],
-      ["a", address],
-      ["k", String(kind)],
-      ["p", args2.objectAuthor],
+      ...replyTo ? [
+        ["e", replyTo.id],
+        ["k", String(replyTo.kind)],
+        ["p", replyTo.author]
+      ] : [
+        ["a", address],
+        ["k", String(kind)],
+        ["p", args2.objectAuthor]
+      ],
       ["h", folder]
     ]
   );
@@ -18612,6 +18664,9 @@ function buildActionEvent(args2) {
 var KIND_FOLDER_STATE = 30890;
 var KIND_CHANNEL = 39e3;
 var nameOf = (event) => event ? tagValue(event, "name") : void 0;
+function topLevelFolders(folders) {
+  return folders.filter((folder) => folder.hasState && !folder.listedIn?.length);
+}
 async function listFolders(query) {
   const events = await query([
     { kinds: [KIND_FOLDER_STATE], limit: 500 },
@@ -18626,10 +18681,12 @@ async function listFolders(query) {
     const existing = byId.get(id);
     if (existing && !state)
       continue;
+    const addresses = state ? event.tags.filter((tag2) => tag2[0] === "a" && tag2[1]).map((tag2) => tag2[1]) : [];
     byId.set(id, {
       id,
       name: tagValue(event, "name") ?? existing?.name,
-      hasState: state || (existing?.hasState ?? false)
+      hasState: state || (existing?.hasState ?? false),
+      ...addresses.length ? { addresses } : {}
     });
   }
   const listedIn = /* @__PURE__ */ new Map();
@@ -20296,7 +20353,7 @@ function readFolders(context2) {
   return listFolders((filters) => context2.relay.queryAll(filters));
 }
 async function resolveTeam(context2, reference) {
-  const teams = (await readFolders(context2)).filter((folder) => folder.hasState && !folder.listedIn?.length);
+  const teams = topLevelFolders(await readFolders(context2));
   return resolveOne(teams, reference, {
     noun: "team",
     exact: (team) => [team.id],
@@ -21228,9 +21285,6 @@ var noPeople = async () => ({});
 function relayQuery(context2) {
   return (filters) => context2.relay.queryAll(filters);
 }
-function topLevelFolders(folders) {
-  return folders.filter((folder) => folder.hasState && !folder.listedIn?.length);
-}
 async function loadTopics(context2, cache, folderRef) {
   const query = relayQuery(context2);
   const all = await listFolders(query);
@@ -21300,32 +21354,13 @@ var asMessage = (event) => ({
   kind: event.kind,
   folder: tagValue2(event, "h")
 });
-var byTime = (a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1);
 async function readConversation(context2, topic, cache) {
   const query = relayQuery(context2);
   const rootIds = ((await conversationsOf([topic.object], query, cache))[topic.address] ?? []).map((message) => message.id);
   if (!rootIds.length) return { conversations: [], edits: foldEdits([]), resolved: /* @__PURE__ */ new Set() };
-  const resolved = await resolveManifest(pointerOf(topic.address), query, cache);
-  const kinds = resolved ? commentKindsOf(resolved.manifest) : [KIND.COMMENT];
-  const events = await query([
-    { ids: rootIds, limit: rootIds.length },
-    { kinds, "#e": rootIds, limit: 1e3 }
-  ]);
-  const wanted = new Set(rootIds);
-  const roots = /* @__PURE__ */ new Map();
-  const replies = /* @__PURE__ */ new Map();
-  const seen = /* @__PURE__ */ new Set();
-  for (const event of events) {
-    if (seen.has(event.id)) continue;
-    seen.add(event.id);
-    if (wanted.has(event.id)) {
-      roots.set(event.id, asMessage(event));
-      continue;
-    }
-    const parent = event.tags.find((tag2) => tag2[0] === "e" && wanted.has(tag2[1]))?.[1];
-    if (parent) replies.set(parent, [...replies.get(parent) ?? [], asMessage(event)]);
-  }
-  const conversations = rootIds.filter((id) => roots.has(id)).map((id) => ({ root: roots.get(id), replies: (replies.get(id) ?? []).sort(byTime) }));
+  const threads = await threadsOf(topic.address, rootIds, query, cache);
+  const conversations = rootIds.filter((id) => threads.roots[id]).map((id) => ({ root: asMessage(threads.roots[id]), replies: (threads.replies[id] ?? []).map(asMessage) }));
+  const originals = [...Object.values(threads.roots), ...Object.values(threads.replies).flat()];
   const all = conversations.flatMap((thread) => [thread.root, ...thread.replies]);
   const editEvents = [];
   const decorations = await commentDecorationsOf(
@@ -21336,7 +21371,6 @@ async function readConversation(context2, topic, cache) {
       return found;
     }
   );
-  const originals = events.filter((event) => seen.has(event.id));
   const isResolved = (id) => decorations.byId[id]?.resolutions.at(-1)?.action === "resolved";
   return {
     conversations,
@@ -21353,7 +21387,7 @@ function findThread(threads, reference) {
     hint: "Pass a conversation id from `peek topic`, or a distinctive phrase from its first message."
   });
 }
-async function comment(context2, topic, body, transform2 = (event) => event) {
+async function comment(context2, topic, body, replyTo) {
   const query = relayQuery(context2);
   const pointer = pointerOf(topic.address);
   const resolved = await resolveManifest(pointer, query);
@@ -21369,25 +21403,14 @@ async function comment(context2, topic, body, transform2 = (event) => event) {
     folder,
     actionId: "comment",
     value: body,
+    replyTo,
     pubkey: context2.signer.pubkey,
     createdAtMs: Date.now()
   });
   if (typeof built === "string") throw new BadRequest(`${topic.title} does not take a comment: ${built}`);
-  const signed = await context2.signer.sign(transform2(built));
+  const signed = await context2.signer.sign(built);
   const result = await context2.relay.publish(signed);
   return { ...result, eventId: result.eventId ?? signed.id };
-}
-function asReplyTo(parent) {
-  const lowercase2 = /* @__PURE__ */ new Set(["a", "e", "k", "p"]);
-  return (event) => ({
-    ...event,
-    tags: [
-      ...event.tags.filter((tag2) => !lowercase2.has(tag2[0])),
-      ["e", parent.id],
-      ["k", String(parent.kind)],
-      ["p", parent.author]
-    ]
-  });
 }
 var peekApp = {
   name: "peek",
@@ -21514,7 +21537,8 @@ var peekApp = {
           })),
           threadRef
         );
-        const result = await comment(context2, topic, body, asReplyTo(thread.root));
+        const { id, kind, author } = thread.root;
+        const result = await comment(context2, topic, body, { id, kind, author });
         published2(result, `a reply on ${topic.title}`);
         return {
           repliedTo: { topic: topic.title, conversation: thread.id, opening: thread.opening.slice(0, 80), url: topic.url },
