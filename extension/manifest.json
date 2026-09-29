@@ -102,7 +102,7 @@
     },
     {
       "name": "peek_list_topics",
-      "description": "List Peek topics, busiest first"
+      "description": "List the topics people see in Peek, newest conversation first"
     },
     {
       "name": "peek_read_topic",
@@ -110,7 +110,7 @@
     },
     {
       "name": "peek_reply",
-      "description": "Reply inside one existing Peek conversation"
+      "description": "Reply inside one existing conversation on a Peek topic"
     },
     {
       "name": "peek_edit_message",
@@ -118,11 +118,11 @@
     },
     {
       "name": "peek_say",
-      "description": "Start a new conversation in a Peek topic"
+      "description": "Start a new conversation on a Peek topic"
     },
     {
       "name": "peek_create_topic",
-      "description": "Create a new Peek topic, which the app may not show"
+      "description": "Create a new Peek topic in a Folder"
     }
   ],
   "keywords": [

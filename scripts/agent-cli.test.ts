@@ -20,7 +20,7 @@ import { loadCredentials } from '../lib/agent/credentials'
 import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
 import type { Project } from '../src/fold'
-import { findTopic, replyTarget, type Topic } from '../lib/agent/apps/peek'
+import { asReplyTo, findTopic, topLevelFolders, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
 import { foldEdits } from '../src/edits'
 import { KIND } from '../src/kinds'
@@ -239,30 +239,36 @@ console.log('\n— resolving a topic (second app, same rules) —')
   exception — the live workspace has "test", "test 2", "test 3", "test 4" and
   "test 5" side by side, which is exactly where a substring match would guess.
 */
-const topic = (over: Partial<Topic>): Topic => ({
-  folder: 'f',
-  name: 'Untitled',
-  createdBy: 'abc',
-  createdAt: 0,
-  ...over,
+const topic = (id: string, title: string): Topic => ({
+  address: `30840:abc:${id}`,
+  title,
+  folder: { id: 'f', name: 'Peek' },
+  object: {} as Topic['object'],
 })
 
 const topics = [
-  topic({ folder: 'aaa', name: 'test' }),
-  topic({ folder: 'bbb', name: 'test 2' }),
-  topic({ folder: 'ccc', name: 'test 3' }),
-  topic({ folder: 'ddd', name: 'Planning and sequencing' }),
+  topic('aaa', 'test'),
+  topic('bbb', 'test 2'),
+  topic('ccc', 'test 3'),
+  topic('ddd', 'Planning and sequencing'),
 ]
 
-check('finds a topic by exact name', findTopic(topics, 'Planning and sequencing').folder === 'ddd')
-check('finds a topic by folder id', findTopic(topics, 'ccc').folder === 'ccc')
+const idOf = (found: Topic) => found.address.split(':')[2]
+check('finds a topic by exact title', idOf(findTopic(topics, 'Planning and sequencing')) === 'ddd')
+check('finds a topic by its id', idOf(findTopic(topics, 'ccc')) === 'ccc')
+check('finds a topic by its address', idOf(findTopic(topics, '30840:abc:bbb')) === 'bbb')
+{
+  // The eight characters a refusal's label prints must resolve back.
+  const long = [topic('f51e7476-5bcb-4ea4-ae6c-a3e24691c8b7', 'probe'), topic('a1c14e50-0000-4000-8000-000000000000', 'probe 2')]
+  check('finds a topic by the short id its label prints', findTopic(long, 'f51e7476').title === 'probe')
+}
 
 /*
-  "test" is both an exact name and a prefix of two others. Exact must win, or
-  every topic whose name is a prefix of another becomes unreachable.
+  "test" is both an exact title and a prefix of two others. Exact must win, or
+  every topic whose title is a prefix of another becomes unreachable.
 */
-check('an exact name beats names containing it', findTopic(topics, 'test').folder === 'aaa')
-check('a unique fragment still resolves', findTopic(topics, 'sequencing').folder === 'ddd')
+check('an exact title beats titles containing it', idOf(findTopic(topics, 'test')) === 'aaa')
+check('a unique fragment still resolves', idOf(findTopic(topics, 'sequencing')) === 'ddd')
 refuses('refuses an ambiguous topic fragment', () => findTopic(topics, 'tes'), 'matches 3 topics')
 refuses('refuses an unknown topic', () => findTopic(topics, 'nope'), 'No topic matches')
 
@@ -589,49 +595,49 @@ console.log('— editing an issue —')
   check('several fields are several changes', several.length === 3, several.map((e) => e.field).join(','))
 }
 
-console.log('— where a reply attaches —')
+console.log('— where a Peek write lands (AGE-1) —')
 
 {
   /*
-    AGE-13. `reply` hardcoded `rootId === parentId`, so the agent could join a
-    conversation but never answer a particular person in it — in a thread with
-    several people its reply attached to the opening message, reading as an
-    answer to whoever started the thread.
-
-    The rule worth pinning is that `--to` resolves inside the chosen
-    conversation only. Matching a phrase across a whole topic is how a reply
-    lands under the wrong message, and that is invisible once posted.
+    AGE-1. `say` and `reply` wrote `kind:9` carrying only `h` into topic
+    channels, which Peek draws only in a DM: every write succeeded and nobody
+    could see it. A reply is now NIP-22's shape, as Peek's
+    `replyToCommentAsViewer` writes it — uppercase naming the file, lowercase
+    naming the comment answered.
   */
-  const thread = {
-    id: 'root-id',
-    messages: [
-      { id: 'root-id', body: 'Some improvements to the agent' },
-      { id: 'reply-1', body: 'Weird that it cannot reply to its own message' },
-      { id: 'reply-2', body: 'Edit is a good one' },
+  const topLevel = {
+    kind: 1111,
+    content: 'hi',
+    created_at: 0,
+    pubkey: 'agent',
+    tags: [
+      ['A', '30840:owner:t'],
+      ['K', '30840'],
+      ['P', 'owner'],
+      ['a', '30840:owner:t'],
+      ['k', '30840'],
+      ['p', 'owner'],
+      ['h', 'folder'],
     ],
   }
+  const reply = asReplyTo({ id: 'comment-id', kind: 1111, author: 'someone' })(topLevel)
+  const tag = (name: string) => reply.tags.filter((t) => t[0] === name).map((t) => t[1])
+  check('the root is still the file', tag('A')[0] === '30840:owner:t' && tag('K')[0] === '30840')
+  check('the parent is the comment', tag('e')[0] === 'comment-id' && tag('k')[0] === '1111')
+  check('and its author', tag('p').length === 1 && tag('p')[0] === 'someone')
+  check('with no lowercase a left naming the file', tag('a').length === 0, 'a reply on the #a read would be a second root')
+  check('in the same Folder', tag('h')[0] === 'folder')
 
-  const plain = replyTarget(thread, undefined)
-  check('without --to it answers the conversation', plain.rootId === plain.parentId)
-  check('and that is the thread root', plain.rootId === 'root-id')
-
-  const nested = replyTarget(thread, 'reply-1')
-  check('--to answers one message', nested.parentId === 'reply-1')
-  check('while staying in the same conversation', nested.rootId === 'root-id')
-  check('which is the root/reply pair Buzz reads as a nested reply', nested.rootId !== nested.parentId)
-
-  const byPhrase = replyTarget(thread, 'Edit is a good')
-  check('--to takes a phrase as well as an id', byPhrase.parentId === 'reply-2')
-
-  const atRoot = replyTarget(thread, 'root-id')
-  check(
-    'naming the root through --to stays a direct reply',
-    atRoot.rootId === atRoot.parentId,
-    'rather than claiming a nesting level that is not there',
-  )
-
-  refuses('an ambiguous phrase is refused, not guessed', () => replyTarget(thread, 'to'), 'matches')
-  refuses('a phrase matching nothing is refused', () => replyTarget(thread, 'nonexistent'))
+  /*
+    Where `create-topic` may put one: a Folder at the top of Peek's tree. A
+    Folder another lists, or a bare channel, is not on every person's tree.
+  */
+  const top = topLevelFolders([
+    { id: 'team', hasState: true },
+    { id: 'nested', hasState: true, listedIn: ['team'] },
+    { id: 'bare', hasState: false },
+  ]).map((folder) => folder.id)
+  check('a top-level Folder is one', top.join() === 'team', top.join())
 }
 
 console.log('— editing a message —')
