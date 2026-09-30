@@ -17632,11 +17632,23 @@ function buildChange(pubkey, createdAtMs, args2) {
               Only a value that is a key: clearing an assignment carries an empty
               value and names nobody.
             */
-      ...PLACEMENT_FIELDS.has(args2.field) && /^[0-9a-f]{64}$/.test(args2.value) ? [["p", args2.value]] : []
+      ...PLACEMENT_FIELDS.has(args2.field) && /^[0-9a-f]{64}$/.test(args2.value) ? [["p", args2.value]] : [],
+      /*
+        A move names its new parent again, as `A` — SPEC §7.2 (FOL-45). The
+        manifest declares an issue's `project` as what moves it (`movedBy`), and
+        the value is the one place the new project is: no relay indexes it, so
+        a reader listing a project's issues by `#a` never saw one moved in, and
+        Peek drew it under no project at all. `A` rather than a second `a`,
+        which every reader would take for the target. Only a project address:
+        a move to "No project" names nothing.
+      */
+      ...isMove(args2.target, args2.field) && PROJECT_ADDRESS.test(args2.value) ? [["A", args2.value]] : []
     ],
     content: args2.note ?? ""
   };
 }
+var isMove = (target, field) => field === "project" && target.startsWith(`${KIND2.ISSUE}:`);
+var PROJECT_ADDRESS = new RegExp(`^${KIND2.PROJECT}:[0-9a-f]{64}:.+`);
 var PLACEMENT_FIELDS = /* @__PURE__ */ new Set(["assignee", "lead"]);
 function buildNip22Comment(pubkey, createdAtMs, args2) {
   const [kind, author] = args2.about.split(":");
