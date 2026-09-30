@@ -17338,8 +17338,9 @@ var KIND2 = {
    * as `kind:9`", which REW-10 itself then made false and nobody came back to.
    *
    * What actually decides the kind is one line in `events.ts`
-   * (`buildConversationMessage`): a comment that names what it is **about**
-   * becomes a `kind:1111`, and every other message stays a `kind:9`. So the two
+   * (`buildConversationMessage`): a comment that names what it is **about**,
+   * and since SHI-28 a reply to one, becomes a `kind:1111`, and every other
+   * message stays a `kind:9`. So the two
    * files two apart from each other said opposite things about production.
    *
    * Not a cosmetic disagreement. A `kind:9` filter looks like the way to read
@@ -17667,8 +17668,37 @@ function buildNip22Comment(pubkey, createdAtMs, args2) {
     content: args2.body
   };
 }
+function buildNip22Reply(pubkey, createdAtMs, args2) {
+  const [kind, author] = args2.comment.anchor.split(":");
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND2.COMMENT,
+    tags: [
+      ["A", args2.comment.anchor],
+      ["K", kind],
+      ["P", author],
+      ["e", args2.comment.id],
+      ["k", String(KIND2.COMMENT)],
+      // Unknown only when the comment itself is outside the read — see `CommentRef`.
+      ...args2.comment.author ? [["p", args2.comment.author]] : [],
+      ["h", args2.folder],
+      ["ts", String(Math.floor(createdAtMs))],
+      ...(args2.files ?? []).map(imetaTag)
+    ],
+    content: args2.body
+  };
+}
 function buildConversationMessage(pubkey, createdAtMs, args2) {
   assertFolderId(args2.folder);
+  if (args2.replyToComment) {
+    return buildNip22Reply(pubkey, createdAtMs, {
+      folder: args2.folder,
+      body: args2.body,
+      comment: args2.replyToComment,
+      files: args2.files
+    });
+  }
   if (args2.about && !args2.replyTo) {
     return buildNip22Comment(pubkey, createdAtMs, {
       folder: args2.folder,
@@ -19127,6 +19157,7 @@ function parseNip22Comment(event, resolveRefs) {
         ...resolveRefs(event.content)
       ])
     ],
+    ...tag(event, "A") ? { anchor: tag(event, "A") } : {},
     ...blockAnchorOf(event) ? { blockId: blockAnchorOf(event) } : {}
   };
 }
@@ -19774,10 +19805,10 @@ var Store = class {
   /**
    * Start a conversation, or reply in one.
    *
-   * A `kind:9` in the Folder — the same kind and shape Peek writes for a topic
-   * message. That is the entire integration: Peek's sync imports a foreign
-   * pubkey's root message as a conversation and one carrying an `e` tag as a
-   * reply, so anything posted here appears there without Peek changing.
+   * A comment about an object, and a reply to one, is a NIP-22 `kind:1111`;
+   * a message in the Folder and a reply in its thread are a `kind:9`, the
+   * shape Peek writes for chat (SPEC §6.4). Either lands in the Folder, so
+   * anything posted here appears there without Peek changing.
    *
    * `about` names the Issue or Project the conversation concerns. When it is an
    * issue, its `nostr:naddr` is appended to the body as well — Peek renders that
@@ -19793,6 +19824,7 @@ ${args2.aboutRef}` : args2.body;
         folder: args2.folder,
         body,
         replyTo: args2.replyTo,
+        replyToComment: args2.replyToComment,
         about: args2.about,
         blockId: args2.blockId,
         files: args2.files
