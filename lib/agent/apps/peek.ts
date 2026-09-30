@@ -31,7 +31,6 @@
  */
 import {
   buildActionEvent,
-  commentDecorationsOf,
   conversationsOf,
   createProjectionCache,
   folderOf,
@@ -50,7 +49,7 @@ import {
   type QueryFn,
 } from '@estiva-app/interop'
 import { buildBareFile, KIND, type SignedEvent } from '@estiva-app/protocol'
-import { foldEdits } from '../../../src/edits'
+import { decorationsOf, type EditFold } from '@estiva-app/conversation'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { edited, findMessage } from '../conversation'
 import { resolveOne } from '../resolve'
@@ -250,37 +249,34 @@ const asMessage = (event: SignedEvent): Message => ({
  *    lowercase tags name its parent, not the file, so it never arrives on the
  *    `#a` read. One level only, because that is what Peek's pane reads.
  * 3. What was done to each — edits and resolutions — which names the comment,
- *    so it is a third read (`commentDecorationsOf`).
+ *    so it is a third read (`decorationsOf`, `@estiva-app/conversation`).
  */
 async function readConversation(context: AgentContext, topic: Topic, cache: ProjectionCache) {
   const query = relayQuery(context)
   const rootIds = ((await conversationsOf([topic.object], query, cache))[topic.address] ?? []).map((message) => message.id)
-  if (!rootIds.length) return { conversations: [] as Conversation[], edits: foldEdits([]), resolved: new Set<string>() }
+  if (!rootIds.length) return { conversations: [] as Conversation[], edits: {} as Record<string, EditFold>, resolved: new Set<string>() }
 
   // 1000, not Peek's 200: an agent answering from a topic needs its oldest replies too.
   const threads = await threadsOf(topic.address, rootIds, query, cache, 1000)
   const conversations = rootIds
     .filter((id) => threads.roots[id])
     .map((id) => ({ root: asMessage(threads.roots[id]), replies: (threads.replies[id] ?? []).map(asMessage) }))
-  const originals = [...Object.values(threads.roots), ...Object.values(threads.replies).flat()]
 
-  // The decorations read returns every edit on the way past; they are kept
-  // for the vendored fold, which is the one `ship show` prints with.
+  // `@estiva-app/conversation`'s read (CON-5), the one Peek and Ship make:
+  // edits fold against each message's own body, so an attachments-only edit
+  // does not mark it edited.
   const all = conversations.flatMap((thread) => [thread.root, ...thread.replies])
-  const editEvents: SignedEvent[] = []
-  const decorations = await commentDecorationsOf(
-    all.map((message) => ({ id: message.id, at: message.createdAt })),
-    async (filters) => {
-      const found = await query(filters)
-      for (const event of found) if (event.kind === KIND.MESSAGE_EDIT) editEvents.push(event)
-      return found
-    },
+  const decorations = await decorationsOf(
+    all.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })),
+    query,
   )
   const isResolved = (id: string) => decorations.byId[id]?.resolutions.at(-1)?.action === 'resolved'
+  const edits: Record<string, EditFold> = {}
+  for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit
 
   return {
     conversations,
-    edits: foldEdits([...originals, ...editEvents]),
+    edits,
     resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved)),
   }
 }

@@ -17,7 +17,7 @@
  * or an object type and does not; this file names a message, which both app
  * modules have and no third one is obliged to.
  */
-import type { EditIndex } from '../../src/edits'
+import type { EditFold } from '@estiva-app/conversation'
 import { BadRequest } from './cli'
 import { resolveOne } from './resolve'
 
@@ -42,12 +42,14 @@ export interface EditableMessage {
  * the common case and should cost nothing to read.
  */
 export function edited(
-  edits: EditIndex,
+  edits: Record<string, EditFold>,
   message: EditableMessage,
 ): { body: string; edited?: true; editedAt?: string } {
   const edit = edits[message.id]
   if (!edit) return { body: message.body }
-  return { body: edit.body, edited: true, editedAt: new Date(edit.at).toISOString() }
+  // An edit byte-identical to the body changed attachments only, and is not marked (SPEC §6.8).
+  if (edit.editedAt === undefined) return { body: edit.body }
+  return { body: edit.body, edited: true, editedAt: new Date(edit.editedAt).toISOString() }
 }
 
 /**

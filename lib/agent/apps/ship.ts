@@ -15,6 +15,8 @@
 import { Store, nextRef, refPrefix, type WorkspaceState } from '../../../src/store'
 import type { FolderState, Issue, Project } from '../../../src/fold'
 import { conversationsAbout } from '../../../src/fold'
+// §6.4's comment strength: a thread whose root is about the object, never one that merely names it (CON-5).
+import { commentsOn as commentsOnObject } from '../../../src/references'
 import {
   DEFAULT_ISSUE_STATUS,
   ISSUE_STATUSES,
@@ -560,7 +562,7 @@ export function clip(text: string, max: number): string {
 
 /** Every comment about one object, oldest first, each body as it stands now. */
 function commentsOn(state: WorkspaceState, addr: string) {
-  return conversationsAbout(state.conversations, addr)
+  return commentsOnObject(state.conversations, addr, state.anchors)
     .flatMap((thread) => [thread.root, ...thread.replies])
     .map((message) => ({
       id: message.id,
@@ -732,7 +734,7 @@ async function timelineFor(
   addr: string,
   extraPubkeys: (string | undefined)[],
 ) {
-  const conversations = conversationsAbout(state.conversations, addr)
+  const conversations = commentsOnObject(state.conversations, addr, state.anchors)
   const history = state.activity.filter((change) => change.target === addr)
 
   const directory = await directoryFor(context, [

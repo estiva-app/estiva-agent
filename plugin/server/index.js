@@ -284,24 +284,24 @@ var require_scope = __commonJS({
           return;
         return vs.get(keyOrRef);
       }
-      scopeRefs(scopeName, values = this._values) {
-        return this._reduceValues(values, (name) => {
+      scopeRefs(scopeName, values2 = this._values) {
+        return this._reduceValues(values2, (name) => {
           if (name.scopePath === void 0)
             throw new Error(`CodeGen: name "${name}" has no value`);
           return (0, code_1._)`${scopeName}${name.scopePath}`;
         });
       }
-      scopeCode(values = this._values, usedValues, getCode) {
-        return this._reduceValues(values, (name) => {
+      scopeCode(values2 = this._values, usedValues, getCode) {
+        return this._reduceValues(values2, (name) => {
           if (name.value === void 0)
             throw new Error(`CodeGen: name "${name}" has no value`);
           return name.value.code;
         }, usedValues, getCode);
       }
-      _reduceValues(values, valueCode, usedValues = {}, getCode) {
+      _reduceValues(values2, valueCode, usedValues = {}, getCode) {
         let code = code_1.nil;
-        for (const prefix in values) {
-          const vs = values[prefix];
+        for (const prefix in values2) {
+          const vs = values2[prefix];
           if (!vs)
             continue;
           const nameSet = usedValues[prefix] = usedValues[prefix] || /* @__PURE__ */ new Map();
@@ -6301,9 +6301,9 @@ var require_discriminator = __commonJS({
         function validateMapping() {
           const mapping = getMapping();
           gen.if(false);
-          for (const tagValue3 in mapping) {
-            gen.elseIf((0, codegen_1._)`${tag2} === ${tagValue3}`);
-            gen.assign(valid, applyTagSchema(mapping[tagValue3]));
+          for (const tagValue4 in mapping) {
+            gen.elseIf((0, codegen_1._)`${tag2} === ${tagValue4}`);
+            gen.assign(valid, applyTagSchema(mapping[tagValue4]));
           }
           gen.else();
           cxt.error(false, { discrError: types_1.DiscrError.Mapping, tag: tag2, tagName });
@@ -6347,18 +6347,18 @@ var require_discriminator = __commonJS({
             if (sch.const) {
               addMapping(sch.const, i);
             } else if (sch.enum) {
-              for (const tagValue3 of sch.enum) {
-                addMapping(tagValue3, i);
+              for (const tagValue4 of sch.enum) {
+                addMapping(tagValue4, i);
               }
             } else {
               throw new Error(`discriminator: "properties/${tagName}" must have "const" or "enum"`);
             }
           }
-          function addMapping(tagValue3, i) {
-            if (typeof tagValue3 != "string" || tagValue3 in oneOfMapping) {
+          function addMapping(tagValue4, i) {
+            if (typeof tagValue4 != "string" || tagValue4 in oneOfMapping) {
               throw new Error(`discriminator: "${tagName}" values must be unique strings`);
             }
-            oneOfMapping[tagValue3] = i;
+            oneOfMapping[tagValue4] = i;
           }
         }
       }
@@ -7067,8 +7067,8 @@ function assert(_) {
 }
 function getEnumValues(entries) {
   const numericValues = Object.values(entries).filter((v) => typeof v === "number");
-  const values = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
-  return values;
+  const values2 = Object.entries(entries).filter(([k, _]) => numericValues.indexOf(+k) === -1).map(([_, v]) => v);
+  return values2;
 }
 function joinValues(array2, separator = "|") {
   return array2.map((val) => stringifyPrimitive(val)).join(separator);
@@ -8967,13 +8967,13 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject2 = isObject;
+  const isObject3 = isObject;
   const catchall = def.catchall;
   let value;
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject3(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -9100,7 +9100,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return (payload, ctx) => fn(shape, payload, ctx);
   };
   let fastpass;
-  const isObject2 = isObject;
+  const isObject3 = isObject;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -9109,7 +9109,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject3(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -9218,10 +9218,10 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
     const opts = def.options;
     const map = /* @__PURE__ */ new Map();
     for (const o of opts) {
-      const values = o._zod.propValues?.[def.discriminator];
-      if (!values || values.size === 0)
+      const values2 = o._zod.propValues?.[def.discriminator];
+      if (!values2 || values2.size === 0)
         throw new Error(`Invalid discriminated union option at index "${def.options.indexOf(o)}"`);
-      for (const v of values) {
+      for (const v of values2) {
         if (map.has(v)) {
           throw new Error(`Duplicate discriminator value "${String(v)}"`);
         }
@@ -9373,11 +9373,11 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
       return payload;
     }
     const proms = [];
-    const values = def.keyType._zod.values;
-    if (values) {
+    const values2 = def.keyType._zod.values;
+    if (values2) {
       payload.value = {};
       const recordKeys = /* @__PURE__ */ new Set();
-      for (const key of values) {
+      for (const key of values2) {
         if (typeof key === "string" || typeof key === "number" || typeof key === "symbol") {
           recordKeys.add(typeof key === "number" ? key.toString() : key);
           const keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
@@ -9487,10 +9487,10 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
 });
 var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
   $ZodType.init(inst, def);
-  const values = getEnumValues(def.entries);
-  const valuesSet = new Set(values);
+  const values2 = getEnumValues(def.entries);
+  const valuesSet = new Set(values2);
   inst._zod.values = valuesSet;
-  inst._zod.pattern = new RegExp(`^(${values.filter((k) => propertyKeyTypes.has(typeof k)).map((o) => typeof o === "string" ? escapeRegex(o) : o.toString()).join("|")})$`);
+  inst._zod.pattern = new RegExp(`^(${values2.filter((k) => propertyKeyTypes.has(typeof k)).map((o) => typeof o === "string" ? escapeRegex(o) : o.toString()).join("|")})$`);
   inst._zod.parse = (payload, _ctx) => {
     const input = payload.value;
     if (valuesSet.has(input)) {
@@ -9498,7 +9498,7 @@ var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
     }
     payload.issues.push({
       code: "invalid_value",
-      values,
+      values: values2,
       input,
       inst
     });
@@ -9510,12 +9510,12 @@ var $ZodLiteral = /* @__PURE__ */ $constructor("$ZodLiteral", (inst, def) => {
   if (def.values.length === 0) {
     throw new Error("Cannot create literal schema with no valid values");
   }
-  const values = new Set(def.values);
-  inst._zod.values = values;
+  const values2 = new Set(def.values);
+  inst._zod.values = values2;
   inst._zod.pattern = new RegExp(`^(${def.values.map((o) => typeof o === "string" ? escapeRegex(o) : o ? escapeRegex(o.toString()) : String(o)).join("|")})$`);
   inst._zod.parse = (payload, _ctx) => {
     const input = payload.value;
-    if (values.has(input)) {
+    if (values2.has(input)) {
       return payload;
     }
     payload.issues.push({
@@ -10942,12 +10942,12 @@ var unknownProcessor = (_schema, _ctx, _json, _params) => {
 };
 var enumProcessor = (schema, _ctx, json, _params) => {
   const def = schema._zod.def;
-  const values = getEnumValues(def.entries);
-  if (values.every((v) => typeof v === "number"))
+  const values2 = getEnumValues(def.entries);
+  if (values2.every((v) => typeof v === "number"))
     json.type = "number";
-  if (values.every((v) => typeof v === "string"))
+  if (values2.every((v) => typeof v === "string"))
     json.type = "string";
-  json.enum = values;
+  json.enum = values2;
 };
 var literalProcessor = (schema, ctx, json, _params) => {
   const def = schema._zod.def;
@@ -11934,9 +11934,9 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   inst.enum = def.entries;
   inst.options = Object.values(def.entries);
   const keys = new Set(Object.keys(def.entries));
-  inst.extract = (values, params) => {
+  inst.extract = (values2, params) => {
     const newEntries = {};
-    for (const value of values) {
+    for (const value of values2) {
       if (keys.has(value)) {
         newEntries[value] = def.entries[value];
       } else
@@ -11949,9 +11949,9 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
       entries: newEntries
     });
   };
-  inst.exclude = (values, params) => {
+  inst.exclude = (values2, params) => {
     const newEntries = { ...def.entries };
-    for (const value of values) {
+    for (const value of values2) {
       if (keys.has(value)) {
         delete newEntries[value];
       } else
@@ -11965,8 +11965,8 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
     });
   };
 });
-function _enum(values, params) {
-  const entries = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
+function _enum(values2, params) {
+  const entries = Array.isArray(values2) ? Object.fromEntries(values2.map((v) => [v, v])) : values2;
   return new ZodEnum({
     type: "enum",
     entries,
@@ -15869,9 +15869,9 @@ var sha2562 = sha256;
 // node_modules/@estiva-app/protocol/dist/nip19.js
 var CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 var GENERATOR = [996825010, 642813549, 513874426, 1027748829, 705979059];
-function polymod(values) {
+function polymod(values2) {
   let chk = 1;
-  for (const value of values) {
+  for (const value of values2) {
     const top = chk >>> 25;
     chk = (chk & 33554431) << 5 ^ value;
     for (let i = 0; i < 5; i++) {
@@ -15891,8 +15891,8 @@ function hrpExpand(hrp) {
   return [...high, 0, ...low];
 }
 function checksum(hrp, data) {
-  const values = [...hrpExpand(hrp), ...data, 0, 0, 0, 0, 0, 0];
-  const mod = polymod(values) ^ 1;
+  const values2 = [...hrpExpand(hrp), ...data, 0, 0, 0, 0, 0, 0];
+  const mod = polymod(values2) ^ 1;
   return [0, 1, 2, 3, 4, 5].map((i) => mod >>> 5 * (5 - i) & 31);
 }
 function convertBits(data, from, to, pad) {
@@ -16038,6 +16038,97 @@ function findNaddrs(text2) {
 }
 
 // node_modules/@estiva-app/protocol/dist/blocks.js
+var BlockDocumentError = class extends Error {
+  problems;
+  constructor(problems) {
+    super(`not a block document: ${problems.join("; ")}`);
+    this.name = "BlockDocumentError";
+    this.problems = problems;
+  }
+};
+var isObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isInlineRun = (content) => Array.isArray(content) && content.every((n) => isObject2(n) && n.type === "text");
+function validateBlockDocument(value) {
+  const problems = [];
+  if (!isObject2(value))
+    return ["root is not an object"];
+  if (value.type !== "doc")
+    problems.push(`root type is ${JSON.stringify(value.type)}, expected "doc"`);
+  if (!Array.isArray(value.content)) {
+    problems.push("root has no content array");
+    return problems;
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const walk2 = (blocks, path) => {
+    blocks.forEach((block, i) => {
+      const at = `${path}[${i}]`;
+      if (!isObject2(block)) {
+        problems.push(`${at} is not an object`);
+        return;
+      }
+      if (typeof block.type !== "string" || block.type === "") {
+        problems.push(`${at} has no type`);
+      }
+      if (typeof block.id !== "string" || block.id === "") {
+        problems.push(`${at} has no id`);
+      } else if (seen.has(block.id)) {
+        problems.push(`${at} repeats the id ${JSON.stringify(block.id)}`);
+      } else {
+        seen.add(block.id);
+      }
+      if (block.type === "heading") {
+        const level = isObject2(block.attrs) ? block.attrs.level : void 0;
+        if (typeof level !== "number" || !Number.isInteger(level) || level < 1 || level > 3) {
+          problems.push(`${at} is a heading with level ${JSON.stringify(level)}, expected 1\u20133`);
+        }
+      }
+      if (block.content === void 0)
+        return;
+      if (!Array.isArray(block.content)) {
+        problems.push(`${at} has a content that is not an array`);
+        return;
+      }
+      if (isInlineRun(block.content)) {
+        block.content.forEach((node, j) => {
+          const nodeAt = `${at}.content[${j}]`;
+          if (typeof node.text !== "string") {
+            problems.push(`${nodeAt} has no text`);
+          }
+          const marks = node.marks;
+          if (marks === void 0)
+            return;
+          if (!Array.isArray(marks)) {
+            problems.push(`${nodeAt} has marks that are not an array`);
+            return;
+          }
+          for (const mark of marks) {
+            if (!isObject2(mark) || typeof mark.type !== "string") {
+              problems.push(`${nodeAt} has a mark with no type`);
+            }
+          }
+        });
+        return;
+      }
+      walk2(block.content, `${at}.content`);
+    });
+  };
+  walk2(value.content, "content");
+  return problems;
+}
+function parseBlockDocument(input) {
+  let value = input;
+  if (typeof input === "string") {
+    try {
+      value = JSON.parse(input);
+    } catch (e) {
+      throw new BlockDocumentError([`content is not JSON: ${e.message}`]);
+    }
+  }
+  const problems = validateBlockDocument(value);
+  if (problems.length)
+    throw new BlockDocumentError(problems);
+  return value;
+}
 function serializeBlockDocument(doc) {
   return JSON.stringify(doc);
 }
@@ -16862,6 +16953,57 @@ function imetaOf(event) {
   }
   return out;
 }
+function imetaFromAttrs(attrs) {
+  if (!attrs)
+    return void 0;
+  const { url, m, x, size, dim, thumb, alt, filename } = attrs;
+  if (typeof url !== "string" || !url)
+    return void 0;
+  if (typeof m !== "string" || !m)
+    return void 0;
+  if (typeof x !== "string" || !x)
+    return void 0;
+  if (typeof size !== "number" || !Number.isFinite(size))
+    return void 0;
+  return {
+    url,
+    m,
+    x,
+    size,
+    ...typeof dim === "string" && dim ? { dim } : {},
+    ...typeof thumb === "string" && thumb ? { thumb } : {},
+    ...typeof alt === "string" && alt ? { alt } : {},
+    ...typeof filename === "string" && filename ? { filename } : {}
+  };
+}
+function attachmentsInDocument(value, contentFormat) {
+  if (contentFormat !== BLOCK_DOCUMENT_FORMAT || !value)
+    return [];
+  let document;
+  try {
+    document = JSON.parse(value);
+  } catch {
+    return [];
+  }
+  const out = [];
+  const walk2 = (nodes) => {
+    if (!Array.isArray(nodes))
+      return;
+    for (const node of nodes) {
+      const block = node;
+      if (!block || typeof block !== "object")
+        continue;
+      if (block.type === "attachment") {
+        const file = imetaFromAttrs(block.attrs);
+        if (file)
+          out.push(file);
+      }
+      walk2(block.content);
+    }
+  };
+  walk2(document?.content);
+  return out;
+}
 
 // lib/agent/credentials.ts
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -17032,7 +17174,7 @@ async function serviceIdentitySigner(credentials, { onRenew } = {}) {
 }
 var DEFAULT_CREDENTIALS_FILE = ".estiva-agent.env";
 function parseEnvFile(contents) {
-  const values = {};
+  const values2 = {};
   for (const line of contents.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
@@ -17043,9 +17185,9 @@ function parseEnvFile(contents) {
     if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
       value = value.slice(1, -1);
     }
-    values[key] = value;
+    values2[key] = value;
   }
-  return values;
+  return values2;
 }
 function loadCredentials(env = process.env) {
   const fromEnv = {
@@ -17301,6 +17443,340 @@ async function connectionStatus(app, { client } = {}) {
   }
 }
 
+// node_modules/@estiva-app/conversation/dist/kinds.js
+var KIND_MESSAGE = KIND.STREAM_MESSAGE;
+var KIND_COMMENT = KIND.COMMENT;
+var KIND_EDIT = KIND.MESSAGE_EDIT;
+var KIND_REACTION = KIND.REACTION;
+var KIND_DELETION = KIND.DELETION;
+var KIND_ASSERTION = KIND.ASSERTION;
+var isConversationKind = (kind) => kind === KIND_MESSAGE || kind === KIND_COMMENT;
+var isEventId = (value) => typeof value === "string" && /^[0-9a-fA-F]{64}$/.test(value);
+
+// node_modules/@estiva-app/conversation/dist/order.js
+function trustedTs(event) {
+  const value = event.tags.find((t) => t[0] === "ts")?.[1];
+  if (value === void 0 || !/^\d+$/.test(value))
+    return void 0;
+  const ms = Number(value);
+  return Number.isSafeInteger(ms) && Math.floor(ms / 1e3) === event.created_at ? ms : void 0;
+}
+function orderingMs(event) {
+  return trustedTs(event) ?? event.created_at * 1e3;
+}
+function byOrder(a, b) {
+  const at = orderingMs(a);
+  const bt = orderingMs(b);
+  if (at !== bt)
+    return at - bt;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+// node_modules/@estiva-app/conversation/dist/strength.js
+var values = (event, name) => event.tags.filter((t) => t[0] === name && typeof t[1] === "string" && t[1] !== "").map((t) => t[1]);
+function namedInBody(body) {
+  const addresses = /* @__PURE__ */ new Set();
+  for (const naddr of findNaddrs(body)) {
+    try {
+      addresses.add(pointerToAddress(decodeNaddr(naddr)));
+    } catch {
+    }
+  }
+  return addresses;
+}
+function isReply(event) {
+  const es = event.tags.filter((t) => t[0] === "e" && typeof t[1] === "string" && t[1] !== "" && t[3] !== "mention").map((t) => t[1]);
+  if (es.length === 0)
+    return false;
+  if (event.kind !== KIND_COMMENT)
+    return true;
+  const root = values(event, "E")[0];
+  return es.some((e) => e !== root);
+}
+function anchorsOf(event) {
+  if (event.kind !== KIND_COMMENT)
+    return [];
+  const roots = values(event, "A");
+  return [...new Set(roots.length > 0 ? roots : values(event, "a"))];
+}
+function isCommentOn(event, address, declaredKinds = [KIND_COMMENT]) {
+  if (isReply(event))
+    return false;
+  if (event.kind === KIND_COMMENT)
+    return anchorsOf(event).includes(address);
+  if (!declaredKinds.includes(event.kind))
+    return false;
+  return event.tags.some((t) => t[0] === "a" && t[1] === address) && !namedInBody(event.content).has(address);
+}
+
+// node_modules/@estiva-app/conversation/dist/edits.js
+function editTargetOf(event) {
+  const tag2 = event.tags.find((t) => t[0] === "e" && isEventId(t[1]));
+  return tag2?.[1].toLowerCase();
+}
+function editsByTarget(events) {
+  const out = /* @__PURE__ */ new Map();
+  const seen = /* @__PURE__ */ new Set();
+  for (const event of events) {
+    if (event.kind !== KIND_EDIT || seen.has(event.id))
+      continue;
+    seen.add(event.id);
+    const target = editTargetOf(event);
+    if (!target)
+      continue;
+    const list = out.get(target);
+    if (list)
+      list.push(event);
+    else
+      out.set(target, [event]);
+  }
+  for (const list of out.values())
+    list.sort(byOrder);
+  return out;
+}
+function foldEdits(events, targets = []) {
+  const bodies = /* @__PURE__ */ new Map();
+  for (const event of events)
+    if (isConversationKind(event.kind))
+      bodies.set(event.id.toLowerCase(), event.content);
+  for (const t of targets)
+    bodies.set(t.id.toLowerCase(), t.body);
+  const out = {};
+  for (const [target, list] of editsByTarget(events)) {
+    let body = bodies.get(target);
+    let changed;
+    let attachments;
+    for (const edit of list) {
+      if (body === void 0 || edit.content !== body)
+        changed = edit;
+      body = edit.content;
+      const files = imetaOf(edit);
+      if (files.length > 0)
+        attachments = files;
+    }
+    out[target] = {
+      body: list[list.length - 1].content,
+      edited: changed !== void 0,
+      ...changed ? { editedAt: orderingMs(changed), editedBy: changed.pubkey } : {},
+      ...attachments ? { attachments } : {}
+    };
+  }
+  return out;
+}
+function foldAttachments(events) {
+  const out = {};
+  for (const event of events) {
+    if (!isConversationKind(event.kind))
+      continue;
+    const files = imetaOf(event);
+    if (files.length > 0)
+      out[event.id.toLowerCase()] = files;
+  }
+  for (const [target, list] of editsByTarget(events)) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const files = imetaOf(list[i]);
+      if (files.length === 0)
+        continue;
+      out[target] = files;
+      break;
+    }
+  }
+  return out;
+}
+
+// node_modules/@estiva-app/conversation/dist/reactions.js
+var REACTION_HORIZON = 100;
+function reactionTargetOf(event) {
+  for (let i = event.tags.length - 1; i >= 0; i--) {
+    const t = event.tags[i];
+    if (t[0] === "e" && isEventId(t[1]))
+      return t[1].toLowerCase();
+  }
+  return void 0;
+}
+function reactionEmojiOf(event) {
+  return event.content === "" ? "+" : event.content;
+}
+function reactionHorizon(targets, limit = REACTION_HORIZON) {
+  const unique = /* @__PURE__ */ new Map();
+  for (const t of targets)
+    if (!unique.has(t.id))
+      unique.set(t.id, t.at);
+  const newestFirst = [...unique].sort((a, b) => b[1] - a[1] || (a[0] > b[0] ? -1 : a[0] < b[0] ? 1 : 0));
+  return { asked: newestFirst.slice(0, limit).map(([id]) => id), omitted: Math.max(0, newestFirst.length - limit) };
+}
+function reactionEventsOf(events) {
+  const out = [];
+  const counted = /* @__PURE__ */ new Set();
+  const seen = /* @__PURE__ */ new Set();
+  for (const event of [...events].sort(byOrder)) {
+    if (event.kind !== KIND_REACTION || seen.has(event.id))
+      continue;
+    seen.add(event.id);
+    const target = reactionTargetOf(event);
+    if (!target)
+      continue;
+    const emoji2 = reactionEmojiOf(event);
+    const key = JSON.stringify([target, event.pubkey, emoji2]);
+    if (counted.has(key))
+      continue;
+    counted.add(key);
+    out.push({ id: event.id, target, emoji: emoji2, by: event.pubkey, at: event.created_at });
+  }
+  return out;
+}
+
+// node_modules/@estiva-app/conversation/dist/decorations.js
+var TARGETS_PER_FILTER = 100;
+var chunked = (list) => {
+  const out = [];
+  for (let i = 0; i < list.length; i += TARGETS_PER_FILTER)
+    out.push(list.slice(i, i + TARGETS_PER_FILTER));
+  return out;
+};
+var tagValue = (event, name) => event.tags.find((t) => t[0] === name)?.[1];
+async function decorationsOf(targets, query) {
+  const byId = {};
+  const unique = [];
+  for (const t of targets) {
+    const id = t.id.toLowerCase();
+    if (Object.hasOwn(byId, id))
+      continue;
+    byId[id] = { reactions: [], resolutions: [] };
+    unique.push({ id, at: t.at });
+  }
+  if (unique.length === 0)
+    return { byId, reactionTargetsOmitted: 0, reactionEventsCut: false, editEventsCut: false };
+  const { asked, omitted } = reactionHorizon(unique);
+  const reactionChunks = chunked(asked);
+  const editChunks = chunked(unique.map((t) => t.id));
+  const filters = [];
+  for (const chunk of editChunks) {
+    filters.push({ kinds: [KIND_EDIT, KIND_ASSERTION], "#e": chunk, limit: RELAY_PAGE_CEILING });
+  }
+  for (const chunk of reactionChunks)
+    filters.push({ kinds: [KIND_REACTION], "#e": chunk, limit: RELAY_PAGE_CEILING });
+  const seen = /* @__PURE__ */ new Set();
+  const events = [];
+  for (let start = 0; start < filters.length; start += MAX_FILTERS_PER_QUERY) {
+    for (const event of await query(filters.slice(start, start + MAX_FILTERS_PER_QUERY))) {
+      if (seen.has(event.id))
+        continue;
+      seen.add(event.id);
+      events.push(event);
+    }
+  }
+  const ours = (id) => id !== void 0 && Object.hasOwn(byId, id);
+  const bodies = targets.flatMap((t) => t.body === void 0 ? [] : [{ id: t.id, body: t.body }]);
+  for (const [target, fold] of Object.entries(foldEdits(events, bodies))) {
+    if (ours(target))
+      byId[target].edit = fold;
+  }
+  const cut = (chunks, kinds, targetOf) => {
+    const chunkOf = /* @__PURE__ */ new Map();
+    chunks.forEach((chunk, i) => chunk.forEach((id) => chunkOf.set(id, i)));
+    const answered = new Array(chunks.length).fill(0);
+    for (const event of events) {
+      if (!kinds.includes(event.kind))
+        continue;
+      const i = chunkOf.get(targetOf(event) ?? "");
+      if (i !== void 0)
+        answered[i] += 1;
+    }
+    return answered.some((n) => n >= RELAY_PAGE_CEILING);
+  };
+  const reactionEventsCut = cut(reactionChunks, [KIND_REACTION], reactionTargetOf);
+  const editEventsCut = cut(editChunks, [KIND_EDIT, KIND_ASSERTION], (e) => e.kind === KIND_EDIT ? editTargetOf(e) : e.tags.find((t) => t[0] === "e" && ours(t[1]) && !t[3])?.[1]);
+  const inHorizon = new Set(asked);
+  const reactions = events.filter((e) => e.kind === KIND_REACTION);
+  for (const reaction of reactionEventsOf(reactions)) {
+    if (ours(reaction.target) && inHorizon.has(reaction.target))
+      byId[reaction.target].reactions.push(reaction);
+  }
+  for (const event of events) {
+    if (event.kind !== KIND_ASSERTION || tagValue(event, "t") !== "resolution")
+      continue;
+    const action = tagValue(event, "action");
+    if (action !== "resolved" && action !== "reopened")
+      continue;
+    const target = event.tags.find((t) => t[0] === "e" && ours(t[1]) && !t[3])?.[1];
+    if (!ours(target))
+      continue;
+    const support = event.tags.find((t) => t[0] === "e" && t[3] === "support")?.[1];
+    byId[target].resolutions.push({
+      id: event.id,
+      action,
+      by: event.pubkey,
+      at: event.created_at,
+      ...event.content ? { message: event.content } : {},
+      ...support ? { supportingEventId: support } : {}
+    });
+  }
+  const oldestFirst = (a, b) => a.at - b.at || (a.id < b.id ? -1 : 1);
+  for (const decoration of Object.values(byId))
+    decoration.resolutions.sort(oldestFirst);
+  return { byId, reactionTargetsOmitted: omitted, reactionEventsCut, editEventsCut };
+}
+
+// node_modules/@estiva-app/conversation/dist/builders.js
+var FOLDER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+function assertFolder(folder) {
+  if (!FOLDER_ID.test(folder))
+    throw new Error(`not a Folder id (lowercase UUID v4): ${JSON.stringify(folder)}`);
+}
+function kindAndAuthor(address) {
+  const [kind, author] = address.split(":");
+  if (!kind || !author)
+    throw new Error(`not an address: ${JSON.stringify(address)}`);
+  return [kind, author];
+}
+function buildComment(pubkey, createdAtMs, args2) {
+  assertFolder(args2.folder);
+  const [kind, author] = kindAndAuthor(args2.about);
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND_COMMENT,
+    tags: [
+      ["A", args2.about],
+      ["K", kind],
+      ["P", author],
+      ["a", args2.about],
+      ["k", kind],
+      ["p", author],
+      ...args2.blockId ? [["block", args2.blockId]] : [],
+      ["h", args2.folder],
+      ["ts", String(Math.floor(createdAtMs))],
+      ...(args2.files ?? []).map(imetaTag),
+      ...args2.tags ?? []
+    ],
+    content: args2.body
+  };
+}
+function buildReply(pubkey, createdAtMs, args2) {
+  assertFolder(args2.folder);
+  const [kind, author] = kindAndAuthor(args2.comment.anchor);
+  const earned = (args2.tags ?? []).filter((t) => !(t[0] === "a" && t[1] === args2.comment.anchor));
+  return {
+    pubkey,
+    created_at: toNostrSeconds(createdAtMs),
+    kind: KIND_COMMENT,
+    tags: [
+      ["A", args2.comment.anchor],
+      ["K", kind],
+      ["P", author],
+      ["e", args2.comment.id],
+      ["k", String(KIND_COMMENT)],
+      ...args2.comment.author ? [["p", args2.comment.author]] : [],
+      ["h", args2.folder],
+      ["ts", String(Math.floor(createdAtMs))],
+      ...(args2.files ?? []).map(imetaTag),
+      ...earned
+    ],
+    content: args2.body
+  };
+}
+
 // src/kinds.ts
 var KIND2 = {
   /**
@@ -17431,74 +17907,8 @@ function lookupStatus(vocab, value) {
   };
 }
 
-// src/edits.ts
-function orderingTime(event) {
-  const raw = Number.parseInt(event.tags.find((t) => t[0] === "ts")?.[1] ?? "", 10);
-  if (Number.isFinite(raw) && Math.floor(raw / 1e3) === event.created_at) return raw;
-  return event.created_at * 1e3;
-}
-function laterThan(a, b) {
-  const at = orderingTime(a);
-  const bt = orderingTime(b);
-  if (at !== bt) return at > bt;
-  if (a.created_at !== b.created_at) return a.created_at > b.created_at;
-  return a.id > b.id;
-}
-function editsByTarget(events) {
-  const out = /* @__PURE__ */ new Map();
-  for (const event of events) {
-    if (event.kind !== KIND2.MESSAGE_EDIT) continue;
-    const target = event.tags.find((t) => t[0] === "e")?.[1];
-    if (!target) continue;
-    const list = out.get(target);
-    if (list) list.push(event);
-    else out.set(target, [event]);
-  }
-  for (const list of out.values()) list.sort((a, b) => laterThan(a, b) ? 1 : laterThan(b, a) ? -1 : 0);
-  return out;
-}
-function foldEdits(events) {
-  const originals = /* @__PURE__ */ new Map();
-  for (const event of events) {
-    if (event.kind === KIND2.MESSAGE || event.kind === KIND2.COMMENT) originals.set(event.id, event.content);
-  }
-  const out = {};
-  for (const [target, list] of editsByTarget(events)) {
-    const latest = list[list.length - 1];
-    let current = originals.get(target);
-    let edited2 = false;
-    let at = orderingTime(latest);
-    for (const event of list) {
-      if (current === void 0 || event.content !== current) {
-        edited2 = true;
-        at = orderingTime(event);
-      }
-      current = event.content;
-    }
-    out[target] = { body: latest.content, at, edited: edited2 };
-  }
-  return out;
-}
-
 // src/attachments.ts
-function foldAttachments(events) {
-  const out = {};
-  for (const event of events) {
-    if (event.kind !== KIND2.MESSAGE && event.kind !== KIND2.COMMENT) continue;
-    const files = imetaOf(event);
-    if (files.length > 0) out[event.id] = files;
-  }
-  for (const [target, list] of editsByTarget(events)) {
-    for (let i = list.length - 1; i >= 0; i--) {
-      const files = imetaOf(list[i]);
-      if (files.length === 0) continue;
-      out[target] = files;
-      break;
-    }
-  }
-  return out;
-}
-function attachmentsInDocument(value, contentFormat) {
+function attachmentsInDocument2(value, contentFormat) {
   if (contentFormat !== BLOCK_DOCUMENT_FORMAT || !value) return [];
   let document;
   try {
@@ -17515,13 +17925,13 @@ function walk(nodes, out) {
   for (const node of nodes) {
     const block = node;
     if (block.type === "attachment") {
-      const file = imetaFromAttrs(block.attrs);
+      const file = imetaFromAttrs2(block.attrs);
       if (file) out.push(file);
     }
     walk(block.content, out);
   }
 }
-function imetaFromAttrs(attrs) {
+function imetaFromAttrs2(attrs) {
   if (!attrs) return void 0;
   const { url, m, x, size, dim, thumb, alt, filename } = attrs;
   if (typeof url !== "string" || !url) return void 0;
@@ -17616,7 +18026,7 @@ function buildChange(pubkey, createdAtMs, args2) {
               an empty list for anything that is not a block document, which `status`
               and `assignee` are not.
             */
-      ...attachmentsInDocument(args2.value, args2.contentFormat).map(imetaTag),
+      ...attachmentsInDocument2(args2.value, args2.contentFormat).map(imetaTag),
       /*
               A change that places a person on the object names them — `assignee`
               on an issue, `lead` on a project — as a `p` tag, the way a comment
@@ -17638,61 +18048,10 @@ function buildChange(pubkey, createdAtMs, args2) {
   };
 }
 var PLACEMENT_FIELDS = /* @__PURE__ */ new Set(["assignee", "lead"]);
-function buildNip22Comment(pubkey, createdAtMs, args2) {
-  const [kind, author] = args2.about.split(":");
-  return {
-    pubkey,
-    created_at: toNostrSeconds(createdAtMs),
-    kind: KIND2.COMMENT,
-    tags: [
-      ["A", args2.about],
-      ["K", kind],
-      ["P", author],
-      ["a", args2.about],
-      ["k", kind],
-      ["p", author],
-      /*
-        SPEC §13.6. The address above says which object; this says which part.
-        Written only when the author was looking at a block — a comment about
-        the whole object carries no tag, and §13.6 requires a reader to keep
-        that distinct from an anchor that has stopped resolving.
-      */
-      ...args2.blockId ? [["block", args2.blockId]] : [],
-      ["h", args2.folder],
-      // Same `ts` as everything else Ship writes, for the same reason: see
-      // `buildConversationMessage` below.
-      ["ts", String(Math.floor(createdAtMs))],
-      // Attachments last, as on the `kind:9` branch — see there for why.
-      ...(args2.files ?? []).map(imetaTag)
-    ],
-    content: args2.body
-  };
-}
-function buildNip22Reply(pubkey, createdAtMs, args2) {
-  const [kind, author] = args2.comment.anchor.split(":");
-  return {
-    pubkey,
-    created_at: toNostrSeconds(createdAtMs),
-    kind: KIND2.COMMENT,
-    tags: [
-      ["A", args2.comment.anchor],
-      ["K", kind],
-      ["P", author],
-      ["e", args2.comment.id],
-      ["k", String(KIND2.COMMENT)],
-      // Unknown only when the comment itself is outside the read — see `CommentRef`.
-      ...args2.comment.author ? [["p", args2.comment.author]] : [],
-      ["h", args2.folder],
-      ["ts", String(Math.floor(createdAtMs))],
-      ...(args2.files ?? []).map(imetaTag)
-    ],
-    content: args2.body
-  };
-}
 function buildConversationMessage(pubkey, createdAtMs, args2) {
   assertFolderId(args2.folder);
   if (args2.replyToComment) {
-    return buildNip22Reply(pubkey, createdAtMs, {
+    return buildReply(pubkey, createdAtMs, {
       folder: args2.folder,
       body: args2.body,
       comment: args2.replyToComment,
@@ -17700,7 +18059,7 @@ function buildConversationMessage(pubkey, createdAtMs, args2) {
     });
   }
   if (args2.about && !args2.replyTo) {
-    return buildNip22Comment(pubkey, createdAtMs, {
+    return buildComment(pubkey, createdAtMs, {
       folder: args2.folder,
       body: args2.body,
       about: args2.about,
@@ -17741,6 +18100,68 @@ function issueAddr(pubkey, issueId) {
   return addr(KIND2.ISSUE, pubkey, issueId);
 }
 
+// node_modules/@estiva-app/interop/dist/folders.js
+function planCreateFolder(pubkey, createdAtMs, args2) {
+  return [
+    buildCreateChannel(pubkey, createdAtMs, {
+      channelUuid: args2.folder,
+      name: args2.name,
+      ...args2.visibility ? { visibility: args2.visibility } : {}
+    }),
+    buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", name: args2.name })
+  ];
+}
+function planRenameFolder(pubkey, createdAtMs, args2) {
+  const rename = buildEditChannelMetadata(pubkey, createdAtMs, { channelUuid: args2.folder, name: args2.name });
+  if (!args2.hasState)
+    return [rename];
+  return [rename, buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", name: args2.name })];
+}
+function planPlaceFile(pubkey, createdAtMs, args2) {
+  if (!args2.hasState)
+    return [];
+  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", addresses: [args2.address] })];
+}
+function planUnlistFile(pubkey, createdAtMs, args2) {
+  if (!args2.hasState)
+    return [];
+  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "remove", addresses: [args2.address] })];
+}
+function planArchiveFolder(pubkey, createdAtMs, args2) {
+  return [
+    {
+      pubkey,
+      created_at: Math.floor(createdAtMs / 1e3),
+      kind: 1851,
+      // `buildActionEvent`'s order for a change, so the two writers of the one
+      // shape produce the same tags.
+      tags: [
+        ["a", args2.channel],
+        ["field", "archived"],
+        ["value", args2.archived ? "true" : ""],
+        ["h", args2.into ?? args2.folder],
+        ["ts", String(createdAtMs)]
+      ],
+      content: args2.archived ? args2.resolution ?? "" : ""
+    }
+  ];
+}
+function planMoveFile(pubkey, createdAtMs, args2) {
+  if (args2.from.id === args2.to.id)
+    return { ok: true, events: [] };
+  if (!args2.from.hasState)
+    return { ok: false, reason: "source-has-no-state" };
+  if (!args2.to.hasState)
+    return { ok: false, reason: "target-has-no-state" };
+  return {
+    ok: true,
+    events: [
+      buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "add", addresses: [args2.address] }),
+      buildFolderCommand(pubkey, createdAtMs, { folder: args2.from.id, op: "remove", addresses: [args2.address] })
+    ]
+  };
+}
+
 // node_modules/@estiva-app/interop/dist/projection.js
 var PROFILE_HIT_TTL_MS = 10 * 6e4;
 function peopleViaRelay(query) {
@@ -17772,11 +18193,11 @@ function pubkeysIn(object3) {
 var KIND_PROFILE = 0;
 var KIND_HANDLER_RECOMMENDATION = 31989;
 var KIND_HANDLER_INFORMATION = 31990;
-var KIND_COMMENT = 1111;
-var KIND_DELETION = 5;
+var KIND_COMMENT2 = 1111;
+var KIND_DELETION2 = 5;
 function commentKindsOf(manifest) {
   const declared = manifest.actions?.find((action) => action.id === "comment");
-  const current = declared?.emits?.kind ?? KIND_COMMENT;
+  const current = declared?.emits?.kind ?? KIND_COMMENT2;
   const superseded = declared?.emits?.alsoRead ?? [];
   return [.../* @__PURE__ */ new Set([current, ...superseded])];
 }
@@ -17828,6 +18249,7 @@ async function conversationsOf(files, query, cache) {
   if (asked.length === 0)
     return {};
   const refOf = new Map(asked.map((a) => [a.address, a.ref]));
+  const kindsOf = new Map(asked.map((a) => [a.address, a.filter.kinds]));
   const conversations = {};
   for (const a of asked)
     conversations[a.ref] = [];
@@ -17838,7 +18260,7 @@ async function conversationsOf(files, query, cache) {
       if (seen.has(event.id))
         continue;
       seen.add(event.id);
-      const ref = event.tags.filter((t) => t[0] === "a" && t[1] && refOf.has(t[1]) && isCommentOn(event, t[1])).map((t) => refOf.get(t[1])).find((found) => found !== void 0);
+      const ref = event.tags.filter((t) => t[0] === "a" && t[1] && refOf.has(t[1]) && isCommentOn(event, t[1], kindsOf.get(t[1]))).map((t) => refOf.get(t[1])).find((found) => found !== void 0);
       if (ref !== void 0) {
         conversations[ref].push({ id: event.id, at: event.created_at, by: event.pubkey, root: rootOf(event) });
       }
@@ -17889,115 +18311,14 @@ async function threadsOf(reference, rootIds, query, cache, limit = CONVERSATION_
   }
   return { roots, replies };
 }
-var REACTION_HORIZON = 100;
-var KIND_REACTION = 7;
-var KIND_ASSERTION = 9101;
-var KIND_MESSAGE_EDIT = 40003;
-function editTargetOf(event) {
-  const tag2 = event.tags.find((t) => t[0] === "e" && typeof t[1] === "string" && /^[0-9a-fA-F]{64}$/.test(t[1]));
-  return tag2?.[1].toLowerCase();
-}
-var DECORATION_TARGETS_PER_FILTER = 100;
-async function commentDecorationsOf(targets, query) {
-  const byId = {};
-  const unique = /* @__PURE__ */ new Map();
-  for (const t of targets)
-    if (!unique.has(t.id))
-      unique.set(t.id, t.at);
-  for (const id of unique.keys())
-    byId[id] = { reactions: [], resolutions: [] };
-  if (unique.size === 0)
-    return { byId, reactionTargetsOmitted: 0 };
-  const ids = [...unique.keys()];
-  const forReactions = [...unique].sort((a, b) => b[1] - a[1] || (a[0] > b[0] ? -1 : 1)).slice(0, REACTION_HORIZON).map(([id]) => id);
-  const filters = [];
-  const chunked = (list) => {
-    const out = [];
-    for (let i = 0; i < list.length; i += DECORATION_TARGETS_PER_FILTER) {
-      out.push(list.slice(i, i + DECORATION_TARGETS_PER_FILTER));
-    }
-    return out;
-  };
-  for (const chunk of chunked(ids)) {
-    filters.push({ kinds: [KIND_MESSAGE_EDIT, KIND_ASSERTION], "#e": chunk, limit: RELAY_PAGE_CEILING });
-  }
-  for (const chunk of chunked(forReactions)) {
-    filters.push({ kinds: [KIND_REACTION], "#e": chunk, limit: RELAY_PAGE_CEILING });
-  }
-  const seen = /* @__PURE__ */ new Set();
-  const edits = /* @__PURE__ */ new Map();
-  const bodies = /* @__PURE__ */ new Map();
-  for (const t of targets)
-    if (t.body !== void 0 && !bodies.has(t.id))
-      bodies.set(t.id, t.body);
-  for (let start = 0; start < filters.length; start += MAX_FILTERS_PER_QUERY) {
-    const events = await query(filters.slice(start, start + MAX_FILTERS_PER_QUERY));
-    for (const event of events) {
-      if (seen.has(event.id))
-        continue;
-      seen.add(event.id);
-      const ours = (id) => id !== void 0 && Object.hasOwn(byId, id);
-      const target = event.kind === KIND_MESSAGE_EDIT ? editTargetOf(event) : event.tags.find((t) => t[0] === "e" && ours(t[1]) && !t[3])?.[1];
-      if (!ours(target))
-        continue;
-      const into = byId[target];
-      if (event.kind === KIND_MESSAGE_EDIT) {
-        edits.set(target, [...edits.get(target) ?? [], event]);
-      } else if (event.kind === KIND_REACTION) {
-        if (!forReactions.includes(target))
-          continue;
-        into.reactions.push({ id: event.id, emoji: event.content, by: event.pubkey, at: event.created_at });
-      } else if (event.kind === KIND_ASSERTION) {
-        if (tagValue(event, "t") !== "resolution")
-          continue;
-        const action = tagValue(event, "action");
-        if (action !== "resolved" && action !== "reopened")
-          continue;
-        const support = event.tags.find((t) => t[0] === "e" && t[3] === "support")?.[1];
-        into.resolutions.push({
-          id: event.id,
-          action,
-          by: event.pubkey,
-          at: event.created_at,
-          ...event.content ? { message: event.content } : {},
-          ...support ? { supportingEventId: support } : {}
-        });
-      }
-    }
-  }
-  for (const [target, list] of edits) {
-    const ordered = [...list].sort(byOrder);
-    const into = byId[target];
-    const newest = ordered[ordered.length - 1];
-    let body = bodies.get(target);
-    if (body === void 0) {
-      into.edit = { body: newest.content, at: newest.created_at, by: newest.pubkey };
-    } else {
-      let changed;
-      for (const edit of ordered) {
-        if (edit.content !== body)
-          changed = edit;
-        body = edit.content;
-      }
-      if (changed)
-        into.edit = { body: newest.content, at: changed.created_at, by: changed.pubkey };
-    }
-    for (let i = ordered.length - 1; i >= 0; i--) {
-      const set = imetaOf(ordered[i]);
-      if (set.length > 0) {
-        into.attachments = set;
-        break;
-      }
-    }
-  }
-  const oldestFirst = (a, b) => a.at - b.at || (a.id < b.id ? -1 : 1);
-  for (const decoration of Object.values(byId)) {
-    decoration.reactions.sort(oldestFirst);
-    decoration.resolutions.sort(oldestFirst);
-  }
-  return { byId, reactionTargetsOmitted: ids.length - forReactions.length };
-}
 var ACTION_EFFECTS = ["safe", "writes", "destructive"];
+function proseFormatOf(declared) {
+  return declared === BLOCK_DOCUMENT_FORMAT ? BLOCK_DOCUMENT_FORMAT : void 0;
+}
+function nounOf(projection) {
+  const noun = typeof projection.noun === "string" ? projection.noun.trim() : "";
+  return noun ? { noun } : {};
+}
 function resolveActions(manifest, kind, folded) {
   const applies = (action) => (Array.isArray(action.appliesTo) ? action.appliesTo : [action.appliesTo]).includes(String(kind));
   const out = [];
@@ -18006,8 +18327,8 @@ function resolveActions(manifest, kind, folded) {
       continue;
     const isChange = !!action.emits.field;
     const isComment = action.emits.scope === "address";
-    const isCreation = action.input?.type === "object" && !!action.input.properties;
-    const isDeletion = action.emits.kind === KIND_DELETION;
+    const isCreation = isCreationAction(action);
+    const isDeletion = action.emits.kind === KIND_DELETION2;
     if (!isDeletion && !isChange && !isComment && !isCreation)
       continue;
     if (isDeletion) {
@@ -18016,7 +18337,8 @@ function resolveActions(manifest, kind, folded) {
         label: action.label,
         ...action.description ? { description: action.description } : {},
         ...action.effect ? { effect: action.effect } : {},
-        control: "confirm"
+        control: "confirm",
+        ...action.emits.listed === true ? { listed: true } : {}
       });
       continue;
     }
@@ -18043,6 +18365,8 @@ function resolveActions(manifest, kind, folded) {
                       a one-line input and drawing prose.
                     */
           ...spec.target ? { target: spec.target } : {},
+          // Prose only where the value is `content` — a tag is a scalar (§7.3).
+          ...spec.target === "content" && proseFormatOf(spec.format) ? { format: proseFormatOf(spec.format) } : {},
           ...spec.enum && manifest.vocabularies?.[spec.enum] ? {
             options: manifest.vocabularies[spec.enum].map((v) => ({
               value: v.value,
@@ -18054,17 +18378,21 @@ function resolveActions(manifest, kind, folded) {
         // The parent is not a property and never appears in `properties`; it
         // comes from `emits`, and a form that omitted it would publish an
         // orphan the owning app cannot show anywhere.
-        ...action.emits.toAddressOf ? { createsUnder: action.emits.toAddressOf } : {}
+        ...action.emits.toAddressOf ? { createsUnder: action.emits.toAddressOf } : {},
+        ...action.emits.listed === true ? { listed: true } : {}
       });
       continue;
     }
     const vocab = action.input?.enum ? manifest.vocabularies?.[action.input.enum] : void 0;
+    const control = vocab ? "select" : action.input?.type === "pubkey" ? "pubkey" : "text";
+    const format = control === "text" && isChange ? proseFormatOf(action.input?.format) : void 0;
     out.push({
       id: action.id,
       label: action.label,
       ...action.description ? { description: action.description } : {},
       ...action.effect ? { effect: action.effect } : {},
-      control: vocab ? "select" : action.input?.type === "pubkey" ? "pubkey" : "text",
+      control,
+      ...format ? { format } : {},
       options: vocab?.map((v) => ({ value: v.value, label: v.label, colour: v.colour })),
       current: action.emits.field ? folded[action.emits.field]?.value : void 0,
       field: action.emits.field
@@ -18073,31 +18401,14 @@ function resolveActions(manifest, kind, folded) {
   return out;
 }
 var KIND_CHANNEL_METADATA = 39e3;
-var tagValue = (e, name) => e.tags.find((t) => t[0] === name)?.[1];
+var tagValue2 = (e, name) => e.tags.find((t) => t[0] === name)?.[1];
 function folderOf(root) {
   if (root.kind === KIND_CHANNEL_METADATA) {
-    return tagValue(root, "h") ?? tagValue(root, "buzz-channel") ?? tagValue(root, "d") ?? null;
+    return tagValue2(root, "h") ?? tagValue2(root, "buzz-channel") ?? tagValue2(root, "d") ?? null;
   }
-  return tagValue(root, "h") ?? tagValue(root, "buzz-channel") ?? null;
+  return tagValue2(root, "h") ?? tagValue2(root, "buzz-channel") ?? null;
 }
 var hasTagValue = (e, name, value) => e.tags.some((t) => t[0] === name && t[1] === value);
-function namedInBody(body) {
-  const addresses = /* @__PURE__ */ new Set();
-  for (const naddr of findNaddrs(body)) {
-    try {
-      addresses.add(pointerToAddress(decodeNaddr(naddr)));
-    } catch {
-    }
-  }
-  return addresses;
-}
-function isCommentOn(event, address) {
-  if (event.kind === KIND_COMMENT) {
-    const roots = event.tags.filter((t) => t[0] === "A" && t[1]);
-    return roots.length > 0 ? roots.some((t) => t[1] === address) : hasTagValue(event, "a", address);
-  }
-  return hasTagValue(event, "a", address) && !namedInBody(event.content).has(address);
-}
 function parseManifest(event) {
   try {
     const manifest = JSON.parse(event.content);
@@ -18129,8 +18440,8 @@ function webTemplate(event, entity) {
   return void 0;
 }
 var KIND_BARE_FILE = 30840;
+var ARCHIVED_FIELD = "archived";
 var BARE_FILE_MANIFEST_ADDRESS = "spec:6.7";
-var BARE_FILE_PARENT_FIELD = "parent";
 var BARE_FILE_MANIFEST = {
   name: "File",
   about: "A file no app owns. Its conversation is what every file has; its type adds nothing.",
@@ -18153,7 +18464,11 @@ var BARE_FILE_MANIFEST = {
         // of *other* kinds are found the other way round, by their own `a`
         // (`parentRefOf` below), which is FOL-4's generic direction; this slot
         // is the one the existing `list` machinery can draw today.
-        list: { children: { kind: KIND_BARE_FILE, via: "a", limit: 200 } }
+        //
+        // `movedBy` is SPEC §6.7's `parent` field, declared rather than
+        // hard-coded since MAN-1, so a bare file moves by the rule every other
+        // kind does — the move action below sets the same field.
+        list: { children: { kind: KIND_BARE_FILE, via: "a", limit: 200, movedBy: "parent" } }
       }
     },
     /*
@@ -18165,7 +18480,7 @@ var BARE_FILE_MANIFEST = {
       draws a `kind:9` — the author as the title, the text as the body — so a
       consumer that already has a `message` widget draws a comment with it.
     */
-    [String(KIND_COMMENT)]: {
+    [String(KIND_COMMENT2)]: {
       widget: ["message", "card"],
       slots: {
         title: { field: "pubkey", as: "pubkey" },
@@ -18196,7 +18511,7 @@ var BARE_FILE_MANIFEST = {
       description: "Say something about this file. The comment lands in the team Folder the file lives in, and is what every reader of the file sees under it.",
       effect: "writes",
       appliesTo: [String(KIND_BARE_FILE)],
-      emits: { kind: KIND_COMMENT, scope: "address" },
+      emits: { kind: KIND_COMMENT2, scope: "address" },
       input: { type: "string" }
     },
     {
@@ -18221,8 +18536,23 @@ var BARE_FILE_MANIFEST = {
       description: "Put this file under another file in the same team, or back at the top. A change event, so anyone in the team may; who can read the file does not change.",
       effect: "writes",
       appliesTo: [String(KIND_BARE_FILE)],
-      emits: { kind: 1851, field: BARE_FILE_PARENT_FIELD },
+      emits: { kind: 1851, field: "parent" },
       input: { type: "string" }
+    },
+    /*
+      `archive` is the one field every file may carry (FOL-46): `true` hides the
+      file and everything under it from every list, an empty value brings it
+      back. A change, so anyone in the team may, and the archiving change's
+      `content` is the resolution summary a person gave (`ActionEventArgs.note`).
+    */
+    {
+      id: "archive",
+      label: "Archive",
+      description: "Take this file and everything under it out of every list once nobody needs to see it, or bring it back: `true` archives, an empty value restores. Nothing is deleted, and a link still opens it.",
+      effect: "writes",
+      appliesTo: [String(KIND_BARE_FILE)],
+      emits: { kind: 1851, field: ARCHIVED_FIELD },
+      input: { type: "string", enum: ARCHIVED_FIELD }
     },
     {
       id: "delete",
@@ -18230,9 +18560,16 @@ var BARE_FILE_MANIFEST = {
       description: "Ask the relay to delete this file. The relay decides \u2014 only its author, or the owner of an agent that wrote it, may \u2014 and its comments stay as separate events.",
       effect: "destructive",
       appliesTo: [String(KIND_BARE_FILE)],
-      emits: { kind: KIND_DELETION }
+      emits: { kind: KIND_DELETION2 }
     }
-  ]
+  ],
+  vocabularies: {
+    // Ship's `ARCHIVED_STATES`, value for value: one field, one vocabulary.
+    [ARCHIVED_FIELD]: [
+      { value: "", label: "Active", colour: "neutral" },
+      { value: "true", label: "Archived", colour: "muted" }
+    ]
+  }
 };
 function bareFileManifest() {
   return { manifest: BARE_FILE_MANIFEST, address: BARE_FILE_MANIFEST_ADDRESS, viaRecommendation: false };
@@ -18250,7 +18587,7 @@ async function resolveAspectApp(aspect, query, cache, entity = "naddr") {
         continue;
       return {
         manifest,
-        address: `${candidate.kind}:${candidate.pubkey}:${tagValue(candidate, "d") ?? ""}`,
+        address: `${candidate.kind}:${candidate.pubkey}:${tagValue2(candidate, "d") ?? ""}`,
         viaRecommendation: false,
         webTemplate: template
       };
@@ -18320,15 +18657,15 @@ function manifestKeyOf(pointer) {
   return pointer.kind === KIND_BARE_FILE ? String(KIND_BARE_FILE) : `${pointer.kind}:${pointer.pubkey}`;
 }
 async function resolveManifest(pointer, query, cache) {
-  if (pointer.kind === KIND_BARE_FILE || pointer.kind === KIND_COMMENT) {
-    const opener = await resolveAspectApp("conversation", query, cache, pointer.kind === KIND_COMMENT ? "nevent" : "naddr");
+  if (pointer.kind === KIND_BARE_FILE || pointer.kind === KIND_COMMENT2) {
+    const opener = await resolveAspectApp("conversation", query, cache, pointer.kind === KIND_COMMENT2 ? "nevent" : "naddr");
     return opener?.webTemplate ? { ...bareFileManifest(), webTemplate: opener.webTemplate } : bareFileManifest();
   }
   return throughCache(cache, `${pointer.kind}:${pointer.pubkey}`, () => resolveManifestUncached(pointer, query));
 }
 async function resolveManifestUncached(pointer, query) {
   const parse3 = parseManifest;
-  const addressOf = (event) => `${event.kind}:${event.pubkey}:${tagValue(event, "d") ?? ""}`;
+  const addressOf = (event) => `${event.kind}:${event.pubkey}:${tagValue2(event, "d") ?? ""}`;
   const recommended = await query([
     {
       kinds: [KIND_HANDLER_RECOMMENDATION],
@@ -18370,18 +18707,6 @@ async function resolveManifestUncached(pointer, query) {
   }
   return null;
 }
-function orderingMs(event) {
-  const raw = Number.parseInt(tagValue(event, "ts") ?? "", 10);
-  if (Number.isFinite(raw) && Math.abs(Math.floor(raw / 1e3) - event.created_at) <= 1)
-    return raw;
-  return event.created_at * 1e3;
-}
-function byOrder(a, b) {
-  const [at, bt] = [orderingMs(a), orderingMs(b)];
-  if (at !== bt)
-    return at - bt;
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
 function foldRuleOf(manifest) {
   return manifest.records ?? {
     // Never sent to a relay. See above.
@@ -18397,8 +18722,8 @@ var BODY_SLOT = "body";
 function foldChanges(changes, rule) {
   const fields = {};
   for (const change of [...changes].sort(byOrder)) {
-    const field = tagValue(change, rule.fieldTag);
-    const value = tagValue(change, rule.valueTag);
+    const field = tagValue2(change, rule.fieldTag);
+    const value = tagValue2(change, rule.valueTag);
     if (!field || value === void 0)
       continue;
     fields[field] = {
@@ -18410,6 +18735,47 @@ function foldChanges(changes, rule) {
   }
   return fields;
 }
+var ARCHIVE_RULE = {
+  changeKind: 1851,
+  targetTag: "a",
+  fieldTag: "field",
+  valueTag: "value",
+  order: ["ts", "created_at", "id"],
+  rule: "last-write-wins-per-field"
+};
+function archiveRuleOf(manifest) {
+  return manifest?.records ?? ARCHIVE_RULE;
+}
+var PLACEHOLDER_ARCHIVE_NOTE = "archived";
+function archiveOf(changes, address, rule) {
+  let last;
+  for (const change of changes) {
+    if (change.kind !== rule.changeKind || tagValue2(change, rule.targetTag) !== address)
+      continue;
+    if (tagValue2(change, rule.fieldTag) !== ARCHIVED_FIELD || tagValue2(change, rule.valueTag) === void 0)
+      continue;
+    if (!last || byOrder(last, change) < 0)
+      last = change;
+  }
+  if (!last || tagValue2(last, rule.valueTag) !== "true")
+    return void 0;
+  const note = last.content.trim();
+  return {
+    by: last.pubkey,
+    at: last.created_at,
+    ...note && note !== PLACEHOLDER_ARCHIVE_NOTE ? { resolution: last.content } : {}
+  };
+}
+function archivedAncestorOf(address, parentOf, archiveAt) {
+  const seen = /* @__PURE__ */ new Set([address]);
+  for (let parent = parentOf(address); parent && !seen.has(parent); parent = parentOf(parent)) {
+    seen.add(parent);
+    const archive = archiveAt(parent);
+    if (archive)
+      return { ...archive, with: archive.with ?? parent };
+  }
+  return void 0;
+}
 function truncate(text2, limit) {
   if (!limit || text2.length <= limit)
     return text2;
@@ -18419,7 +18785,7 @@ function firstTag(root, tag2) {
   if (!tag2)
     return void 0;
   for (const name of Array.isArray(tag2) ? tag2 : [tag2]) {
-    const value = tagValue(root, name);
+    const value = tagValue2(root, name);
     if (value !== void 0 && value !== "")
       return value;
   }
@@ -18518,19 +18884,54 @@ function buildObject(args2) {
     kind: pointer.kind,
     widget: projection.widget,
     appName: manifest.name,
+    ...nounOf(projection),
     slots,
     meta: meta2,
     comments: args2.comments ?? [],
     listsChildren: listsChildrenOf(projection, manifest),
     parentRef: parentRefOf(manifest, pointer.kind, root, folded),
-    ...pointer.kind === KIND_BARE_FILE ? { parentField: BARE_FILE_PARENT_FIELD } : {},
-    folder: tagValue(root, "h"),
+    ...parentFieldsOf(manifest, pointer.kind),
+    folder: tagValue2(root, "h"),
     // Substituted here rather than in the component: `<bech32>` is a NIP-89
     // detail, and the widget's job is to draw a link, not to know the spec.
     openUrl: args2.webTemplate?.replace("<bech32>", naddr),
     actions: resolveActions(manifest, pointer.kind, folded).map((action) => action.current === void 0 && action.field ? { ...action, current: held[action.field] } : action),
-    viaRecommendation: args2.viaRecommendation
+    viaRecommendation: args2.viaRecommendation,
+    ...args2.archived ? { archived: args2.archived } : {}
   };
+}
+function relatedRuleOf(manifest, address) {
+  const kind = addressPointerOf(address)?.kind;
+  return manifest && kind !== void 0 && manifest.projections?.[String(kind)] ? archiveRuleOf(manifest) : ARCHIVE_RULE;
+}
+var ARCHIVE_READ_GROUP = 25;
+function archiveFilters(addresses, rules = [ARCHIVE_RULE], groupSize = ARCHIVE_READ_GROUP) {
+  const shapes = new Map(rules.map((rule) => [`${rule.changeKind}:${rule.targetTag}`, rule]));
+  const filters = [];
+  for (const rule of shapes.values()) {
+    for (let start = 0; start < addresses.length; start += groupSize) {
+      const group = addresses.slice(start, start + groupSize);
+      filters.push({ kinds: [rule.changeKind], [`#${rule.targetTag}`]: group, limit: RELAY_PAGE_CEILING });
+    }
+  }
+  return filters;
+}
+async function readArchiveChanges(addresses, query, rules) {
+  return queryChunked(archiveFilters(addresses, rules), query);
+}
+async function queryChunked(filters, query) {
+  const chunks = [];
+  for (let start = 0; start < filters.length; start += MAX_FILTERS_PER_QUERY) {
+    chunks.push(filters.slice(start, start + MAX_FILTERS_PER_QUERY));
+  }
+  return (await Promise.all(chunks.map((chunk) => query(chunk)))).flat();
+}
+function addressPointerOf(reference) {
+  try {
+    return referenceToPointer(reference);
+  } catch {
+    return null;
+  }
 }
 function declaredChildSpec(projection) {
   const spec = projection.slots.list;
@@ -18540,10 +18941,15 @@ function drawsKind(manifest, kind) {
   return !!manifest.projections?.[String(kind)];
 }
 function parentRefOf(manifest, kind, root, folded = {}) {
+  const movedBy = movedByOf(manifest, kind);
+  if (movedBy) {
+    const moved = folded[movedBy.field];
+    if (moved) {
+      const prefix = movedBy.parentKind === void 0 ? /^\d+:[0-9a-f]{64}:/ : new RegExp(`^${movedBy.parentKind}:[0-9a-f]{64}:`);
+      return prefix.test(moved.value) ? moved.value : void 0;
+    }
+  }
   if (kind === KIND_BARE_FILE) {
-    const moved = folded[BARE_FILE_PARENT_FIELD];
-    if (moved)
-      return moved.value || void 0;
     return root.tags.find((t) => t[0] === "a" && t[1] && /^\d+:[0-9a-f]{64}:/.test(t[1]))?.[1];
   }
   for (const [parentKind, projection] of Object.entries(manifest.projections ?? {})) {
@@ -18557,6 +18963,21 @@ function parentRefOf(manifest, kind, root, folded = {}) {
       return found;
   }
   return void 0;
+}
+function movedByOf(manifest, kind) {
+  for (const [parentKind, projection] of Object.entries(manifest.projections ?? {})) {
+    const children = declaredChildSpec(projection);
+    if (!children || children.kind !== kind || !children.movedBy || children.match === "identifier")
+      continue;
+    return kind === KIND_BARE_FILE ? { field: children.movedBy } : { field: children.movedBy, parentKind: Number(parentKind) };
+  }
+  return void 0;
+}
+function parentFieldsOf(manifest, kind) {
+  const moved = movedByOf(manifest, kind);
+  if (!moved)
+    return {};
+  return moved.parentKind === void 0 ? { parentField: moved.field } : { parentField: moved.field, parentKind: moved.parentKind };
 }
 function listsChildrenOf(projection, manifest) {
   const children = declaredChildSpec(projection);
@@ -18587,6 +19008,23 @@ var isDoneStatusByLabel = inSet(DONE_STATUSES);
 var STARTED = /* @__PURE__ */ new Set(["in progress", "started", "doing", "in review", "review"]);
 var isStartedByLabel = inSet(STARTED);
 var isAddressableKind = (kind) => kind >= 3e4 && kind < 4e4;
+var PLACEMENTS = ["h", "buzz-channel"];
+function proseTags(args2) {
+  const { label, declared, contentFormat, value } = args2;
+  if (contentFormat === void 0)
+    return [];
+  if (proseFormatOf(declared) !== contentFormat) {
+    return proseFormatOf(declared) ? `"${label}" takes ${proseFormatOf(declared)}, not ${contentFormat}.` : `"${label}" declares no ${contentFormat} value, so it is written as plain text.`;
+  }
+  if (value === "")
+    return [];
+  try {
+    parseBlockDocument(value);
+  } catch (e) {
+    return `"${label}" was handed ${contentFormat} that is ${e.message}.`;
+  }
+  return [[CONTENT_FORMAT_TAG, contentFormat], ...attachmentsInDocument(value, contentFormat).map(imetaTag)];
+}
 function buildCreationEvent(args2) {
   const { declared, address, folder, value, newId } = args2;
   const properties = declared.input.properties;
@@ -18621,6 +19059,18 @@ function buildCreationEvent(args2) {
     return `"${declared.label}" declares ${bodyFields.length} fields writing to content (${bodyFields.join(", ")}), and an event has one.`;
   }
   const bodyField = bodyFields[0];
+  const placement = declared.emits.placement ?? "h";
+  if (!PLACEMENTS.includes(placement)) {
+    return `"${declared.label}" places its object with "${placement}", and a Folder is named by ${PLACEMENTS.join(" or ")}.`;
+  }
+  const prose = proseTags({
+    label: declared.label,
+    declared: bodyField ? properties[bodyField]?.format : void 0,
+    contentFormat: args2.contentFormat,
+    value: bodyField ? value[bodyField] ?? "" : ""
+  });
+  if (typeof prose === "string")
+    return prose;
   const tags2 = [];
   if (isAddressableKind(declared.emits.kind))
     tags2.push(["d", newId]);
@@ -18631,7 +19081,7 @@ function buildCreationEvent(args2) {
   if (declared.emits.setTag && declared.emits.toAddressOf === "self") {
     tags2.push([declared.emits.setTag, address]);
   }
-  tags2.push(["h", folder]);
+  tags2.push([placement, folder], ...prose);
   return {
     pubkey: args2.pubkey,
     created_at: Math.floor(args2.createdAtMs / 1e3),
@@ -18641,6 +19091,16 @@ function buildCreationEvent(args2) {
   };
 }
 function buildActionEvent(args2) {
+  const declared = args2.manifest.actions?.find((a) => a.id === args2.actionId);
+  if (declared?.emits.listed === true && (declared.emits.kind === KIND_DELETION2 || isCreationAction(declared))) {
+    return `"${declared.label}" is followed by a Folder command, so it is built with buildActionEvents.`;
+  }
+  return buildOneActionEvent(args2);
+}
+function isCreationAction(declared) {
+  return declared.input?.type === "object" && !!declared.input.properties;
+}
+function buildOneActionEvent(args2) {
   const { manifest, kind, address, folder, actionId, value, replyTo } = args2;
   const records = manifest.records;
   const declared = manifest.actions?.find((a) => a.id === actionId);
@@ -18650,9 +19110,15 @@ function buildActionEvent(args2) {
   if (!appliesTo.includes(String(kind))) {
     return `"${declared.label}" does not apply to a kind ${kind}.`;
   }
-  const isCreation = declared.input?.type === "object" && !!declared.input.properties;
-  if (replyTo && (isCreation || declared.emits.kind === KIND_DELETION || declared.emits.field)) {
+  const isCreation = isCreationAction(declared);
+  if (replyTo && (isCreation || declared.emits.kind === KIND_DELETION2 || declared.emits.field)) {
     return `"${declared.label}" is not a comment, so it cannot reply to one.`;
+  }
+  if (args2.contentFormat !== void 0 && !isCreation && (!declared.emits.field || declared.emits.kind === KIND_DELETION2)) {
+    return `"${declared.label}" takes no prose value, so it takes no content format.`;
+  }
+  if (args2.note !== void 0 && (isCreation || !declared.emits.field || declared.emits.kind === KIND_DELETION2)) {
+    return `"${declared.label}" is not a change, so it takes no note.`;
   }
   if (isCreation) {
     return buildCreationEvent({ ...args2, declared, vocabularies: manifest.vocabularies });
@@ -18660,11 +19126,11 @@ function buildActionEvent(args2) {
   if (typeof value !== "string") {
     return `"${declared.label}" takes a single value, not a form.`;
   }
-  if (declared.emits.kind === KIND_DELETION) {
+  if (declared.emits.kind === KIND_DELETION2) {
     return {
       pubkey: args2.pubkey,
       created_at: Math.floor(args2.createdAtMs / 1e3),
-      kind: KIND_DELETION,
+      kind: KIND_DELETION2,
       tags: [
         ["a", address],
         ["k", String(kind)]
@@ -18680,11 +19146,16 @@ function buildActionEvent(args2) {
       return `"${value}" is not one of ${vocab.map((e) => e.value).join(", ")}.`;
     }
   }
+  const prose = declared.emits.field ? proseTags({ label: declared.label, declared: declared.input?.format, contentFormat: args2.contentFormat, value }) : [];
+  if (typeof prose === "string")
+    return prose;
+  const [formatTag, ...files] = prose;
   const tags2 = declared.emits.field ? [
     [records.targetTag, address],
     [records.fieldTag, declared.emits.field],
     [records.valueTag, value],
-    ["h", folder]
+    ["h", folder],
+    ...formatTag ? [formatTag] : []
   ] : (
     // NIP-22 comment. Built from the ratified NIP rather than from the
     // manifest, which is legitimate precisely because no app owns kind:1111 —
@@ -18709,19 +19180,20 @@ function buildActionEvent(args2) {
   );
   if (records.order?.includes("ts"))
     tags2.push(["ts", String(args2.createdAtMs)]);
+  tags2.push(...files);
   return {
     pubkey: args2.pubkey,
     created_at: Math.floor(args2.createdAtMs / 1e3),
     kind: declared.emits.kind,
     tags: tags2,
-    content: declared.emits.field ? "" : value
+    content: declared.emits.field ? args2.note ?? "" : value
   };
 }
 var KIND_FOLDER_STATE = 30890;
 var KIND_CHANNEL = 39e3;
-var nameOf = (event) => event ? tagValue(event, "name") : void 0;
+var nameOf = (event) => event ? tagValue2(event, "name") : void 0;
 function topLevelFolders(folders) {
-  return folders.filter((folder) => folder.hasState && !folder.listedIn?.length);
+  return folders.filter((folder) => folder.hasState && !folder.listedIn?.length && !folder.archived);
 }
 async function listFolders(query) {
   const events = await query([
@@ -18730,7 +19202,7 @@ async function listFolders(query) {
   ]);
   const byId = /* @__PURE__ */ new Map();
   for (const event of events) {
-    const id = tagValue(event, "d");
+    const id = tagValue2(event, "d");
     if (!id)
       continue;
     const state = event.kind === KIND_FOLDER_STATE;
@@ -18740,16 +19212,22 @@ async function listFolders(query) {
     const addresses = state ? event.tags.filter((tag2) => tag2[0] === "a" && tag2[1]).map((tag2) => tag2[1]) : [];
     byId.set(id, {
       id,
-      name: tagValue(event, "name") ?? existing?.name,
+      name: tagValue2(event, "name") ?? existing?.name,
       hasState: state || (existing?.hasState ?? false),
       ...addresses.length ? { addresses } : {}
     });
+  }
+  for (const event of events) {
+    const id = tagValue2(event, "d");
+    const folder = id && event.kind === KIND_CHANNEL ? byId.get(id) : void 0;
+    if (folder)
+      folder.channel = pointerToAddress({ kind: KIND_CHANNEL, pubkey: event.pubkey, identifier: id, relays: [] });
   }
   const listedIn = /* @__PURE__ */ new Map();
   for (const event of events) {
     if (event.kind !== KIND_FOLDER_STATE)
       continue;
-    const container = tagValue(event, "d");
+    const container = tagValue2(event, "d");
     if (!container)
       continue;
     for (const tag2 of event.tags) {
@@ -18764,20 +19242,34 @@ async function listFolders(query) {
       listedIn.set(identifier, containers);
     }
   }
-  await placeRecordChannels(events, byId, listedIn, query);
+  const { recordsOf, archives } = await placeRecordChannels(events, byId, listedIn, query);
   for (const [id, containers] of listedIn) {
     const folder = byId.get(id);
     if (folder)
       folder.listedIn = containers;
   }
+  markArchivedFolders(byId, recordsOf, archives);
   return [...byId.values()].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
+}
+function markArchivedFolders(byId, recordsOf, changes) {
+  for (const folder of byId.values()) {
+    const own = folder.channel ? archiveOf(changes, folder.channel, ARCHIVE_RULE) : void 0;
+    if (own) {
+      folder.archived = own;
+      continue;
+    }
+    const records = recordsOf.get(folder.id) ?? [];
+    const archives = records.map((record2) => archiveOf(changes, record2, ARCHIVE_RULE));
+    if (records.length && archives.every(Boolean))
+      folder.archived = { ...archives[0], with: records[0] };
+  }
 }
 async function placeRecordChannels(events, byId, listedIn, query) {
   const containersOf = /* @__PURE__ */ new Map();
   for (const event of events) {
     if (event.kind !== KIND_FOLDER_STATE)
       continue;
-    const container = tagValue(event, "d");
+    const container = tagValue2(event, "d");
     if (!container)
       continue;
     for (const tag2 of event.tags) {
@@ -18798,8 +19290,15 @@ async function placeRecordChannels(events, byId, listedIn, query) {
       containersOf.set(key, entry);
     }
   }
-  if (containersOf.size === 0)
-    return;
+  const channels = [...byId.values()].flatMap((folder) => folder.channel ? [folder.channel] : []);
+  const archiveAsk = archiveFilters([.../* @__PURE__ */ new Set([...channels, ...containersOf.keys()])]);
+  if (containersOf.size === 0) {
+    const archives2 = [];
+    for (let start = 0; start < archiveAsk.length; start += MAX_FILTERS_PER_QUERY) {
+      archives2.push(...await query(archiveAsk.slice(start, start + MAX_FILTERS_PER_QUERY)));
+    }
+    return { recordsOf: /* @__PURE__ */ new Map(), archives: archives2 };
+  }
   const groups = /* @__PURE__ */ new Map();
   for (const { pointer } of containersOf.values()) {
     const key = `${pointer.kind}:${pointer.pubkey}`;
@@ -18814,22 +19313,28 @@ async function placeRecordChannels(events, byId, listedIn, query) {
       filters.push({ kinds: [kind], authors: [pubkey], "#d": chunk, limit: chunk.length });
     }
   }
-  const roots = [];
+  filters.push(...archiveAsk);
+  const answered = [];
   for (let start = 0; start < filters.length; start += MAX_FILTERS_PER_QUERY) {
-    roots.push(...await query(filters.slice(start, start + MAX_FILTERS_PER_QUERY)));
+    answered.push(...await query(filters.slice(start, start + MAX_FILTERS_PER_QUERY)));
   }
+  const archives = answered.filter((e) => e.kind === ARCHIVE_RULE.changeKind);
+  const roots = answered.filter((e) => e.kind !== ARCHIVE_RULE.changeKind);
   const newest = /* @__PURE__ */ new Map();
   for (const root of roots) {
-    const key = `${root.kind}:${root.pubkey}:${tagValue(root, "d") ?? ""}`;
+    const key = `${root.kind}:${root.pubkey}:${tagValue2(root, "d") ?? ""}`;
     const held = newest.get(key);
     if (!held || root.created_at > held.created_at)
       newest.set(key, root);
   }
+  const recordsOf = /* @__PURE__ */ new Map();
   for (const [key, { containers }] of containersOf) {
     const root = newest.get(key);
     const channel = root && folderOf(root);
     if (!channel || byId.get(channel)?.hasState)
       continue;
+    if (!containers.includes(channel))
+      recordsOf.set(channel, [...recordsOf.get(channel) ?? [], key]);
     for (const container of containers) {
       if (container === channel)
         continue;
@@ -18839,18 +19344,21 @@ async function placeRecordChannels(events, byId, listedIn, query) {
       listedIn.set(channel, placed);
     }
   }
+  return { recordsOf, archives };
 }
-async function resolveFolderContents(folder, query, lookupPeople, cache) {
+async function resolveFolderContents(folder, query, lookupPeople, cache, options = {}) {
   const identity = await query([
     { kinds: [KIND_FOLDER_STATE], "#d": [folder], limit: 1 },
     { kinds: [KIND_CHANNEL], "#d": [folder], limit: 1 }
   ]);
-  const state = identity.find((e) => e.kind === KIND_FOLDER_STATE && tagValue(e, "d") === folder);
-  const channel = identity.find((e) => e.kind === KIND_CHANNEL && tagValue(e, "d") === folder);
+  const state = identity.find((e) => e.kind === KIND_FOLDER_STATE && tagValue2(e, "d") === folder);
+  const channel = identity.find((e) => e.kind === KIND_CHANNEL && tagValue2(e, "d") === folder);
+  const channelAddress = channel ? pointerToAddress({ kind: KIND_CHANNEL, pubkey: channel.pubkey, identifier: folder, relays: [] }) : void 0;
   const summary = {
     id: folder,
     name: nameOf(state) ?? nameOf(channel),
     hasState: !!state,
+    ...channelAddress ? { channel: channelAddress } : {},
     ...state ? { address: pointerToAddress({ kind: state.kind, pubkey: state.pubkey, identifier: folder, relays: [] }) } : {}
   };
   const { addresses, placed } = state ? (
@@ -18862,7 +19370,8 @@ async function resolveFolderContents(folder, query, lookupPeople, cache) {
     }
   ) : await addressesByContainment(folder, query);
   if (addresses.length === 0) {
-    return { ...summary, files: [], source: state ? "state" : "channel" };
+    const archived = channelAddress ? archiveOf(await readArchiveChanges([channelAddress], query), channelAddress, ARCHIVE_RULE) : void 0;
+    return { ...summary, ...archived ? { archived } : {}, files: [], source: state ? "state" : "channel" };
   }
   const pointers = addresses.flatMap((address) => {
     try {
@@ -18890,7 +19399,10 @@ async function resolveFolderContents(folder, query, lookupPeople, cache) {
       manifests.set(key, resolved);
   }));
   const changeKinds = [
-    ...new Set([...manifests.values()].flatMap((r) => r.manifest.records ? [r.manifest.records.changeKind] : []))
+    .../* @__PURE__ */ new Set([
+      ARCHIVE_RULE.changeKind,
+      ...[...manifests.values()].flatMap((r) => r.manifest.records ? [r.manifest.records.changeKind] : [])
+    ])
   ];
   const events = await query([
     ...[...groups.values()].map(({ pointer, addresses: group }) => ({
@@ -18899,9 +19411,20 @@ async function resolveFolderContents(folder, query, lookupPeople, cache) {
       "#d": group.map((a) => referenceToPointer(a).identifier),
       limit: group.length
     })),
-    ...changeKinds.length ? [{ kinds: changeKinds, "#a": addresses, limit: 500 }] : []
+    { kinds: changeKinds, "#a": addresses, limit: 500 },
+    // The archives again, in groups small enough that a busy Folder's other
+    // changes cannot push them off the page — the filter above holds 500
+    // changes for every file together, and one Folder has already had 688.
+    // Same request.
+    ...archiveFilters(channelAddress ? [...addresses, channelAddress] : addresses)
   ]);
-  const files = [];
+  const ownArchive = channelAddress ? archiveOf(events, channelAddress, ARCHIVE_RULE) : void 0;
+  if (ownArchive)
+    summary.archived = ownArchive;
+  const listed = [];
+  const archiveByAddress = /* @__PURE__ */ new Map();
+  const parentByAddress = /* @__PURE__ */ new Map();
+  const parentRuleOf = /* @__PURE__ */ new Map();
   for (const { address, pointer } of pointers) {
     const resolved = manifests.get(manifestKeyOf(pointer));
     if (!resolved)
@@ -18909,32 +19432,61 @@ async function resolveFolderContents(folder, query, lookupPeople, cache) {
     const projection = resolved.manifest.projections?.[String(pointer.kind)];
     if (!projection)
       continue;
-    const root = events.find((e) => e.kind === pointer.kind && e.pubkey === pointer.pubkey && tagValue(e, "d") === pointer.identifier);
+    const root = events.find((e) => e.kind === pointer.kind && e.pubkey === pointer.pubkey && tagValue2(e, "d") === pointer.identifier);
     if (!root)
       continue;
     const records = foldRuleOf(resolved.manifest);
     const folded = foldChanges(events.filter((e) => e.kind === records.changeKind && hasTagValue(e, records.targetTag, address)), records);
-    if (records.hiddenWhen && folded[records.hiddenWhen.field]?.value === records.hiddenWhen.equals) {
+    const archive = archiveOf(events, address, archiveRuleOf(resolved.manifest));
+    archiveByAddress.set(address, archive);
+    const parent = parentRefOf(resolved.manifest, pointer.kind, root, folded);
+    parentByAddress.set(address, parent);
+    if (parent)
+      parentRuleOf.set(parent, relatedRuleOf(resolved.manifest, parent));
+    const hidden = !!records.hiddenWhen && folded[records.hiddenWhen.field]?.value === records.hiddenWhen.equals;
+    if (hidden && !archive)
       continue;
-    }
     const placements = placed.get(address);
     if (placements) {
       const current = placements.some((statement) => {
-        const field = tagValue(statement, records.fieldTag);
+        const field = tagValue2(statement, records.fieldTag);
         return field !== void 0 && folded[field]?.value === folder;
       });
       if (!current)
         continue;
     }
-    files.push(buildObject({
-      root,
-      pointer,
-      manifest: resolved.manifest,
-      projection,
-      folded,
-      viaRecommendation: resolved.viaRecommendation,
-      webTemplate: resolved.webTemplate
-    }));
+    listed.push({
+      archive,
+      file: buildObject({
+        root,
+        pointer,
+        manifest: resolved.manifest,
+        projection,
+        folded,
+        viaRecommendation: resolved.viaRecommendation,
+        webTemplate: resolved.webTemplate
+      })
+    });
+  }
+  const outside = [
+    ...new Set(listed.flatMap(({ file }) => {
+      const parent = file.address && parentByAddress.get(file.address);
+      return parent && !archiveByAddress.has(parent) && addressPointerOf(parent) ? [parent] : [];
+    }))
+  ];
+  if (outside.length) {
+    const ruleFor = (parent) => parentRuleOf.get(parent) ?? ARCHIVE_RULE;
+    const changes = await readArchiveChanges(outside, query, outside.map(ruleFor));
+    for (const parent of outside)
+      archiveByAddress.set(parent, archiveOf(changes, parent, ruleFor(parent)));
+  }
+  const files = [];
+  for (const { file, archive } of listed) {
+    const effective = archive ?? (file.address ? archivedAncestorOf(file.address, (a) => parentByAddress.get(a), (a) => archiveByAddress.get(a)) : void 0);
+    if (!effective)
+      files.push(file);
+    else if (options.includeArchived)
+      files.push({ ...file, archived: effective });
   }
   const people = await (lookupPeople ?? peopleViaRelay(query))([
     ...new Set(files.flatMap(pubkeysIn))
@@ -18968,13 +19520,13 @@ async function addressesByContainment(folder, query) {
   const addressOf = (event) => pointerToAddress({
     kind: event.kind,
     pubkey: event.pubkey,
-    identifier: tagValue(event, "d") ?? "",
+    identifier: tagValue2(event, "d") ?? "",
     relays: []
   });
   const newest = /* @__PURE__ */ new Map();
   const seen = (address, at) => newest.set(address, Math.max(newest.get(address) ?? 0, at));
   for (const event of held) {
-    const d = tagValue(event, "d");
+    const d = tagValue2(event, "d");
     if (d === void 0 || d === folder)
       continue;
     seen(addressOf(event), event.created_at);
@@ -18985,10 +19537,10 @@ async function addressesByContainment(folder, query) {
     const rule = rules.get(event.kind);
     if (!rule)
       continue;
-    const target = tagValue(event, rule.targetTag);
+    const target = tagValue2(event, rule.targetTag);
     if (!target || contained.has(target))
       continue;
-    if (tagValue(event, rule.valueTag) !== folder)
+    if (tagValue2(event, rule.valueTag) !== folder)
       continue;
     placed.set(target, [...placed.get(target) ?? [], event]);
     seen(target, event.created_at);
@@ -18996,49 +19548,6 @@ async function addressesByContainment(folder, query) {
   return {
     addresses: [...newest].sort((a, b) => b[1] - a[1]).map(([address]) => address),
     placed
-  };
-}
-
-// node_modules/@estiva-app/interop/dist/folders.js
-function planCreateFolder(pubkey, createdAtMs, args2) {
-  return [
-    buildCreateChannel(pubkey, createdAtMs, {
-      channelUuid: args2.folder,
-      name: args2.name,
-      ...args2.visibility ? { visibility: args2.visibility } : {}
-    }),
-    buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", name: args2.name })
-  ];
-}
-function planRenameFolder(pubkey, createdAtMs, args2) {
-  const rename = buildEditChannelMetadata(pubkey, createdAtMs, { channelUuid: args2.folder, name: args2.name });
-  if (!args2.hasState)
-    return [rename];
-  return [rename, buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", name: args2.name })];
-}
-function planPlaceFile(pubkey, createdAtMs, args2) {
-  if (!args2.hasState)
-    return [];
-  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", addresses: [args2.address] })];
-}
-function planUnlistFile(pubkey, createdAtMs, args2) {
-  if (!args2.hasState)
-    return [];
-  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "remove", addresses: [args2.address] })];
-}
-function planMoveFile(pubkey, createdAtMs, args2) {
-  if (args2.from.id === args2.to.id)
-    return { ok: true, events: [] };
-  if (!args2.from.hasState)
-    return { ok: false, reason: "source-has-no-state" };
-  if (!args2.to.hasState)
-    return { ok: false, reason: "target-has-no-state" };
-  return {
-    ok: true,
-    events: [
-      buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "add", addresses: [args2.address] }),
-      buildFolderCommand(pubkey, createdAtMs, { folder: args2.from.id, op: "remove", addresses: [args2.address] })
-    ]
   };
 }
 
@@ -19295,36 +19804,24 @@ function foldFolder(events, resolveRefs = () => []) {
 }
 
 // src/references.ts
-function namedInBody2(body) {
-  const out = /* @__PURE__ */ new Set();
-  for (const naddr of findNaddrs(body)) {
-    try {
-      out.add(naddrToAddr(naddr));
-    } catch {
-    }
-  }
-  return out;
-}
 function anchorIndex(events) {
   const index = {};
   for (const event of events) {
-    if (event.kind !== KIND2.MESSAGE && event.kind !== KIND2.COMMENT) continue;
-    const values = (name) => event.tags.filter((t) => t[0] === name && t[1]).map((t) => t[1]);
-    let anchors;
-    if (event.kind === KIND2.COMMENT) {
-      const roots = values("A");
-      anchors = roots.length ? roots : values("a");
-    } else {
-      const named = namedInBody2(event.content);
-      anchors = values("a").filter((address) => !named.has(address));
-    }
-    if (anchors.length) index[event.id] = [...new Set(anchors)];
+    if (isReply(event)) continue;
+    const anchors = anchorsOf(event);
+    if (anchors.length) index[event.id] = anchors;
   }
   return index;
 }
-
-// src/reactions.ts
-var REACTION_EVENT_LIMIT = 500;
+function attachmentOf(conversation, address, anchors) {
+  if (!conversation.about.includes(address)) return null;
+  const rootIsPresent = conversation.root.id === conversation.id;
+  const namedByRoot = rootIsPresent && (anchors[conversation.root.id] ?? []).includes(address);
+  return namedByRoot ? "comment" : "mention";
+}
+function commentsOn(conversations, address, anchors) {
+  return conversations.filter((c) => attachmentOf(c, address, anchors) === "comment");
+}
 
 // src/profiles.ts
 function parseProfile2(event) {
@@ -19347,6 +19844,7 @@ function parseProfile2(event) {
     picture: str2("picture"),
     nip05: str2("nip05"),
     about: str2("about"),
+    bot: meta2.bot === true,
     createdAt: event.created_at
   };
 }
@@ -19602,6 +20100,12 @@ var Store = class {
    * A change event, so it is reversible, attributable and available to anyone
    * in the Folder rather than only the project's author. This is the operation
    * that should be reached for; `deleteProject` is the narrow one.
+   *
+   * `resolution` is what the person archiving said about it (FOL-46), carried
+   * as the change's `content` — one event, so it cannot land without the
+   * archive. It replaces the `archived` / `unarchived` placeholder notes, which
+   * nothing ever displayed. The project's issues are archived with it when
+   * read; nothing is written to them.
    */
   archiveProject(args2) {
     return this.setField({
@@ -19609,8 +20113,32 @@ var Store = class {
       target: args2.project,
       field: "archived",
       value: args2.archived ? "true" : "",
-      note: args2.archived ? "archived" : "unarchived"
+      note: args2.archived ? args2.resolution ?? "" : ""
     });
+  }
+  /**
+   * Hide one issue from the lists, or bring it back — FOL-46. The same field
+   * and shape as a project's, written into the issue's own Folder where its
+   * status lives.
+   */
+  archiveIssue(args2) {
+    return this.setField({
+      folder: args2.folder,
+      target: args2.issue,
+      field: "archived",
+      value: args2.archived ? "true" : "",
+      note: args2.archived ? args2.resolution ?? "" : ""
+    });
+  }
+  /**
+   * Archive a Folder, or restore it — FOL-46. A change on the Folder's own
+   * address (`FolderSummary.channel`), published into it; never a `kind:9008`,
+   * which hides everything under its `h` for good.
+   */
+  async archiveFolder(args2) {
+    assertFolderId(args2.folder);
+    const [change] = planArchiveFolder(this.signer.pubkey, Date.now(), args2);
+    return this.publish(change);
   }
   /**
    * Ask the relay to drop a project's record.
@@ -19845,21 +20373,19 @@ ${args2.aboutRef}` : args2.body;
    * (The note that used to sit here said `#h` does not OR at all. It does —
    * see `rawFolders`, re-measured 2026-09-07.)
    *
-   * The horizon is applied by the caller through `reactionTargets`, so this
-   * method has no opinion about how much of a page it is being asked about; it
-   * bounds the *events* it will take back, which is a different limit and the
-   * one a single very busy message could otherwise blow past.
+   * The read is `@estiva-app/conversation`'s `decorationsOf` (CON-5): the
+   * horizon is SPEC §6.6's newest 100 by `created_at`, and a read that comes
+   * back at the relay's page ceiling is reported as cut — this used to take
+   * 500 events and say nothing past them. It also brings edits, which this
+   * app folds from the Folder read instead and ignores here.
    *
    * No `kind:5` query. The relay stops returning an event once it holds a
    * deletion for it, and this app caches nothing — so a retracted reaction is
-   * absent from the next read rather than something to reconcile. Peek asks
-   * because Peek keeps a copy.
+   * absent from the next read rather than something to reconcile.
    */
-  async reactionsFor(eventIds) {
-    if (!eventIds.length) return [];
-    return this.relay.query([
-      { kinds: [KIND2.REACTION], "#e": eventIds, limit: REACTION_EVENT_LIMIT }
-    ]);
+  decorationsFor(targets) {
+    const query = (filters) => this.relay.query(filters);
+    return decorationsOf(targets, query);
   }
   /**
    * React to a message.
@@ -20196,7 +20722,8 @@ function resolveOne(items, reference, how) {
 function edited(edits, message) {
   const edit = edits[message.id];
   if (!edit) return { body: message.body };
-  return { body: edit.body, edited: true, editedAt: new Date(edit.at).toISOString() };
+  if (edit.editedAt === void 0) return { body: edit.body };
+  return { body: edit.body, edited: true, editedAt: new Date(edit.editedAt).toISOString() };
 }
 function findMessage(messages, reference) {
   if (!messages.length) {
@@ -20458,8 +20985,8 @@ function clip(text2, max) {
   const flat = text2.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
 }
-function commentsOn(state, addr2) {
-  return conversationsAbout(state.conversations, addr2).flatMap((thread) => [thread.root, ...thread.replies]).map((message) => ({
+function commentsOn2(state, addr2) {
+  return commentsOn(state.conversations, addr2, state.anchors).flatMap((thread) => [thread.root, ...thread.replies]).map((message) => ({
     id: message.id,
     author: message.author,
     at: message.ts ?? message.createdAt * 1e3,
@@ -20488,7 +21015,7 @@ function issueLine(issue2, assignee) {
 async function stateAfter(context2, state, issue2, after) {
   const assignee = after.assignee === void 0 ? issue2.assignee : after.assignee || void 0;
   const directory = await directoryFor(context2, [assignee]);
-  const comments = commentsOn(state, issue2.addr);
+  const comments = commentsOn2(state, issue2.addr);
   if (after.comment !== void 0) {
     comments.push({ id: "", author: context2.signer.pubkey, at: Date.now(), body: after.comment });
   }
@@ -20540,7 +21067,7 @@ function published(result, what) {
   if (!result.ok) throw new BadRequest(`The relay refused ${what}: ${result.reason ?? "no reason given"}`);
 }
 async function timelineFor(context2, state, addr2, extraPubkeys) {
-  const conversations = conversationsAbout(state.conversations, addr2);
+  const conversations = commentsOn(state.conversations, addr2, state.anchors);
   const history = state.activity.filter((change) => change.target === addr2);
   const directory = await directoryFor(context2, [
     ...extraPubkeys,
@@ -20826,7 +21353,7 @@ var shipApp = {
         const reference = args2.positional[0];
         if (!reference) throw new BadRequest("status needs a reference \u2014 try `ship issues` first.");
         const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
-        const comments = commentsOn(state, issue2.addr);
+        const comments = commentsOn2(state, issue2.addr);
         const last = comments[comments.length - 1];
         const directory = await directoryFor(context2, [issue2.assignee, last?.author]);
         return {
@@ -21510,7 +22037,7 @@ Pass an address to say which.`
 };
 
 // lib/agent/apps/peek.ts
-var tagValue2 = (event, name) => event.tags.find((tag2) => tag2[0] === name)?.[1];
+var tagValue3 = (event, name) => event.tags.find((tag2) => tag2[0] === name)?.[1];
 function pointerOf(address) {
   const [kind, pubkey, identifier] = address.split(":");
   return { kind: Number(kind), pubkey, identifier, relays: [] };
@@ -21586,29 +22113,25 @@ var asMessage = (event) => ({
   body: event.content,
   createdAt: event.created_at,
   kind: event.kind,
-  folder: tagValue2(event, "h")
+  folder: tagValue3(event, "h")
 });
 async function readConversation(context2, topic, cache) {
   const query = relayQuery(context2);
   const rootIds = ((await conversationsOf([topic.object], query, cache))[topic.address] ?? []).map((message) => message.id);
-  if (!rootIds.length) return { conversations: [], edits: foldEdits([]), resolved: /* @__PURE__ */ new Set() };
+  if (!rootIds.length) return { conversations: [], edits: {}, resolved: /* @__PURE__ */ new Set() };
   const threads = await threadsOf(topic.address, rootIds, query, cache, 1e3);
   const conversations = rootIds.filter((id) => threads.roots[id]).map((id) => ({ root: asMessage(threads.roots[id]), replies: (threads.replies[id] ?? []).map(asMessage) }));
-  const originals = [...Object.values(threads.roots), ...Object.values(threads.replies).flat()];
   const all = conversations.flatMap((thread) => [thread.root, ...thread.replies]);
-  const editEvents = [];
-  const decorations = await commentDecorationsOf(
-    all.map((message) => ({ id: message.id, at: message.createdAt })),
-    async (filters) => {
-      const found = await query(filters);
-      for (const event of found) if (event.kind === KIND.MESSAGE_EDIT) editEvents.push(event);
-      return found;
-    }
+  const decorations = await decorationsOf(
+    all.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })),
+    query
   );
   const isResolved = (id) => decorations.byId[id]?.resolutions.at(-1)?.action === "resolved";
+  const edits = {};
+  for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit;
   return {
     conversations,
-    edits: foldEdits([...originals, ...editEvents]),
+    edits,
     resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved))
   };
 }

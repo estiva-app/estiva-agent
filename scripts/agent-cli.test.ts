@@ -23,7 +23,7 @@ import type { Project } from '../src/fold'
 import { buildActionEvent, topLevelFolders } from '@estiva-app/interop'
 import { findTopic, replyToOf, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
-import { foldEdits } from '../src/edits'
+import { foldEdits } from '@estiva-app/conversation'
 import { KIND } from '../src/kinds'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { Issue } from '../src/fold'
@@ -646,6 +646,9 @@ console.log('— editing a message —')
     thing between them and a body that was rewritten after they were told about
     it, so `edited` marks the pair rather than silently substituting.
   */
+  // 64-hex ids: SPEC §6.8's target is the first `e` whose value is 64 hex (`@estiva-app/conversation`).
+  const M1 = '1'.repeat(64)
+  const M2 = '2'.repeat(64)
   const edit = (over: Partial<SignedEvent> & { target: string }): SignedEvent => ({
     id: over.id ?? 'e1',
     pubkey: 'abc',
@@ -661,9 +664,9 @@ console.log('— editing a message —')
   })
 
   {
-    const index = foldEdits([edit({ target: 'm1', content: 'corrected' })])
-    check('an edit is folded onto its target', index.m1?.body === 'corrected')
-    check('and nothing else picks it up', index.m2 === undefined)
+    const index = foldEdits([edit({ target: M1, content: 'corrected' })])
+    check('an edit is folded onto its target', index[M1]?.body === 'corrected')
+    check('and nothing else picks it up', index[M2] === undefined)
   }
 
   {
@@ -674,11 +677,11 @@ console.log('— editing a message —')
       emits one that Buzz's own does not.
     */
     const index = foldEdits([
-      edit({ id: 'a', target: 'm1', content: 'first', created_at: 1_000, tags: [['ts', '1000200']] }),
-      edit({ id: 'b', target: 'm1', content: 'second', created_at: 1_000, tags: [['ts', '1000900']] }),
+      edit({ id: 'a', target: M1, content: 'first', created_at: 1_000, tags: [['ts', '1000200']] }),
+      edit({ id: 'b', target: M1, content: 'second', created_at: 1_000, tags: [['ts', '1000900']] }),
     ])
-    check('the later ts wins inside one second', index.m1?.body === 'second')
-    check('and the time reported is the ts, in milliseconds', index.m1?.at === 1_000_900)
+    check('the later ts wins inside one second', index[M1]?.body === 'second')
+    check('and the time reported is the ts, in milliseconds', index[M1]?.editedAt === 1_000_900)
   }
 
   {
@@ -686,25 +689,25 @@ console.log('— editing a message —')
     // otherwise a client with a wrong clock reorders somebody's conversation,
     // and the relay validates only `created_at`.
     const index = foldEdits([
-      edit({ id: 'a', target: 'm1', content: 'honest', created_at: 2_000 }),
-      edit({ id: 'b', target: 'm1', content: 'liar', created_at: 1_000, tags: [['ts', '9999000']] }),
+      edit({ id: 'a', target: M1, content: 'honest', created_at: 2_000 }),
+      edit({ id: 'b', target: M1, content: 'liar', created_at: 1_000, tags: [['ts', '9999000']] }),
     ])
-    check('a ts outside its own second cannot win', index.m1?.body === 'honest')
+    check('a ts outside its own second cannot win', index[M1]?.body === 'honest')
   }
 
   {
-    const index = foldEdits([{ ...edit({ target: 'm1' }), tags: [['h', 'folder']] }])
+    const index = foldEdits([{ ...edit({ target: M1 }), tags: [['h', 'folder']] }])
     check('an edit naming no target is dropped', Object.keys(index).length === 0)
   }
 
   {
-    const index = foldEdits([edit({ target: 'm1', content: 'now', created_at: 5 })])
+    const index = foldEdits([edit({ target: M1, content: 'now', created_at: 5 })])
 
-    const untouched = edited(index, { id: 'm2', body: 'as written' })
+    const untouched = edited(index, { id: M2, body: 'as written' })
     check('an unedited message keeps its body', untouched.body === 'as written')
     check('and carries no marker at all', untouched.edited === undefined && untouched.editedAt === undefined)
 
-    const changed = edited(index, { id: 'm1', body: 'as written' })
+    const changed = edited(index, { id: M1, body: 'as written' })
     check('an edited message shows the new text', changed.body === 'now')
     check('and says that it was edited', changed.edited === true)
     check('with when, to the millisecond', changed.editedAt === new Date(5_000).toISOString())
