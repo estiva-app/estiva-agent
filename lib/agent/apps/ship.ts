@@ -1897,8 +1897,12 @@ export const shipApp: AgentApp = {
         const siblings = state.issues.filter((issue) => issue.projectAddr === project.addr)
         const ref = nextRef(refPrefix(project.title), siblings.map((issue) => issue.ref))
 
+        // Filed in the Folder that lists the project — where both apps draw it
+        // and its people get unread signals — as Ship's `workFolder` does
+        // (MAN-5). The record's own Folder only when nothing lists it.
+        const listed = (await readFolders(context)).find((folder) => folder.addresses?.includes(project.addr))?.id
         const created = await store(context).createIssue({
-          folder: project.contentFolder,
+          folder: listed ?? project.contentFolder,
           title,
           description: flagValue(args, 'description'),
           projectAddr: project.addr,
