@@ -7,7 +7,7 @@
  *
  * It reads through `Store` and `foldFolder` rather than querying the relay
  * directly, deliberately. The fold is the part with the subtle rules in it —
- * change ordering, re-linked Folders, a status set by somebody who did not
+ * change ordering, issues filed outside their project's Folder, a status set by somebody who did not
  * author the issue — and an agent that reimplemented any of that would drift
  * from what the app shows a person. The whole value of this CLI is that it and
  * `ship.estiva.app` agree.
@@ -116,17 +116,6 @@ function projectSummary(project: Project, directory: Directory) {
     lead: who(directory, project.lead),
     archived: project.archived || undefined,
     folder: project.contentFolder,
-    /*
-      Said in the listing, not only in `show` (FOL-20). `folder` is where the
-      project's *work* is, and after a re-link that is not where its record
-      is — the record keeps the `h` it was filed with, and a change published
-      anywhere else is accepted by the relay and then invisible to a reader of
-      the record's own Folder. Fourteen projects linked to five team Folders is
-      fourteen chances to get that wrong, and this is what makes the move
-      checkable from the one command everybody runs first.
-    */
-    relinked: project.contentFolder !== project.originFolder || undefined,
-    recordFolder: project.contentFolder !== project.originFolder ? project.originFolder : undefined,
     /*
       Present even when empty, and that is the point of including it at all.
 
@@ -657,32 +646,6 @@ async function stateAfter(
  * the failure mode is an agent reporting an issue closed that the relay dropped.
  */
 /**
- * A Folder by name or id, from the create events on the relay.
- *
- * `link-project --folder`'s lookup, through `resolveOne` like every other
- * reference (CLAUDE.md): an ambiguous name is refused with the candidates,
- * never guessed.
- */
-async function resolveFolder(context: AgentContext, reference: string): Promise<{ folder: string; name: string }> {
-  const events = await context.relay.queryAll([{ kinds: [KIND.FOLDER] }])
-  const channels = events.map((event) => ({
-    folder: event.tags.find((tag) => tag[0] === 'h')?.[1] ?? '',
-    name: event.tags.find((tag) => tag[0] === 'name')?.[1] ?? '',
-  }))
-  return resolveOne(
-    channels.filter((channel) => channel.folder),
-    reference,
-    {
-      noun: 'folder',
-      exact: (channel) => [channel.folder],
-      text: (channel) => channel.name,
-      label: (channel) => `${channel.name} (${channel.folder.slice(0, 8)}…)`,
-      hint: 'Pass a Folder name or id.',
-    },
-  )
-}
-
-/**
  * Every Folder this credential can see, and whether each has state — the read
  * Ship's sidebar and its New project dialog make (`readFolders`), so the two
  * agree on what a team is and on `hasState`, which a `kind:1852` must never
@@ -787,10 +750,6 @@ async function timelineFor(
  * The description is returned whole here — this is the read that AGE-11 was
  * filed for, and a truncated one would not let anybody check a description
  * before replacing it.
- *
- * Both Folders are named, not just the content one. They differ for every
- * project that was re-linked to a Peek topic, and which of the two an event
- * carries decides whether anyone reading the project ever sees it.
  */
 async function showProject(context: AgentContext, state: WorkspaceState, project: Project) {
   const issues = state.issues.filter((issue) => issue.projectAddr === project.addr)
@@ -811,14 +770,7 @@ async function showProject(context: AgentContext, state: WorkspaceState, project
     archived: project.archived || undefined,
     description: project.description,
     createdAt: new Date(project.createdAt * 1000).toISOString(),
-    folders: {
-      content: project.contentFolder,
-      record: project.originFolder,
-      // Worth saying out loud rather than leaving to be compared: a change to
-      // the record published into the content Folder is accepted by the relay
-      // and then invisible to anything reading the record's own Folder.
-      relinked: project.contentFolder !== project.originFolder || undefined,
-    },
+    folder: project.contentFolder,
     issues: issues.map((issue) => issueSummary(issue, directory)),
     history,
     conversation,
@@ -1365,8 +1317,8 @@ export const shipApp: AgentApp = {
 
         /*
           The target's own Folder, not the object's — the trap CON-4 named.
-          A conversation stays in the Folder it was posted in even after the
-          project is re-linked to a Peek topic, and 40003 is channel-scoped, so
+          A conversation stays in the Folder it was posted in, which need not be
+          its project's, and 40003 is channel-scoped, so
           an `h` copied from the page would be refused with `accepted: false`
           while the kind is granted and the signature is fine.
         */
@@ -1500,10 +1452,10 @@ export const shipApp: AgentApp = {
 
         /*
           An issue's changes carry the issue's own Folder — not its project's,
-          and deliberately not the rule `edit-project` follows. After a project
-          is re-linked, the issues filed before the move still carry the old
-          `h`, so “the project's Folder” is the wrong answer for any issue
-          older than the re-link. `web/src/api/writes.ts` states the same split.
+          and deliberately not the rule `edit-project` follows. Issues filed
+          while a project was re-pointed by the retired `folder` field (MAN-5)
+          still carry that Folder's `h`, so “the project's Folder” is the wrong
+          answer for them. `src/api/writes.ts` in Ship states the same split.
         */
         const folder = issue.folder
         if (!folder) {
@@ -1565,15 +1517,13 @@ export const shipApp: AgentApp = {
         const edits = projectEdits(project, args, context.signer.pubkey)
 
         /*
-          A change to the project *record* carries the Folder that record is in,
-          not the Folder its issues are in. The two are the same until somebody
-          re-links a project to an existing Peek topic — 3 of the 14 projects on
-          production — and `--project` reports the *content* Folder, so the
-          reachable-looking choice is the wrong one.
+          A change to the project *record* carries the Folder that record
+          names, not the Folder any one of its issues is in — they differ for
+          the projects a retired `folder` field once re-pointed (MAN-5).
 
           `apps/ship/views/project.ts` says the wrong Folder is “rejected at
           ingest”. **Measured against production, it is not.** The relay accepts
-          a project change published against the content Folder: ok:true, no
+          a project change published against another Folder: ok:true, no
           reason given. What actually happens is quieter than a rejection and
           worse than one. The fold keys changes by target address, so `loadAll`
           applies it and everything looks correct — but `loadFolder` and
@@ -1585,7 +1535,7 @@ export const shipApp: AgentApp = {
           Folder because that is where readers of this project look, not because
           anything would stop you writing elsewhere.
         */
-        const folder = project.originFolder
+        const folder = project.contentFolder
         if (!folder) {
           throw new BadRequest(
             `“${project.title}” names no Folder for its record, so a change to it has nowhere to be published.`,
@@ -1624,77 +1574,6 @@ export const shipApp: AgentApp = {
         }
 
         return { changed: { title: project.title, addr: project.addr, folder }, applied }
-      },
-    },
-    {
-      name: 'link-project',
-      signs: [KIND.CHANGE],
-      /*
-        A record-repair tool, not how a project changes Folder (FOL-3). A
-        project is filed into a top-level Folder and placed by that Folder's
-        state; this re-points only the record's content Folder and touches no
-        Folder's state, so a project a state lists stays drawn under it in
-        both apps. (One no state lists is placed by Ship from its content
-        Folder, so there it does follow the link; Peek draws it nowhere
-        either way.) Moving a project between Folders is `move-project`
-        (FOL-7), not this.
-      */
-      summary: 'repair a project record whose content Folder is wrong — not how a project moves between Folders',
-      usage: 'link-project <ref> --folder <name|id>',
-      async run(context, args) {
-        const reference = args.positional[0]
-        const target = flagValue(args, 'folder')
-        if (!reference) throw new BadRequest('link-project needs a project reference.')
-        if (!target) throw new BadRequest('link-project needs --folder: a Folder name or id.')
-
-        const state = await store(context).loadAll()
-        const project = findProject(state.projects, reference)
-        const folder = await resolveFolder(context, target)
-
-        /*
-          Nothing is re-created and nothing moves. The record keeps the `h` it
-          was filed with, the issues already in the old Folder keep theirs, and
-          the change is published twice — into the record's Folder, where every
-          reader of this project looks, and into the Folder being linked, so an
-          app reading *that* Folder finds the project named from inside it
-          (`Store.linkProjectFolder` says why both). Without the second write a
-          team Folder linked before any issue is filed in it lists nothing.
-
-          Refused rather than repeated when the project already points there: a
-          repeated value folds to the same state, but it is one more activity
-          line on the project for no change, and the answer would read as if
-          something had moved.
-        */
-        if (project.contentFolder === folder.folder) {
-          throw new BadRequest(
-            `“${project.title}” is already linked to ${folder.name || 'that Folder'} (${folder.folder}). Nothing was published.`,
-          )
-        }
-        if (!project.originFolder) {
-          throw new BadRequest(
-            `“${project.title}” names no Folder for its record, so the link has nowhere to be published.`,
-          )
-        }
-
-        const result = await store(context).linkProjectFolder({
-          recordFolder: project.originFolder,
-          project: project.addr,
-          folder: folder.folder,
-        })
-        published(result, `linking “${project.title}” to ${folder.name || folder.folder}`)
-
-        return {
-          linked: { title: project.title, addr: project.addr },
-          from: project.contentFolder,
-          to: { folder: folder.folder, name: folder.name || undefined },
-          recordFolder: project.originFolder,
-          eventId: result.eventId,
-          // The second write is the one a reader of the team Folder depends on,
-          // and it can be refused on its own — a restricted Folder would.
-          announced: result.announced,
-          announceReason: result.announceReason,
-          note: `Issues already filed keep their Folder; new ones land in ${folder.name || folder.folder}. \`ship projects\` now reports this project as relinked.`,
-        }
       },
     },
     {
@@ -1767,11 +1646,11 @@ export const shipApp: AgentApp = {
 
         /*
           The record's Folder, for the reason `edit-project` gives at length:
-          publishing against the content Folder is *accepted* by the relay and
+          publishing against another Folder is *accepted* by the relay and
           then invisible to anything reading the record's own Folder. An archive
           that half of the readers cannot see is worse than no archive.
         */
-        const folder = project.originFolder
+        const folder = project.contentFolder
         if (!folder) {
           throw new BadRequest(
             `“${project.title}” names no Folder for its record, so a change to it has nowhere to be published.`,
@@ -1910,7 +1789,7 @@ export const shipApp: AgentApp = {
           either Folder does — and refusing here would strand exactly the
           object this command exists to remove.
         */
-        const folder = project.originFolder ?? project.contentFolder
+        const folder = project.contentFolder
         if (!folder) throw new BadRequest(`“${project.title}” names no Folder at all, so a deletion cannot be addressed to one.`)
 
         const survives = `Its ${issues} issue(s) are separate events and are NOT deleted. Since SHI-7 they stay reachable in \`ship issues\`, listed with no project.`

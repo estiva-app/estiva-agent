@@ -51,8 +51,7 @@ async function main() {
     const issueFolders = new Map<string, number>()
     for (const i of issues) issueFolders.set(i.folder, (issueFolders.get(i.folder) ?? 0) + 1)
     console.log(`${p.title}  [${p.status}]  author ${p.author.slice(0, 8)}…`)
-    console.log(`   record  ${name(p.originFolder)}`)
-    console.log(`   content ${name(p.contentFolder)}${p.contentFolder !== p.originFolder ? '  (relinked)' : ''}`)
+    console.log(`   record  ${name(p.contentFolder)}`)
     console.log(`   issues  ${issues.length} in ${[...issueFolders].map(([f, n]) => `${name(f)} ×${n}`).join(', ') || '—'}`)
   }
 }

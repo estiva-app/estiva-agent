@@ -19708,18 +19708,6 @@ function foldConversations(messages) {
 function conversationsAbout(conversations, address) {
   return conversations.filter((conversation) => conversation.about.includes(address));
 }
-function projectFolders(project, activity) {
-  const seen = [];
-  const add = (value) => {
-    if (value && !seen.includes(value)) seen.push(value);
-  };
-  add(project.originFolder);
-  for (const change of activity) {
-    if (change.target === project.addr && change.field === "folder") add(change.value);
-  }
-  add(project.contentFolder);
-  return seen;
-}
 function projectFolder(event) {
   return tag(event, "h") ?? tag(event, "buzz-channel");
 }
@@ -19753,12 +19741,9 @@ function foldFolder(events, resolveRefs = () => []) {
       title: fields.title?.value ?? projectName(event) ?? "(untitled project)",
       description: fields.description?.value ?? recordDescription(event),
       descriptionFormat: fields.description?.format ?? contentFormatOf(event),
-      // The project's Folder is the one its record names — the Folder *is* the
-      // project. A change may re-point it at an existing Peek topic; that
-      // override wins, but the original still has to be read
-      // (see `projectFolders`).
-      contentFolder: fields.folder?.value ?? projectFolder(event) ?? "",
-      originFolder: projectFolder(event) ?? "",
+      // The Folder the record names, and only that. A `folder` change is not
+      // read: re-pointing a project is gone (MAN-5).
+      contentFolder: projectFolder(event) ?? "",
       lead: fields.lead?.value ?? tag(event, "lead"),
       status: fields.status?.value ?? DEFAULT_PROJECT_STATUS,
       // Any non-empty value means archived; unarchiving writes an empty string
@@ -20035,7 +20020,7 @@ var Store = class {
    * `project-…` channel (`ensureFolder`) or a pasted Peek topic. A project
    * belongs to a team now, and its issues, changes and conversation carry the
    * team's `h` — the record's `buzz-channel` names the team, so `contentFolder`
-   * and `originFolder` both fold to it and nothing downstream changes meaning.
+   * folds to it and nothing downstream changes meaning.
    *
    * **Then it is listed in the team**, which the record alone never does. A
    * Folder with state lists only what its `kind:30890` names, and filing by `h`
@@ -20294,47 +20279,6 @@ var Store = class {
       })
     );
   }
-  /**
-   * Re-point an existing project at a different Folder.
-   *
-   * Only needed after the fact. Creating the project in the topic's Folder is
-   * the normal way to pair them; this exists because an event cannot change its
-   * own `h`, so a project that already exists elsewhere has no other way to say
-   * "my work happens over there now".
-   *
-   * A change event rather than an edit, so somebody who is not the project's
-   * author can do it — which matters here more than anywhere, since the person
-   * who owns the Peek topic is frequently not the person who made the project.
-   *
-   * Issues already filed under the old Folder keep their `h` and do not move.
-   * Readers take the union of every Folder a project has pointed at
-   * (`projectFolders`) rather than pretending the history did not happen.
-   */
-  async linkProjectFolder(args2) {
-    assertFolderId(args2.folder);
-    const note = `linked to Folder ${args2.folder.slice(0, 8)}\u2026`;
-    const linked = await this.setField({
-      folder: args2.recordFolder,
-      target: args2.project,
-      field: "folder",
-      value: args2.folder,
-      note
-    });
-    if (!linked.ok) return { ...linked, announced: false };
-    if (args2.folder === args2.recordFolder) return { ...linked, announced: true };
-    const announced = await this.setField({
-      folder: args2.folder,
-      target: args2.project,
-      field: "folder",
-      value: args2.folder,
-      note
-    });
-    return {
-      ...linked,
-      announced: announced.ok,
-      announceReason: announced.ok ? void 0 : announced.reason
-    };
-  }
   async createIssue(args2) {
     const id = crypto.randomUUID();
     const result = await this.publish(
@@ -20560,7 +20504,7 @@ ${args2.aboutRef}` : args2.body;
    *
    * That unscoped first query is also why this method needs no change for
    * REW-11: a global project record comes back from exactly the same filter,
-   * and `projectFolders` reads its `buzz-channel` where it used to read `h`.
+   * and `contentFolder` reads its `buzz-channel` where it used to read `h`.
    *
    * **Issues are discovered directly as well as through their projects** — see
    * SHI-7 and the note inside. Reaching them only through a parent loses every
@@ -20571,7 +20515,7 @@ ${args2.aboutRef}` : args2.body;
    * query's `#h` list *is* the answer to the discovery one.
    *
    * Folded as a single stream at the end rather than per Folder. Not an
-   * optimisation — a re-linked project's record and its older issues sit in
+   * optimisation — a project's record and its older issues can sit in
    * different Folders, and folding those separately would drop changes.
    */
   async loadAll() {
@@ -20615,9 +20559,7 @@ ${args2.aboutRef}` : args2.body;
       const state = foldFolder(events, referencedAddresses);
       const wanted = /* @__PURE__ */ new Set();
       for (const project of state.projects) {
-        for (const folder of projectFolders(project, state.activity)) {
-          if (!fetched.has(folder)) wanted.add(folder);
-        }
+        if (project.contentFolder && !fetched.has(project.contentFolder)) wanted.add(project.contentFolder);
       }
       for (const issue2 of state.issues) {
         if (issue2.folder && !fetched.has(issue2.folder)) wanted.add(issue2.folder);
@@ -20793,17 +20735,6 @@ function projectSummary(project, directory) {
     lead: who(directory, project.lead),
     archived: project.archived || void 0,
     folder: project.contentFolder,
-    /*
-      Said in the listing, not only in `show` (FOL-20). `folder` is where the
-      project's *work* is, and after a re-link that is not where its record
-      is — the record keeps the `h` it was filed with, and a change published
-      anywhere else is accepted by the relay and then invisible to a reader of
-      the record's own Folder. Fourteen projects linked to five team Folders is
-      fourteen chances to get that wrong, and this is what makes the move
-      checkable from the one command everybody runs first.
-    */
-    relinked: project.contentFolder !== project.originFolder || void 0,
-    recordFolder: project.contentFolder !== project.originFolder ? project.originFolder : void 0,
     /*
           Present even when empty, and that is the point of including it at all.
     
@@ -21042,24 +20973,6 @@ async function stateAfter(context2, state, issue2, after) {
     who(directory, assignee)
   );
 }
-async function resolveFolder(context2, reference) {
-  const events = await context2.relay.queryAll([{ kinds: [KIND2.FOLDER] }]);
-  const channels = events.map((event) => ({
-    folder: event.tags.find((tag2) => tag2[0] === "h")?.[1] ?? "",
-    name: event.tags.find((tag2) => tag2[0] === "name")?.[1] ?? ""
-  }));
-  return resolveOne(
-    channels.filter((channel) => channel.folder),
-    reference,
-    {
-      noun: "folder",
-      exact: (channel) => [channel.folder],
-      text: (channel) => channel.name,
-      label: (channel) => `${channel.name} (${channel.folder.slice(0, 8)}\u2026)`,
-      hint: "Pass a Folder name or id."
-    }
-  );
-}
 function readFolders(context2) {
   return listFolders((filters) => context2.relay.queryAll(filters));
 }
@@ -21141,14 +21054,7 @@ async function showProject(context2, state, project) {
     archived: project.archived || void 0,
     description: project.description,
     createdAt: new Date(project.createdAt * 1e3).toISOString(),
-    folders: {
-      content: project.contentFolder,
-      record: project.originFolder,
-      // Worth saying out loud rather than leaving to be compared: a change to
-      // the record published into the content Folder is accepted by the relay
-      // and then invisible to anything reading the record's own Folder.
-      relinked: project.contentFolder !== project.originFolder || void 0
-    },
+    folder: project.contentFolder,
     issues: issues.map((issue2) => issueSummary(issue2, directory)),
     history,
     conversation
@@ -21698,7 +21604,7 @@ Pass an address to say which.`
         const state = await store(context2).loadAll();
         const project = findProject(state.projects, reference);
         const edits = projectEdits(project, args2, context2.signer.pubkey);
-        const folder = project.originFolder;
+        const folder = project.contentFolder;
         if (!folder) {
           throw new BadRequest(
             `\u201C${project.title}\u201D names no Folder for its record, so a change to it has nowhere to be published.`
@@ -21721,59 +21627,6 @@ Pass an address to say which.`
           applied.push({ field: edit.field, from: edit.from, to: edit.value, eventId: result.eventId });
         }
         return { changed: { title: project.title, addr: project.addr, folder }, applied };
-      }
-    },
-    {
-      name: "link-project",
-      signs: [KIND2.CHANGE],
-      /*
-        A record-repair tool, not how a project changes Folder (FOL-3). A
-        project is filed into a top-level Folder and placed by that Folder's
-        state; this re-points only the record's content Folder and touches no
-        Folder's state, so a project a state lists stays drawn under it in
-        both apps. (One no state lists is placed by Ship from its content
-        Folder, so there it does follow the link; Peek draws it nowhere
-        either way.) Moving a project between Folders is `move-project`
-        (FOL-7), not this.
-      */
-      summary: "repair a project record whose content Folder is wrong \u2014 not how a project moves between Folders",
-      usage: "link-project <ref> --folder <name|id>",
-      async run(context2, args2) {
-        const reference = args2.positional[0];
-        const target = flagValue(args2, "folder");
-        if (!reference) throw new BadRequest("link-project needs a project reference.");
-        if (!target) throw new BadRequest("link-project needs --folder: a Folder name or id.");
-        const state = await store(context2).loadAll();
-        const project = findProject(state.projects, reference);
-        const folder = await resolveFolder(context2, target);
-        if (project.contentFolder === folder.folder) {
-          throw new BadRequest(
-            `\u201C${project.title}\u201D is already linked to ${folder.name || "that Folder"} (${folder.folder}). Nothing was published.`
-          );
-        }
-        if (!project.originFolder) {
-          throw new BadRequest(
-            `\u201C${project.title}\u201D names no Folder for its record, so the link has nowhere to be published.`
-          );
-        }
-        const result = await store(context2).linkProjectFolder({
-          recordFolder: project.originFolder,
-          project: project.addr,
-          folder: folder.folder
-        });
-        published(result, `linking \u201C${project.title}\u201D to ${folder.name || folder.folder}`);
-        return {
-          linked: { title: project.title, addr: project.addr },
-          from: project.contentFolder,
-          to: { folder: folder.folder, name: folder.name || void 0 },
-          recordFolder: project.originFolder,
-          eventId: result.eventId,
-          // The second write is the one a reader of the team Folder depends on,
-          // and it can be refused on its own — a restricted Folder would.
-          announced: result.announced,
-          announceReason: result.announceReason,
-          note: `Issues already filed keep their Folder; new ones land in ${folder.name || folder.folder}. \`ship projects\` now reports this project as relinked.`
-        };
       }
     },
     {
@@ -21835,7 +21688,7 @@ Pass an address to say which.`
         const state = await store(context2).loadAll();
         const project = findProject(state.projects, reference);
         const archived = !args2.flags.unarchive;
-        const folder = project.originFolder;
+        const folder = project.contentFolder;
         if (!folder) {
           throw new BadRequest(
             `\u201C${project.title}\u201D names no Folder for its record, so a change to it has nowhere to be published.`
@@ -21948,7 +21801,7 @@ Pass an address to say which.`
         const state = await store(context2).loadAll();
         const project = findProject(state.projects, reference);
         const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
-        const folder = project.originFolder ?? project.contentFolder;
+        const folder = project.contentFolder;
         if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no Folder at all, so a deletion cannot be addressed to one.`);
         const survives = `Its ${issues} issue(s) are separate events and are NOT deleted. Since SHI-7 they stay reachable in \`ship issues\`, listed with no project.`;
         if (!args2.flags.yes) {
