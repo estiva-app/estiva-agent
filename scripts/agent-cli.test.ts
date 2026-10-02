@@ -185,7 +185,7 @@ console.log('\n— listing rows —')
 const row = issueRow({ ref: 'FOL-19', short: '42d82497', addr: 'x', title: 'A ?file= URL does not open the file it names when the Folder is a team Folder and the file is old', status: 'In Progress', assignee: undefined, author: 'A', project: undefined })
 check('an issue row is ref, status value, short id, clipped title', row.startsWith('FOL-19   in_progress  42d82497 A ?file= URL') && row.endsWith('…'), row)
 check('and under 100 chars', row.length < 100, String(row.length))
-const prow = projectRow({ ref: 'x', short: '2385fd92', title: 'Make Agent more token efficient', status: 'Planned', lead: 'Miky', archived: true, folder: 'f', relinked: undefined, recordFolder: undefined, issues: 2 } as never)
+const prow = projectRow({ ref: 'x', short: '2385fd92', title: 'Make Agent more token efficient', status: 'Planned', lead: 'Miky', archived: true, folder: 'f', issues: 2 } as never)
 check('a project row carries short, status, count, title, archived and lead', prow === '2385fd92 planned        2 issues Make Agent more token efficient (archived) — Miky', prow)
 
 console.log('\n— resolving a project (the one that used to guess) —')
@@ -206,7 +206,6 @@ const project = (over: Partial<Project>): Project => ({
   title: 'Untitled',
   description: '',
   contentFolder: 'f',
-  originFolder: 'f',
   status: 'planned',
   archived: false,
   fields: {},
@@ -507,7 +506,6 @@ console.log('— editing a project —')
     title: 'Cross-app read state',
     description: 'the old blurb',
     contentFolder: 'f',
-    originFolder: 'f',
     status: 'planned',
     archived: false,
     fields: {},
@@ -563,8 +561,8 @@ console.log('— editing an issue —')
     string that matches no project, and no reader would report it.
   */
   const projects: Project[] = [
-    { addr: '30850:abc:p1', id: 'p1', author: 'abc', createdAt: 0, title: 'Peek: Feedback & Bugs', description: '', descriptionFormat: 'marker', contentFolder: 'f1', originFolder: 'f1', status: 'planned', archived: false, fields: {} },
-    { addr: '30850:abc:p2', id: 'p2', author: 'abc', createdAt: 0, title: 'Ship: Feedback & Bugs', description: '', descriptionFormat: 'marker', contentFolder: 'f2', originFolder: 'f2', status: 'planned', archived: false, fields: {} },
+    { addr: '30850:abc:p1', id: 'p1', author: 'abc', createdAt: 0, title: 'Peek: Feedback & Bugs', description: '', descriptionFormat: 'marker', contentFolder: 'f1', status: 'planned', archived: false, fields: {} },
+    { addr: '30850:abc:p2', id: 'p2', author: 'abc', createdAt: 0, title: 'Ship: Feedback & Bugs', description: '', descriptionFormat: 'marker', contentFolder: 'f2', status: 'planned', archived: false, fields: {} },
   ]
 
   const subject = issue({ addr: '30851:abc:9', title: 'Old title', description: 'old body', projectAddr: '30850:abc:p1' })

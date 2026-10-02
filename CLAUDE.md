@@ -105,8 +105,8 @@ Three things about the target are easy to get wrong:
   and nothing prints the old body afterwards. `ship show` and `peek topic` both
   print an `id` for every message.
 - **The `h` is the *target's* Folder, not the page's.** 40003 is channel-scoped,
-  and a conversation stays in the Folder it was posted in even after its project
-  is re-linked. Both commands read it off the message, which is why neither
+  and a conversation stays in the Folder it was posted in, which need not be its
+  project's. Both commands read it off the message, which is why neither
   takes a Folder.
 - **Who may edit is the relay's answer, never the CLI's.** It accepts the
   target's effective author or the NIP-OA owner of an authoring agent, and no
@@ -346,7 +346,7 @@ are exactly the ones production cannot demonstrate.
 
 The app modules read through `Store` and `foldFolder` rather than querying the
 relay directly, for the same reason. The fold holds the subtle rules — change
-ordering, re-linked Folders, a status set by someone who did not author the
+ordering, issues filed outside their project's Folder, a status set by someone who did not author the
 issue — and reimplementing any of it would reintroduce the drift.
 
 ### Tests
