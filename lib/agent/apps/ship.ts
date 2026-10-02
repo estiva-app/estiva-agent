@@ -39,6 +39,7 @@ import {
   planPlaceFile,
   topLevelFolders,
   type FolderSummary,
+  type ResolvedManifest,
 } from '@estiva-app/interop'
 
 /** A pubkey as something a person can read, falling back to a short hex. */
@@ -147,9 +148,18 @@ function projectSummary(project: Project, directory: Directory, vocab: Vocabular
   }
 }
 
+/**
+ * What an issue's ref slot prints before Ship has numbered it. The agent files
+ * issues with no ref (PER-21) and Ship numbers them when somebody opens the
+ * project, so the short id beside it is the name meanwhile — not the address,
+ * which would be 110 characters where every other row has eight.
+ */
+const NO_REF = 'no ref yet'
+const refOf = (issue: { ref?: string }) => issue.ref ?? NO_REF
+
 function issueSummary(issue: Issue, directory: Directory, vocab: Vocabulary) {
   return {
-    ref: issue.ref ?? issue.addr,
+    ref: refOf(issue),
     // Printed in every listing so the next command can name the issue by it
     // rather than by a ref that collides (SHI-4) or an address typed from
     // memory. Every resolver here accepts it back.
@@ -647,7 +657,7 @@ async function stateAfter(
   }
   return issueLine(
     {
-      ref: issue.ref ?? issue.addr,
+      ref: refOf(issue),
       id: issue.id,
       status: after.status ?? issue.status,
       assignee,
@@ -712,8 +722,18 @@ interface PublishOutcome {
  * agent, published in order (PER-21). Nothing here names a kind or a tag: the
  * manifest the object's author resolves to does.
  *
- * Every event is published until one is refused; the answers come back in
- * order so a caller can report a listing that failed after its record landed.
+ * A refused first event — the record, the change, the deletion — stops there.
+ * After it, every listing event is still tried, as Ship does: one Folder
+ * refusing its remove is no reason to leave the deleted project in the others.
+ * The answers come back in order so a caller can report a listing that failed
+ * after its record landed.
+ *
+ * **`signs` is the command's own, and nothing outside it is signed.** A manifest
+ * is anybody's event: an author's recommendation, or else the newest one
+ * claiming the kind, picks it. One that declared `comment` as a `kind:5` would
+ * otherwise have the agent delete its own issue when asked to comment on it.
+ * So the first event must be the command's first kind and the rest must be
+ * among its kinds, or nothing is published.
  */
 async function act(
   context: AgentContext,
@@ -721,6 +741,7 @@ async function act(
   target: { addr: string; author: string; folder: string },
   actionId: string,
   value: string | Record<string, string>,
+  signs: readonly number[],
   extra: {
     note?: string
     newId?: string
@@ -728,9 +749,11 @@ async function act(
     listedIn?: { id: string; hasState: boolean }[]
     /** NIP-09's optional reason, the deletion's own `content`. */
     reason?: string
+    /** The manifest to act with, when the target is not one of its objects (a creation on a Folder record). */
+    manifest?: ResolvedManifest
   } = {},
 ): Promise<PublishOutcome[]> {
-  const resolved = workspace.manifestFor(target.addr)
+  const resolved = extra.manifest ?? workspace.manifestFor(target.addr)
   if (!resolved) throw new BadRequest(`No app's manifest claims ${target.addr}, so there is no declared way to change it.`)
   const [kind] = target.addr.split(':')
   const built = buildActionEvents({
@@ -749,13 +772,19 @@ async function act(
     createdAtMs: Date.now(),
   })
   if (typeof built === 'string') throw new BadRequest(built)
+  const stray = built.find((event, i) => (i === 0 ? event.kind !== signs[0] : !signs.includes(event.kind)))
+  if (stray) {
+    throw new BadRequest(
+      `The manifest read for ${target.addr} declares "${actionId}" as a kind:${stray.kind}, which this command does not write (it writes ${signs.join(', ')}). Nothing was published.`,
+    )
+  }
   const outcomes: PublishOutcome[] = []
   for (const [i, unsigned] of built.entries()) {
     const event = i === 0 && extra.reason && unsigned.kind === KIND_DELETION ? { ...unsigned, content: extra.reason } : unsigned
     const signed = await context.signer.sign(event)
     const result = await context.relay.publish(signed)
     outcomes.push({ ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id })
-    if (!result.ok) break
+    if (!result.ok && i === 0) break
   }
   return outcomes
 }
@@ -809,7 +838,7 @@ async function setField(
       (Array.isArray(candidate.appliesTo) ? candidate.appliesTo.includes(kind) : candidate.appliesTo === kind),
   )
   if (!action) throw new BadRequest(`Ship's manifest declares no action that sets ${field} on this object.`)
-  const [outcome] = await act(context, workspace, target, action.id, value, { note })
+  const [outcome] = await act(context, workspace, target, action.id, value, [KIND_CHANGE], { note })
   return outcome
 }
 
@@ -909,6 +938,18 @@ async function showProject(context: AgentContext, state: Workspace, project: Pro
   }
 }
 
+/**
+ * Every relay member's key, from the relay's own member list (NIP-43
+ * `kind:13534`, one `["member", <pubkey>, <role>]` per member). Only the relay
+ * can publish that kind (buzz `is_relay_only_kind`), so the newest one is the
+ * roster. Empty when the relay publishes none.
+ */
+async function relayMembers(context: AgentContext): Promise<string[]> {
+  const [list] = await context.relay.queryAll([{ kinds: [KIND_RELAY_MEMBERS], limit: 1 }] as never)
+  return list ? list.tags.filter((tag) => tag[0] === 'member' && tag[1]).map((tag) => tag[1]) : []
+}
+const KIND_RELAY_MEMBERS = 13534
+
 /** What one key has been seen doing, which is the only evidence this list has. */
 export interface Participant {
   pubkey: string
@@ -926,15 +967,14 @@ export interface Participant {
  * inverse of the lookup `show` already does: that turns keys into names for
  * display, this lists the keys so somebody can find the one they need.
  *
- * **The set is "everyone who has touched something readable", not "the team".**
- * There is no roster on the relay to ask — membership is an Estiva ID concern
- * and this identity cannot read it — so a person who has never filed, been
- * assigned, led or commented does not appear here at all. The command says so
- * rather than letting an empty-looking answer read as "they are not on the
- * team".
+ * **The set is everyone who has touched a Ship object, plus every relay member**
+ * (`members`). Somebody you want to assign so they take a look may never have
+ * done anything here yet (Miky, 2026-10-02, PER-21); they come last, with
+ * nothing counted.
  */
 export function participants(
   state: Pick<Workspace, 'issues' | 'projects' | 'activity'> & { conversations: readonly Conversation[] },
+  members: readonly string[] = [],
 ): Participant[] {
   const seen = new Map<string, Participant>()
   const touch = (key: string | undefined, field: keyof Omit<Participant, 'pubkey'>) => {
@@ -966,6 +1006,11 @@ export function participants(
   for (const conversation of state.conversations) {
     touch(conversation.root.author, 'acted')
     for (const reply of conversation.replies) touch(reply.author, 'acted')
+  }
+  for (const key of members) {
+    if (!/^[0-9a-f]{64}$/i.test(key)) continue
+    const at = key.toLowerCase()
+    if (!seen.has(at)) seen.set(at, { pubkey: at, filed: 0, assigned: 0, leads: 0, acted: 0 })
   }
 
   // Busiest first: the person somebody is looking for is usually the person
@@ -1227,8 +1272,8 @@ export const shipApp: AgentApp = {
         const directory = await directoryFor(context, [issue.assignee, last?.author])
 
         return {
-          state: issueLine({ ...issue, ref: issue.ref ?? issue.addr, comments }, who(directory, issue.assignee)),
-          ref: issue.ref ?? issue.addr,
+          state: issueLine({ ...issue, ref: refOf(issue), comments }, who(directory, issue.assignee)),
+          ref: refOf(issue),
           short: short(issue.id),
           addr: issue.addr,
           title: issue.title,
@@ -1314,8 +1359,8 @@ export const shipApp: AgentApp = {
       async run(context, args) {
         const state = await loadWorkspace(context)
         // Every object's conversations, so a person who has only ever commented still appears.
-        const talk = await conversationsFor(context, state, [...state.objects.keys()])
-        const found = participants({ ...state, conversations: [...talk.byObject.values()].flat() })
+        const [talk, members] = await Promise.all([conversationsFor(context, state, [...state.objects.keys()]), relayMembers(context)])
+        const found = participants({ ...state, conversations: [...talk.byObject.values()].flat() }, members)
         const directory = await directoryFor(context, found.map((person) => person.pubkey))
 
         const listed = found
@@ -1349,21 +1394,13 @@ export const shipApp: AgentApp = {
         return {
           people: listed,
           /*
-            Two limits, both of which make a short list look like a complete
-            one.
-
-            There is no roster to read: relay membership is an Estiva ID
-            concern this identity cannot query, so somebody who has never filed,
-            been assigned, led or commented does not appear at all. Absence here
-            is not evidence they are not on the team.
-
-            And a key with no `kind:0` stays a key. Estiva ID is the only writer
+            A key with no `kind:0` stays a key. Estiva ID is the only writer
             of profiles (PEEK-48), so an unnamed participant is un-named rather
             than un-real — still a valid target for `assign`.
           */
           note:
-            'Everyone who has touched something this identity can read — not a roster. ' +
-            'A person who has never filed, been assigned, led or commented does not appear. ' +
+            'Everyone who has touched a Ship object, busiest first, then every other relay member. ' +
+            (members.length === 0 ? 'The relay published no member list, so somebody who has done nothing here yet is missing. ' : '') +
             (anonymous > 0
               ? `${anonymous} of these publish no profile and stay a key; they can still be assigned.`
               : 'Every one of them publishes a profile.'),
@@ -1387,7 +1424,7 @@ export const shipApp: AgentApp = {
           address, in the issue's own Folder, so it lands where Ship and Peek
           both show the conversation.
         */
-        const [result] = await act(context, state, issueTarget(issue), 'comment', body)
+        const [result] = await act(context, state, issueTarget(issue), 'comment', body, [KIND_COMMENT])
         published(result, `a comment on ${issue.ref ?? issue.addr}`)
 
         // The eventId is kept because it is what `edit-comment --message` takes.
@@ -1798,7 +1835,7 @@ export const shipApp: AgentApp = {
           }
         }
 
-        const [result] = await act(context, state, { addr: project.addr, author: project.author, folder }, 'archive-project', archived ? 'true' : '')
+        const [result] = await act(context, state, { addr: project.addr, author: project.author, folder }, 'archive-project', archived ? 'true' : '', [KIND_CHANGE])
         published(result, `${archived ? 'archiving' : 'unarchiving'} “${project.title}”`)
 
         const issues = state.issues.filter((issue) => issue.projectAddr === project.addr).length
@@ -1871,7 +1908,7 @@ export const shipApp: AgentApp = {
           }
         }
 
-        const [result] = await act(context, state, issueTarget(issue), 'delete-issue', '', { reason: flagValue(args, 'reason') })
+        const [result] = await act(context, state, issueTarget(issue), 'delete-issue', '', [KIND_DELETION], { reason: flagValue(args, 'reason') })
         published(result, `deleting ${issue.ref ?? issue.addr}`)
 
         return {
@@ -1929,7 +1966,7 @@ export const shipApp: AgentApp = {
         const folders = listing.length > 0 ? listing : [{ folder: project.contentFolder, hasState: all.find((f) => f.id === project.contentFolder)?.hasState ?? false }]
         const from = folders.map((f) => f.folder).join(', ')
         // Ship's `delete-project` action: the `kind:5`, then a remove from each listing (`listed: true`).
-        const [result, ...unlists] = await act(context, state, { addr: project.addr, author: project.author, folder }, 'delete-project', '', {
+        const [result, ...unlists] = await act(context, state, { addr: project.addr, author: project.author, folder }, 'delete-project', '', [KIND_DELETION, PROTOCOL_KIND.FOLDER_COMMAND], {
           reason: flagValue(args, 'reason'),
           listedIn: folders.map((f) => ({ id: f.folder, hasState: f.hasState })),
         })
@@ -1978,11 +2015,12 @@ export const shipApp: AgentApp = {
         const description = flagValue(args, 'description')
         const [result, placed] = await act(
           context,
-          { ...state, manifestFor: () => state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`) },
+          state,
           { addr: team.channel ?? `${KIND_CHANNEL_METADATA}::${team.id}`, author: '', folder: team.id },
           'add-project',
           { name: title, ...(description ? { description } : {}) },
-          { newId: id, folderHasState: team.hasState },
+          [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND],
+          { newId: id, folderHasState: team.hasState, manifest: state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`) },
         )
         const created = { result, placed, addr: `${KIND.PROJECT}:${context.signer.pubkey}:${id}` }
         published(created.result, `a new project "${title}"`)
@@ -2036,6 +2074,7 @@ export const shipApp: AgentApp = {
           { addr: project.addr, author: project.author, folder: listed ?? project.contentFolder },
           'add-issue',
           { title, ...(description ? { description } : {}) },
+          [KIND.ISSUE],
           { newId: id },
         )
         const created = { result, id, addr: `${KIND.ISSUE}:${context.signer.pubkey}:${id}` }
@@ -2044,7 +2083,7 @@ export const shipApp: AgentApp = {
         // The same line every other write echoes, so the short id the next
         // command needs is on screen without a `show` (MAK-2).
         return {
-          state: issueLine({ ref: 'no ref yet', id: created.id, status: state.vocab.issue.fallback, comments: [] }, undefined),
+          state: issueLine({ ref: NO_REF, id: created.id, status: state.vocab.issue.fallback, comments: [] }, undefined),
           created: { short: short(created.id), addr: created.addr, title, project: project.title },
           eventId: created.result.eventId,
         }

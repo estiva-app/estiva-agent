@@ -126,7 +126,7 @@ const pointerOf = (address: string) => {
  */
 async function manifestsFor(roots: readonly SignedEvent[], query: QueryFn, cache: ProjectionCache) {
   const authors = [...new Set(roots.map((root) => root.pubkey))]
-  const kinds = [...new Set(roots.map((root) => root.kind))]
+  const kinds = [KIND.PROJECT, KIND.ISSUE]
   const recommendations = authors.length
     ? await query([{ kinds: [KIND_HANDLER_RECOMMENDATION], authors, '#d': kinds.map(String) }])
     : []
@@ -135,16 +135,28 @@ async function manifestsFor(roots: readonly SignedEvent[], query: QueryFn, cache
   const resolved = new Map<string, ResolvedManifest | undefined>()
   const shared = new Map<number, ResolvedManifest | undefined>()
   for (const kind of kinds) {
-    const quiet = authors.find((author) => !recommends.has(`${kind}:${author}`) && roots.some((r) => r.kind === kind && r.pubkey === author))
-    if (quiet) shared.set(kind, (await resolveManifest(pointerOf(`${kind}:${quiet}:`), query, cache)) ?? undefined)
+    // Resolved even when no root of the kind exists yet: an identity filing its first project acts with it.
+    const quiet = authors.find((author) => !recommends.has(`${kind}:${author}`)) ?? NOBODY
+    shared.set(kind, (await resolveManifest(pointerOf(`${kind}:${quiet}:`), query, cache)) ?? undefined)
   }
   for (const key of recommends) {
     const [kind, author] = key.split(':')
     resolved.set(`${kind}:${author}`, (await resolveManifest(pointerOf(`${kind}:${author}:`), query, cache)) ?? undefined)
   }
-  return (pointer: { kind: number; pubkey: string }) =>
-    recommends.has(`${pointer.kind}:${pointer.pubkey}`) ? resolved.get(`${pointer.kind}:${pointer.pubkey}`) : shared.get(pointer.kind)
+  return {
+    of: (pointer: { kind: number; pubkey: string }) =>
+      recommends.has(`${pointer.kind}:${pointer.pubkey}`) ? resolved.get(`${pointer.kind}:${pointer.pubkey}`) : shared.get(pointer.kind),
+    /** What an author who recommends nothing reads a kind with — the workspace's vocabulary. */
+    shared: (kind: number) => shared.get(kind),
+    all: () => [...shared.values(), ...resolved.values()].filter((m): m is ResolvedManifest => m !== undefined),
+  }
 }
+
+/** A key nobody holds, so `resolveManifest` finds no recommendation and answers for the kind alone. */
+const NOBODY = '0'.repeat(64)
+
+/** NIP-01's rule between two versions of one addressable event: later `created_at`, then the lower id. */
+const newer = (a: SignedEvent, b: SignedEvent) => a.created_at > b.created_at || (a.created_at === b.created_at && a.id < b.id)
 
 /** A status vocabulary off the manifest's status slot for a kind. */
 function vocabularyOf(resolved: ResolvedManifest | undefined, kind: number): Vocabulary {
@@ -167,13 +179,10 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
   const query = relayQuery(context)
   const cache = createProjectionCache()
   const roots = await query([{ kinds: [KIND.PROJECT, KIND.ISSUE] }])
-  const manifestOf = await manifestsFor(roots, query, cache)
-  // Changes by the change kind each manifest declares — Ship's is one kind for both.
-  const changeKinds = [...new Set([KIND.PROJECT, KIND.ISSUE].flatMap((kind) => {
-    const sample = roots.find((root) => root.kind === kind)
-    const records = sample && manifestOf(sample)?.manifest.records
-    return records ? [records.changeKind] : []
-  }))]
+  const manifests = await manifestsFor(roots, query, cache)
+  const manifestOf = manifests.of
+  // Changes by the change kind every manifest in play declares — Ship's is one kind for both.
+  const changeKinds = [...new Set(manifests.all().flatMap((resolved) => (resolved.manifest.records ? [resolved.manifest.records.changeKind] : [])))]
   // Every change to a Ship object, including one whose record is gone — a
   // deleted project's history is still history, and `activity` lists it.
   const shipKind = (target: string | undefined) =>
@@ -183,12 +192,21 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
     : []
 
   const objects = new Map(projectEvents([...roots, ...changes], manifestOf).map((object) => [object.address!, object]))
-  const rootOf = new Map(roots.map((root) => [`${root.kind}:${root.pubkey}:${tagValue(root, 'd')}`, root]))
-  const sampleProject = roots.find((root) => root.kind === KIND.PROJECT)
-  const sampleIssue = roots.find((root) => root.kind === KIND.ISSUE)
+  // The version `projectEvents` folded, so the author, date and Folder printed are that version's.
+  const rootOf = new Map<string, SignedEvent>()
+  for (const root of roots) {
+    const addr = `${root.kind}:${root.pubkey}:${tagValue(root, 'd')}`
+    const held = rootOf.get(addr)
+    if (!held || newer(root, held)) rootOf.set(addr, root)
+  }
   const vocab = {
-    project: vocabularyOf(sampleProject && manifestOf(sampleProject), KIND.PROJECT),
-    issue: vocabularyOf(sampleIssue && manifestOf(sampleIssue), KIND.ISSUE),
+    project: vocabularyOf(manifests.shared(KIND.PROJECT), KIND.PROJECT),
+    issue: vocabularyOf(manifests.shared(KIND.ISSUE), KIND.ISSUE),
+  }
+  // Each object's status label goes back to a value through its own manifest's vocabulary.
+  const vocabOf = (root: SignedEvent) => {
+    const resolved = manifestOf(root)
+    return resolved === manifests.shared(root.kind) ? (root.kind === KIND.PROJECT ? vocab.project : vocab.issue) : vocabularyOf(resolved, root.kind)
   }
 
   const projects: Project[] = []
@@ -206,7 +224,7 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
     if (object.kind === KIND.PROJECT) {
       projects.push({
         ...base,
-        status: rawStatus(object, vocab.project),
+        status: rawStatus(object, vocabOf(root)),
         lead: metaValue(object, 'lead'),
         archived: Boolean(object.archived),
         contentFolder: folderOf(root) ?? '',
@@ -214,7 +232,7 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
     } else {
       issues.push({
         ...base,
-        status: rawStatus(object, vocab.issue),
+        status: rawStatus(object, vocabOf(root)),
         assignee: metaValue(object, 'assignee'),
         ref: metaValue(object, 'ref'),
         projectAddr: object.parentRef || undefined,
@@ -270,6 +288,9 @@ export interface Conversation {
   replies: Message[]
 }
 
+/** The most events one `#e` read of a chunk of conversations asks for. */
+const THREAD_LIMIT = 1000
+
 export const asMessage = (event: SignedEvent): Message => ({
   id: event.id,
   author: event.pubkey,
@@ -309,12 +330,21 @@ export async function conversationsFor(
   // One `#e` read per chunk of roots; the reference only selects the manifest's comment kinds.
   const roots: Record<string, SignedEvent> = {}
   const replies: Record<string, SignedEvent[]> = {}
-  for (let i = 0; i < allRoots.length; i += 100) {
-    const chunk = allRoots.slice(i, i + 100)
-    const threads = await threadsOf(objects[0].address!, chunk, query, workspace.cache, 1000)
+  // `threadsOf` does not say when its limit cut the answer, so a chunk that comes
+  // back full is split and read again rather than trusted.
+  const read = async (chunk: string[]): Promise<void> => {
+    const threads = await threadsOf(objects[0].address!, chunk, query, workspace.cache, THREAD_LIMIT)
+    const answered = Object.values(threads.replies).reduce((sum, list) => sum + list.length, 0)
+    if (answered >= THREAD_LIMIT && chunk.length > 1) {
+      const half = Math.ceil(chunk.length / 2)
+      await read(chunk.slice(0, half))
+      await read(chunk.slice(half))
+      return
+    }
     Object.assign(roots, threads.roots)
     for (const [id, list] of Object.entries(threads.replies)) replies[id] = list
   }
+  for (let i = 0; i < allRoots.length; i += 100) await read(allRoots.slice(i, i + 100))
 
   for (const object of objects) {
     const ids = (rootsByObject[object.address!] ?? []).map((message) => message.id)

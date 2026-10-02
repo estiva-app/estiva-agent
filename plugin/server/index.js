@@ -17396,18 +17396,14 @@ function parseProfile2(event) {
 function directoryFrom(events) {
   const newest = /* @__PURE__ */ new Map();
   for (const event of events) {
-    if (event.kind !== 0) continue;
-    const held = newest.get(event.pubkey);
+    const profile = parseProfile2(event);
+    if (!profile) continue;
+    const held = newest.get(event.pubkey)?.event;
     if (!held || event.created_at > held.created_at || event.created_at === held.created_at && event.id < held.id) {
-      newest.set(event.pubkey, event);
+      newest.set(event.pubkey, { event, profile });
     }
   }
-  const directory = /* @__PURE__ */ new Map();
-  for (const [pubkey, event] of newest) {
-    const profile = parseProfile2(event);
-    if (profile) directory.set(pubkey, profile);
-  }
-  return directory;
+  return new Map([...newest].map(([pubkey, { profile }]) => [pubkey, profile]));
 }
 async function profilesOf(query, pubkeys) {
   const wanted = [...new Set(pubkeys.filter((key) => Boolean(key) && /^[0-9a-f]{64}$/i.test(key)))];
@@ -17789,7 +17785,7 @@ async function conversationsOf(files, query, cache) {
   });
   if (asked.length === 0)
     return {};
-  const refOf = new Map(asked.map((a) => [a.address, a.ref]));
+  const refOf2 = new Map(asked.map((a) => [a.address, a.ref]));
   const kindsOf = new Map(asked.map((a) => [a.address, a.filter.kinds]));
   const conversations = {};
   for (const a of asked)
@@ -17801,7 +17797,7 @@ async function conversationsOf(files, query, cache) {
       if (seen.has(event.id))
         continue;
       seen.add(event.id);
-      const ref = event.tags.filter((t) => t[0] === "a" && t[1] && refOf.has(t[1]) && isCommentOn(event, t[1], kindsOf.get(t[1]))).map((t) => refOf.get(t[1])).find((found) => found !== void 0);
+      const ref = event.tags.filter((t) => t[0] === "a" && t[1] && refOf2.has(t[1]) && isCommentOn(event, t[1], kindsOf.get(t[1]))).map((t) => refOf2.get(t[1])).find((found) => found !== void 0);
       if (ref !== void 0) {
         conversations[ref].push({ id: event.id, at: event.created_at, by: event.pubkey, root: rootOf(event) });
       }
@@ -19219,21 +19215,28 @@ var pointerOf = (address) => {
 };
 async function manifestsFor(roots, query, cache) {
   const authors = [...new Set(roots.map((root) => root.pubkey))];
-  const kinds = [...new Set(roots.map((root) => root.kind))];
+  const kinds = [KIND2.PROJECT, KIND2.ISSUE];
   const recommendations = authors.length ? await query([{ kinds: [KIND_HANDLER_RECOMMENDATION2], authors, "#d": kinds.map(String) }]) : [];
   const recommends = new Set(recommendations.map((event) => `${tagValue3(event, "d")}:${event.pubkey}`));
   const resolved = /* @__PURE__ */ new Map();
   const shared = /* @__PURE__ */ new Map();
   for (const kind of kinds) {
-    const quiet = authors.find((author) => !recommends.has(`${kind}:${author}`) && roots.some((r) => r.kind === kind && r.pubkey === author));
-    if (quiet) shared.set(kind, await resolveManifest(pointerOf(`${kind}:${quiet}:`), query, cache) ?? void 0);
+    const quiet = authors.find((author) => !recommends.has(`${kind}:${author}`)) ?? NOBODY;
+    shared.set(kind, await resolveManifest(pointerOf(`${kind}:${quiet}:`), query, cache) ?? void 0);
   }
   for (const key of recommends) {
     const [kind, author] = key.split(":");
     resolved.set(`${kind}:${author}`, await resolveManifest(pointerOf(`${kind}:${author}:`), query, cache) ?? void 0);
   }
-  return (pointer) => recommends.has(`${pointer.kind}:${pointer.pubkey}`) ? resolved.get(`${pointer.kind}:${pointer.pubkey}`) : shared.get(pointer.kind);
+  return {
+    of: (pointer) => recommends.has(`${pointer.kind}:${pointer.pubkey}`) ? resolved.get(`${pointer.kind}:${pointer.pubkey}`) : shared.get(pointer.kind),
+    /** What an author who recommends nothing reads a kind with — the workspace's vocabulary. */
+    shared: (kind) => shared.get(kind),
+    all: () => [...shared.values(), ...resolved.values()].filter((m) => m !== void 0)
+  };
 }
+var NOBODY = "0".repeat(64);
+var newer = (a, b) => a.created_at > b.created_at || a.created_at === b.created_at && a.id < b.id;
 function vocabularyOf(resolved, kind) {
   const spec = resolved?.manifest.projections?.[String(kind)]?.slots?.status;
   const entries = spec?.map && resolved?.manifest.vocabularies?.[spec.map] || [];
@@ -19249,21 +19252,25 @@ async function loadWorkspace(context2) {
   const query = relayQuery(context2);
   const cache = createProjectionCache();
   const roots = await query([{ kinds: [KIND2.PROJECT, KIND2.ISSUE] }]);
-  const manifestOf = await manifestsFor(roots, query, cache);
-  const changeKinds = [...new Set([KIND2.PROJECT, KIND2.ISSUE].flatMap((kind) => {
-    const sample = roots.find((root) => root.kind === kind);
-    const records = sample && manifestOf(sample)?.manifest.records;
-    return records ? [records.changeKind] : [];
-  }))];
+  const manifests = await manifestsFor(roots, query, cache);
+  const manifestOf = manifests.of;
+  const changeKinds = [...new Set(manifests.all().flatMap((resolved) => resolved.manifest.records ? [resolved.manifest.records.changeKind] : []))];
   const shipKind = (target) => target !== void 0 && (target.startsWith(`${KIND2.PROJECT}:`) || target.startsWith(`${KIND2.ISSUE}:`));
   const changes = changeKinds.length ? (await query([{ kinds: changeKinds }])).filter((event) => shipKind(tagValue3(event, "a"))) : [];
   const objects = new Map(projectEvents([...roots, ...changes], manifestOf).map((object3) => [object3.address, object3]));
-  const rootOf2 = new Map(roots.map((root) => [`${root.kind}:${root.pubkey}:${tagValue3(root, "d")}`, root]));
-  const sampleProject = roots.find((root) => root.kind === KIND2.PROJECT);
-  const sampleIssue = roots.find((root) => root.kind === KIND2.ISSUE);
+  const rootOf2 = /* @__PURE__ */ new Map();
+  for (const root of roots) {
+    const addr2 = `${root.kind}:${root.pubkey}:${tagValue3(root, "d")}`;
+    const held = rootOf2.get(addr2);
+    if (!held || newer(root, held)) rootOf2.set(addr2, root);
+  }
   const vocab = {
-    project: vocabularyOf(sampleProject && manifestOf(sampleProject), KIND2.PROJECT),
-    issue: vocabularyOf(sampleIssue && manifestOf(sampleIssue), KIND2.ISSUE)
+    project: vocabularyOf(manifests.shared(KIND2.PROJECT), KIND2.PROJECT),
+    issue: vocabularyOf(manifests.shared(KIND2.ISSUE), KIND2.ISSUE)
+  };
+  const vocabOf = (root) => {
+    const resolved = manifestOf(root);
+    return resolved === manifests.shared(root.kind) ? root.kind === KIND2.PROJECT ? vocab.project : vocab.issue : vocabularyOf(resolved, root.kind);
   };
   const projects = [];
   const issues = [];
@@ -19280,7 +19287,7 @@ async function loadWorkspace(context2) {
     if (object3.kind === KIND2.PROJECT) {
       projects.push({
         ...base,
-        status: rawStatus(object3, vocab.project),
+        status: rawStatus(object3, vocabOf(root)),
         lead: metaValue(object3, "lead"),
         archived: Boolean(object3.archived),
         contentFolder: folderOf(root) ?? ""
@@ -19288,7 +19295,7 @@ async function loadWorkspace(context2) {
     } else {
       issues.push({
         ...base,
-        status: rawStatus(object3, vocab.issue),
+        status: rawStatus(object3, vocabOf(root)),
         assignee: metaValue(object3, "assignee"),
         ref: metaValue(object3, "ref"),
         projectAddr: object3.parentRef || void 0,
@@ -19322,6 +19329,7 @@ async function loadWorkspace(context2) {
     cache
   };
 }
+var THREAD_LIMIT = 1e3;
 var asMessage = (event) => ({
   id: event.id,
   author: event.pubkey,
@@ -19343,12 +19351,19 @@ async function conversationsFor(context2, workspace, addresses) {
   const allRoots = [...new Set(Object.values(rootsByObject).flat().map((message) => message.id))];
   const roots = {};
   const replies = {};
-  for (let i = 0; i < allRoots.length; i += 100) {
-    const chunk = allRoots.slice(i, i + 100);
-    const threads = await threadsOf(objects[0].address, chunk, query, workspace.cache, 1e3);
+  const read = async (chunk) => {
+    const threads = await threadsOf(objects[0].address, chunk, query, workspace.cache, THREAD_LIMIT);
+    const answered = Object.values(threads.replies).reduce((sum, list) => sum + list.length, 0);
+    if (answered >= THREAD_LIMIT && chunk.length > 1) {
+      const half = Math.ceil(chunk.length / 2);
+      await read(chunk.slice(0, half));
+      await read(chunk.slice(half));
+      return;
+    }
     Object.assign(roots, threads.roots);
     for (const [id, list] of Object.entries(threads.replies)) replies[id] = list;
-  }
+  };
+  for (let i = 0; i < allRoots.length; i += 100) await read(allRoots.slice(i, i + 100));
   for (const object3 of objects) {
     const ids = (rootsByObject[object3.address] ?? []).map((message) => message.id);
     byObject.set(
@@ -19426,9 +19441,11 @@ function projectSummary(project, directory, vocab) {
     issues: void 0
   };
 }
+var NO_REF = "no ref yet";
+var refOf = (issue2) => issue2.ref ?? NO_REF;
 function issueSummary(issue2, directory, vocab) {
   return {
-    ref: issue2.ref ?? issue2.addr,
+    ref: refOf(issue2),
     // Printed in every listing so the next command can name the issue by it
     // rather than by a ref that collides (SHI-4) or an address typed from
     // memory. Every resolver here accepts it back.
@@ -19638,7 +19655,7 @@ async function stateAfter(context2, state, issue2, after) {
   }
   return issueLine(
     {
-      ref: issue2.ref ?? issue2.addr,
+      ref: refOf(issue2),
       id: issue2.id,
       status: after.status ?? issue2.status,
       assignee,
@@ -19665,8 +19682,8 @@ function resolveTeamIn(teams, reference) {
 function published(result, what) {
   if (!result.ok) throw new BadRequest(`The relay refused ${what}: ${result.reason ?? "no reason given"}`);
 }
-async function act(context2, workspace, target, actionId, value, extra = {}) {
-  const resolved = workspace.manifestFor(target.addr);
+async function act(context2, workspace, target, actionId, value, signs, extra = {}) {
+  const resolved = extra.manifest ?? workspace.manifestFor(target.addr);
   if (!resolved) throw new BadRequest(`No app's manifest claims ${target.addr}, so there is no declared way to change it.`);
   const [kind] = target.addr.split(":");
   const built = buildActionEvents({
@@ -19685,13 +19702,19 @@ async function act(context2, workspace, target, actionId, value, extra = {}) {
     createdAtMs: Date.now()
   });
   if (typeof built === "string") throw new BadRequest(built);
+  const stray = built.find((event, i) => i === 0 ? event.kind !== signs[0] : !signs.includes(event.kind));
+  if (stray) {
+    throw new BadRequest(
+      `The manifest read for ${target.addr} declares "${actionId}" as a kind:${stray.kind}, which this command does not write (it writes ${signs.join(", ")}). Nothing was published.`
+    );
+  }
   const outcomes = [];
   for (const [i, unsigned] of built.entries()) {
     const event = i === 0 && extra.reason && unsigned.kind === KIND_DELETION ? { ...unsigned, content: extra.reason } : unsigned;
     const signed = await context2.signer.sign(event);
     const result = await context2.relay.publish(signed);
     outcomes.push({ ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id });
-    if (!result.ok) break;
+    if (!result.ok && i === 0) break;
   }
   return outcomes;
 }
@@ -19722,7 +19745,7 @@ async function setField(context2, workspace, target, field, value, note) {
     (candidate) => candidate.emits?.field === field && (Array.isArray(candidate.appliesTo) ? candidate.appliesTo.includes(kind) : candidate.appliesTo === kind)
   );
   if (!action) throw new BadRequest(`Ship's manifest declares no action that sets ${field} on this object.`);
-  const [outcome] = await act(context2, workspace, target, action.id, value, { note });
+  const [outcome] = await act(context2, workspace, target, action.id, value, [KIND_CHANGE], { note });
   return outcome;
 }
 async function timelineFor(context2, state, addr2, extraPubkeys) {
@@ -19795,7 +19818,12 @@ async function showProject(context2, state, project) {
     conversation
   };
 }
-function participants(state) {
+async function relayMembers(context2) {
+  const [list] = await context2.relay.queryAll([{ kinds: [KIND_RELAY_MEMBERS], limit: 1 }]);
+  return list ? list.tags.filter((tag) => tag[0] === "member" && tag[1]).map((tag) => tag[1]) : [];
+}
+var KIND_RELAY_MEMBERS = 13534;
+function participants(state, members = []) {
   const seen = /* @__PURE__ */ new Map();
   const touch = (key, field) => {
     if (!key || !/^[0-9a-f]{64}$/i.test(key)) return;
@@ -19819,6 +19847,11 @@ function participants(state) {
   for (const conversation of state.conversations) {
     touch(conversation.root.author, "acted");
     for (const reply of conversation.replies) touch(reply.author, "acted");
+  }
+  for (const key of members) {
+    if (!/^[0-9a-f]{64}$/i.test(key)) continue;
+    const at = key.toLowerCase();
+    if (!seen.has(at)) seen.set(at, { pubkey: at, filed: 0, assigned: 0, leads: 0, acted: 0 });
   }
   return [...seen.values()].sort(
     (a, b) => b.filed + b.assigned + b.leads + b.acted - (a.filed + a.assigned + a.leads + a.acted) || a.pubkey.localeCompare(b.pubkey)
@@ -20016,8 +20049,8 @@ var shipApp = {
         const last = comments[comments.length - 1];
         const directory = await directoryFor(context2, [issue2.assignee, last?.author]);
         return {
-          state: issueLine({ ...issue2, ref: issue2.ref ?? issue2.addr, comments }, who(directory, issue2.assignee)),
-          ref: issue2.ref ?? issue2.addr,
+          state: issueLine({ ...issue2, ref: refOf(issue2), comments }, who(directory, issue2.assignee)),
+          ref: refOf(issue2),
           short: short(issue2.id),
           addr: issue2.addr,
           title: issue2.title,
@@ -20086,8 +20119,8 @@ Pass an address to say which.`
       usage: "people [--named]",
       async run(context2, args2) {
         const state = await loadWorkspace(context2);
-        const talk = await conversationsFor(context2, state, [...state.objects.keys()]);
-        const found = participants({ ...state, conversations: [...talk.byObject.values()].flat() });
+        const [talk, members] = await Promise.all([conversationsFor(context2, state, [...state.objects.keys()]), relayMembers(context2)]);
+        const found = participants({ ...state, conversations: [...talk.byObject.values()].flat() }, members);
         const directory = await directoryFor(context2, found.map((person) => person.pubkey));
         const listed = found.map((person) => {
           const profile = directory.get(person.pubkey);
@@ -20116,19 +20149,11 @@ Pass an address to say which.`
         return {
           people: listed,
           /*
-                      Two limits, both of which make a short list look like a complete
-                      one.
-          
-                      There is no roster to read: relay membership is an Estiva ID
-                      concern this identity cannot query, so somebody who has never filed,
-                      been assigned, led or commented does not appear at all. Absence here
-                      is not evidence they are not on the team.
-          
-                      And a key with no `kind:0` stays a key. Estiva ID is the only writer
-                      of profiles (PEEK-48), so an unnamed participant is un-named rather
-                      than un-real — still a valid target for `assign`.
-                    */
-          note: "Everyone who has touched something this identity can read \u2014 not a roster. A person who has never filed, been assigned, led or commented does not appear. " + (anonymous > 0 ? `${anonymous} of these publish no profile and stay a key; they can still be assigned.` : "Every one of them publishes a profile.")
+            A key with no `kind:0` stays a key. Estiva ID is the only writer
+            of profiles (PEEK-48), so an unnamed participant is un-named rather
+            than un-real — still a valid target for `assign`.
+          */
+          note: "Everyone who has touched a Ship object, busiest first, then every other relay member. " + (members.length === 0 ? "The relay published no member list, so somebody who has done nothing here yet is missing. " : "") + (anonymous > 0 ? `${anonymous} of these publish no profile and stay a key; they can still be assigned.` : "Every one of them publishes a profile.")
         };
       }
     },
@@ -20143,7 +20168,7 @@ Pass an address to say which.`
         const body = flagValue(args2, "body");
         if (!body) throw new BadRequest("comment needs --body.");
         const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
-        const [result] = await act(context2, state, issueTarget(issue2), "comment", body);
+        const [result] = await act(context2, state, issueTarget(issue2), "comment", body, [KIND_COMMENT]);
         published(result, `a comment on ${issue2.ref ?? issue2.addr}`);
         return {
           state: await stateAfter(context2, state, issue2, { comment: body, commentId: result.eventId }),
@@ -20408,7 +20433,7 @@ Pass an address to say which.`
             note: "That project is not archived, so there is nothing to bring back."
           };
         }
-        const [result] = await act(context2, state, { addr: project.addr, author: project.author, folder }, "archive-project", archived ? "true" : "");
+        const [result] = await act(context2, state, { addr: project.addr, author: project.author, folder }, "archive-project", archived ? "true" : "", [KIND_CHANGE]);
         published(result, `${archived ? "archiving" : "unarchiving"} \u201C${project.title}\u201D`);
         const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
         return {
@@ -20474,7 +20499,7 @@ Pass an address to say which.`
             note: "Nothing was published. Pass --yes to send the deletion request."
           };
         }
-        const [result] = await act(context2, state, issueTarget(issue2), "delete-issue", "", { reason: flagValue(args2, "reason") });
+        const [result] = await act(context2, state, issueTarget(issue2), "delete-issue", "", [KIND_DELETION], { reason: flagValue(args2, "reason") });
         published(result, `deleting ${issue2.ref ?? issue2.addr}`);
         return {
           deleted: { ref: issue2.ref, addr: issue2.addr, title: issue2.title },
@@ -20509,7 +20534,7 @@ Pass an address to say which.`
         const listing = all.filter((f) => f.addresses?.includes(project.addr)).map((f) => ({ folder: f.id, hasState: f.hasState }));
         const folders = listing.length > 0 ? listing : [{ folder: project.contentFolder, hasState: all.find((f) => f.id === project.contentFolder)?.hasState ?? false }];
         const from = folders.map((f) => f.folder).join(", ");
-        const [result, ...unlists] = await act(context2, state, { addr: project.addr, author: project.author, folder }, "delete-project", "", {
+        const [result, ...unlists] = await act(context2, state, { addr: project.addr, author: project.author, folder }, "delete-project", "", [KIND_DELETION, KIND.FOLDER_COMMAND], {
           reason: flagValue(args2, "reason"),
           listedIn: folders.map((f) => ({ id: f.folder, hasState: f.hasState }))
         });
@@ -20550,11 +20575,12 @@ Pass an address to say which.`
         const description = flagValue(args2, "description");
         const [result, placed] = await act(
           context2,
-          { ...state, manifestFor: () => state.manifestFor(`${KIND2.PROJECT}:${context2.signer.pubkey}:${id}`) },
+          state,
           { addr: team.channel ?? `${KIND_CHANNEL_METADATA}::${team.id}`, author: "", folder: team.id },
           "add-project",
           { name: title, ...description ? { description } : {} },
-          { newId: id, folderHasState: team.hasState }
+          [KIND2.PROJECT, KIND.FOLDER_COMMAND],
+          { newId: id, folderHasState: team.hasState, manifest: state.manifestFor(`${KIND2.PROJECT}:${context2.signer.pubkey}:${id}`) }
         );
         const created = { result, placed, addr: `${KIND2.PROJECT}:${context2.signer.pubkey}:${id}` };
         published(created.result, `a new project "${title}"`);
@@ -20590,12 +20616,13 @@ Pass an address to say which.`
           { addr: project.addr, author: project.author, folder: listed ?? project.contentFolder },
           "add-issue",
           { title, ...description ? { description } : {} },
+          [KIND2.ISSUE],
           { newId: id }
         );
         const created = { result, id, addr: `${KIND2.ISSUE}:${context2.signer.pubkey}:${id}` };
         published(created.result, `a new issue in ${project.title}`);
         return {
-          state: issueLine({ ref: "no ref yet", id: created.id, status: state.vocab.issue.fallback, comments: [] }, void 0),
+          state: issueLine({ ref: NO_REF, id: created.id, status: state.vocab.issue.fallback, comments: [] }, void 0),
           created: { short: short(created.id), addr: created.addr, title, project: project.title },
           eventId: created.result.eventId
         };

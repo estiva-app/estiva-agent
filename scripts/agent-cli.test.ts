@@ -858,6 +858,13 @@ console.log('— who the workspace has seen —')
 
   const upper = participants({ issues: [{ author: a.toUpperCase(), assignee: undefined }], projects: [], activity: [], conversations: [] } as never)
   check('an uppercase key is the same person', upper[0].pubkey === a)
+
+  // A relay member who has done nothing yet can still be found to assign (PER-21).
+  const quiet = 'd'.repeat(64)
+  const withMembers = participants(state, [quiet, a, 'not-a-key'])
+  check('a relay member who did nothing appears', withMembers.some((p) => p.pubkey === quiet && p.filed + p.assigned + p.leads + p.acted === 0))
+  check('a member who did nothing comes last', withMembers.at(-1)?.pubkey === quiet)
+  check('a member who acted is counted once', withMembers.filter((p) => p.pubkey === a).length === 1 && withMembers.length === 4)
 }
 
 console.log('— resolving across two kinds —')

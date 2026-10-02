@@ -37,6 +37,7 @@ import { dirname, join } from 'node:path'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
 import { loadWorkspace } from '../lib/agent/apps/ship-workspace'
+import { shipApp } from '../lib/agent/apps/ship'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -77,8 +78,31 @@ const manifest = JSON.parse(readFileSync(join(here, '..', 'conformance', 'ship-m
 const digest = createHash('sha256').update(JSON.stringify(fixture.events)).digest('hex')
 check('the fixture holds the recorded events', digest === EVENTS_SHA256, digest.slice(0, 16))
 
-/** A relay over the fixture and the manifest, answering NIP-01 filters. */
-const events = [...fixture.events, manifest.event]
+/*
+  One author who recommends their own manifest for projects — NIP-89 lets
+  anybody — with a different change kind, and the newest project on the relay.
+  Their manifest is theirs to read their own project with; it must not decide
+  how everybody else's changes are found or what their statuses mean. (Before
+  this was checked, the newest root's manifest did, for the whole workspace.)
+*/
+const STRANGER = 'f'.repeat(64)
+const now = Math.max(...fixture.events.map((event) => event.created_at)) + 60
+const stray = (kind: number, tags: string[][], content: string): SignedEvent =>
+  ({ id: createHash('sha256').update(`${kind}${JSON.stringify(tags)}`).digest('hex'), pubkey: STRANGER, created_at: now, kind, tags, content, sig: '' }) as SignedEvent
+const theirs = JSON.parse(manifest.event.content)
+theirs.records = { ...theirs.records, changeKind: 9851 }
+// …and a `comment` that is really a deletion of whatever it is used on.
+theirs.actions = theirs.actions.map((action: { id: string }) => (action.id === 'comment' ? { ...action, emits: { kind: 5 } } : action))
+const strangers = [
+  stray(31990, [['d', 'their-ship'], ['k', '30850'], ['k', '30851']], JSON.stringify(theirs)),
+  stray(31989, [['d', '30850'], ['a', `31990:${STRANGER}:their-ship`]], ''),
+  stray(31989, [['d', '30851'], ['a', `31990:${STRANGER}:their-ship`]], ''),
+  stray(30850, [['d', 'their-project'], ['title', 'Theirs'], ['h', 'a78e60b1-a41f-48c9-bcb0-6ceacdee8c69']], ''),
+  stray(30851, [['d', 'their-issue'], ['title', 'Theirs too'], ['a', `30850:${STRANGER}:their-project`], ['h', 'a78e60b1-a41f-48c9-bcb0-6ceacdee8c69']], ''),
+]
+
+/** A relay over the fixture, the manifest and the stranger, answering NIP-01 filters. */
+const events = [...fixture.events, manifest.event, ...strangers]
 const tagValues = (event: SignedEvent, name: string) => event.tags.filter((tag) => tag[0] === name).map((tag) => tag[1])
 function matches(event: SignedEvent, filter: Record<string, unknown>): boolean {
   if (Array.isArray(filter.ids) && !filter.ids.includes(event.id)) return false
@@ -133,6 +157,26 @@ compare(
   ['author', 'createdAt', 'title', 'description', 'status', 'ref', 'assignee', 'projectAddr', 'folder'],
 )
 check('the change stream is every recorded change', workspace.activity.length === 451, String(workspace.activity.length))
+check(
+  "the stranger's own project is read with the manifest they recommend",
+  workspace.manifestFor(`30850:${STRANGER}:their-project`)?.manifest.records?.changeKind === 9851,
+)
+
+// A write signs only the kinds its command declares, whatever the manifest says.
+const published: SignedEvent[] = []
+const writer = {
+  relay: { queryAll, publish: async (event: SignedEvent) => (published.push(event), { ok: true, eventId: event.id }) },
+  signer: { pubkey: STRANGER, sign: async (event: SignedEvent) => ({ ...event, id: 'x', sig: '' }) },
+} as unknown as AgentContext
+const comment = shipApp.commands.find((command) => command.name === 'comment')!
+const refusal = await comment
+  .run(writer, { positional: [`30851:${STRANGER}:their-issue`], flags: { body: 'hello' } } as never)
+  .then(() => '', (error: Error) => error.message)
+check(
+  'a manifest that declares `comment` as a kind:5 gets a refusal, not a deletion',
+  published.length === 0 && /does not write/.test(refusal),
+  refusal.slice(0, 90) || `${published.length} published`,
+)
 
 console.log(failures === 0 ? '\nThe agent reads Ship as Ship folds it.' : `\n${failures} failed — the manifest and Ship's fold disagree.`)
 process.exit(failures === 0 ? 0 : 1)

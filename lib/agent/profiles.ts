@@ -39,22 +39,21 @@ export function parseProfile(event: SignedEvent): Profile | null {
   return { pubkey: event.pubkey, name: text('display_name') ?? text('name'), nip05: text('nip05') }
 }
 
-/** One profile per key from a pile of `kind:0` events: the newest, then the lower id. */
+/**
+ * One profile per key from a pile of `kind:0` events: the newest that parses,
+ * then the lower id — so a broken newer profile does not erase a name.
+ */
 export function directoryFrom(events: readonly SignedEvent[]): Directory {
-  const newest = new Map<string, SignedEvent>()
+  const newest = new Map<string, { event: SignedEvent; profile: Profile }>()
   for (const event of events) {
-    if (event.kind !== 0) continue
-    const held = newest.get(event.pubkey)
+    const profile = parseProfile(event)
+    if (!profile) continue
+    const held = newest.get(event.pubkey)?.event
     if (!held || event.created_at > held.created_at || (event.created_at === held.created_at && event.id < held.id)) {
-      newest.set(event.pubkey, event)
+      newest.set(event.pubkey, { event, profile })
     }
   }
-  const directory: Directory = new Map()
-  for (const [pubkey, event] of newest) {
-    const profile = parseProfile(event)
-    if (profile) directory.set(pubkey, profile)
-  }
-  return directory
+  return new Map([...newest].map(([pubkey, { profile }]) => [pubkey, profile]))
 }
 
 /** Everyone in `pubkeys`, in one request per 500 keys. A key with no profile is simply absent. */
