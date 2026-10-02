@@ -31,7 +31,8 @@
 import { clientCredentialsToken, loadCredentials } from '../lib/agent/credentials'
 import { Relay } from '@estiva-app/protocol'
 import { estivaIdSigner } from '../lib/nostr/signer'
-import { KIND } from '../src/kinds'
+import { KIND } from '../lib/agent/apps/ship-workspace'
+import { KIND_CHANGE } from '@estiva-app/conversation'
 
 const RELAY_URL = (process.env.RELAY_URL ?? 'https://estiva.estiva.app').replace(/\/+$/, '')
 
@@ -39,8 +40,8 @@ const RELAY_URL = (process.env.RELAY_URL ?? 'https://estiva.estiva.app').replace
 const FILTERS: ReadonlyArray<{ label: string; kinds: number[] }> = [
   { label: 'projects', kinds: [KIND.PROJECT] },
   { label: 'issues', kinds: [KIND.ISSUE] },
-  { label: 'changes', kinds: [KIND.CHANGE] },
-  { label: 'profiles', kinds: [KIND.PROFILE] },
+  { label: 'changes', kinds: [KIND_CHANGE] },
+  { label: 'profiles', kinds: [0] },
 ]
 
 async function main() {

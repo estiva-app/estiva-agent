@@ -21,7 +21,7 @@
  */
 import { loadCredentials, clientCredentialsToken, serviceIdentitySigner } from '../lib/agent/credentials'
 import { Relay } from '@estiva-app/protocol'
-import { KIND } from '../src/kinds'
+import { KIND } from '../lib/agent/apps/ship-workspace'
 
 const RELAY_URL = (process.env.RELAY_URL ?? 'https://estiva.estiva.app').replace(/\/+$/, '')
 

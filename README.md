@@ -57,27 +57,26 @@ wins. Nothing needs sourcing.
 | `lib/agent/cli.ts` | Credentials, relay, argument parsing, output, exit codes. **Names no kind, tag or object type.** |
 | `lib/agent/apps/` | One module per app. Everything that knows Ship has projects, or that Peek has topics. |
 | `lib/agent/resolve.ts` | One rule for turning what a person typed into one object, or refusing. |
-| `lib/nostr/`, `src/` | The protocol layer, **vendored from `estiva-ship`** — see below. |
+| `lib/agent/apps/ship-workspace.ts` | Ship's projects and issues, read through Ship's published manifest with `@estiva-app/interop` — see below. |
+| `lib/nostr/signer.ts` | The signer that asks Estiva ID to sign. The only file left of what was once copied from `estiva-ship`. |
 | `scripts/` | The surfaces: CLI, MCP server, probes, tests. |
 | `extension/` | The Claude Desktop extension manifest. |
 | `plugin/` | The Claude Code plugin: manifest, `.mcp.json`, and the committed server bundle both clients run. |
 | `.claude-plugin/` | The marketplace entry, so the repository installs itself. |
 | `conformance/` | The recorded fold both repositories must agree with. |
 
-## The vendored copy, and what keeps it honest
+## Reading Ship without Ship's code, and what keeps it honest
 
-`lib/nostr/` and `src/` are duplicated from `estiva-ship`, at identical paths so
-that `diff -r` is a drift check anybody can run:
+Until PER-21 this repository held a copy of Ship's `src/` — its store and its
+fold — and a `diff -r` against `estiva-ship` was the drift check. The copy is
+gone. The agent reads Ship the way any outside app would: Ship's published
+manifest (`31990:…:estiva-ship`) says how its objects fold and which actions
+write them, and `@estiva-app/interop` (`projectEvents`, `buildActionEvents`)
+does both. Comments and edits are `@estiva-app/conversation`'s. Nothing here
+knows Ship's rules except through what Ship publishes.
 
-```bash
-diff -r ../estiva-ship/src src
-diff -r ../estiva-ship/lib/nostr lib/nostr
-```
-
-Duplication is deliberate — it is the same argument Ship makes for duplicating
-the protocol library rather than depending on a package. What it risks is drift,
-and the specific drift that matters is named in Ship's own CLAUDE.md: the CLI
-disagreeing with the app is *the one thing it must not do*.
+What that risks is the CLI disagreeing with the app — named in Ship's own
+CLAUDE.md as *the one thing it must not do*.
 
 That is not hypothetical. PEEK-165 found exactly this drift **inside a single
 repository**: the agent had reimplemented the surrounding behaviour of Ship's UI
@@ -86,10 +85,13 @@ said "Claude set assignee to Claude" and the agent said a hex string. Nothing
 failed; both were self-consistent; it surfaced only when a person read the two
 outputs side by side.
 
-So the copies are held to a recorded agreement. `conformance/fold-fixture.json`
-holds real production events plus the cases production cannot contain, and
-`scripts/conformance.test.ts` — identical in both repos — folds them and
-compares. If either side's fold changes, that side's CI fails.
+So the reading is held to a recorded agreement. `conformance/fold-fixture.json`
+holds real production events plus the cases production cannot contain, and its
+`expected` is Ship's own fold's answer, recorded in `estiva-ship`.
+`scripts/conformance.test.ts` runs the agent's real read path over those events
+and the manifest Ship published (`conformance/ship-manifest.json`), and compares
+every field the CLI prints. It found its first disagreement before it was
+written: the manifest folded a project's title but not an issue's (ship#231).
 
 The adversarial half of that fixture exists because the first draft did not
 work. Recorded from production alone, it passed unchanged when the fold's `ts`
