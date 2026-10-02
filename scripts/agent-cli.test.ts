@@ -19,15 +19,37 @@ import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
 import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
-import type { Project } from '../src/fold'
+import type { Issue, Project, Vocabulary } from '../lib/agent/apps/ship-workspace'
 import { buildActionEvent, topLevelFolders } from '@estiva-app/interop'
 import { findTopic, replyToOf, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
-import { foldEdits } from '@estiva-app/conversation'
-import { KIND } from '../src/kinds'
+import { KIND_EDIT, foldEdits } from '@estiva-app/conversation'
 import type { SignedEvent } from '@estiva-app/protocol'
-import type { Issue } from '../src/fold'
-import type { Directory } from '../src/profiles'
+import type { Directory } from '../lib/agent/profiles'
+
+/*
+  The vocabularies Ship's manifest declares (`issueStatuses`, `statuses`). Since
+  PER-21 the agent reads them off the manifest at run time; these tests pass
+  them in, as the commands do.
+*/
+const ISSUE_VOCAB: Vocabulary = {
+  entries: [
+    { value: 'todo', label: 'Todo' },
+    { value: 'in_progress', label: 'In Progress' },
+    { value: 'done', label: 'Done' },
+    { value: 'cancelled', label: 'Cancelled' },
+  ],
+  fallback: 'todo',
+}
+const PROJECT_VOCAB: Vocabulary = {
+  entries: [
+    { value: 'planned', label: 'Planned' },
+    { value: 'in_progress', label: 'In Progress' },
+    { value: 'completed', label: 'Completed' },
+    { value: 'cancelled', label: 'Cancelled' },
+  ],
+  fallback: 'planned',
+}
 
 let failures = 0
 function check(label: string, condition: boolean, detail = '') {
@@ -47,7 +69,6 @@ function refuses(label: string, action: () => unknown, contains?: string) {
 
 const issue = (over: Partial<Issue>): Issue => ({
   addr: '30851:abc:1',
-  descriptionFormat: 'marker',
   id: '1',
   author: 'abc',
   createdAt: 0,
@@ -55,7 +76,6 @@ const issue = (over: Partial<Issue>): Issue => ({
   description: '',
   folder: 'f',
   status: 'todo',
-  fields: {},
   ...over,
 })
 
@@ -144,7 +164,7 @@ const stated = issueLine(
   'Claude',
 )
 check('names ref, short id, status, assignee, count and the last comment', stated === 'MAK-1 · a57c26e3 · in_progress · Claude · 2 comments · last: "PR is up: https://github.com/estiva-app/estiva-agent/pull/48"', stated)
-check('an unassigned issue with no comments says so', issueLine({ ref: 'X-1', id: 'abcdefgh', status: '', comments: [] }, undefined) === 'X-1 · abcdefgh · todo · unassigned · 0 comments')
+check('an unassigned issue with no comments says so', issueLine({ ref: 'X-1', id: 'abcdefgh', status: 'todo', comments: [] }, undefined) === 'X-1 · abcdefgh · todo · unassigned · 0 comments')
 check('one comment is singular', issueLine({ ref: 'X-1', id: 'abcdefgh', status: 'done', comments: [{ body: 'x' }] }, 'M').includes('1 comment ·'))
 check('a long comment is clipped with an ellipsis', clip('a'.repeat(100), 80).length === 80 && clip('a'.repeat(100), 80).endsWith('…'))
 check('a short one is not', clip('short', 80) === 'short')
@@ -182,10 +202,10 @@ for (const app of [shipApp, peekApp]) {
 
 console.log('\n— listing rows —')
 
-const row = issueRow({ ref: 'FOL-19', short: '42d82497', addr: 'x', title: 'A ?file= URL does not open the file it names when the Folder is a team Folder and the file is old', status: 'In Progress', assignee: undefined, author: 'A', project: undefined })
+const row = issueRow({ ref: 'FOL-19', short: '42d82497', addr: 'x', title: 'A ?file= URL does not open the file it names when the Folder is a team Folder and the file is old', status: 'In Progress', assignee: undefined, author: 'A', project: undefined }, ISSUE_VOCAB)
 check('an issue row is ref, status value, short id, clipped title', row.startsWith('FOL-19   in_progress  42d82497 A ?file= URL') && row.endsWith('…'), row)
 check('and under 100 chars', row.length < 100, String(row.length))
-const prow = projectRow({ ref: 'x', short: '2385fd92', title: 'Make Agent more token efficient', status: 'Planned', lead: 'Miky', archived: true, folder: 'f', issues: 2 } as never)
+const prow = projectRow({ ref: 'x', short: '2385fd92', title: 'Make Agent more token efficient', status: 'Planned', lead: 'Miky', archived: true, folder: 'f', issues: 2 } as never, PROJECT_VOCAB)
 check('a project row carries short, status, count, title, archived and lead', prow === '2385fd92 planned        2 issues Make Agent more token efficient (archived) — Miky', prow)
 
 console.log('\n— resolving a project (the one that used to guess) —')
@@ -199,7 +219,6 @@ console.log('\n— resolving a project (the one that used to guess) —')
 */
 const project = (over: Partial<Project>): Project => ({
   addr: '30850:abc:x',
-  descriptionFormat: 'marker',
   id: 'x',
   author: 'abc',
   createdAt: 0,
@@ -208,7 +227,6 @@ const project = (over: Partial<Project>): Project => ({
   contentFolder: 'f',
   status: 'planned',
   archived: false,
-  fields: {},
   ...over,
 })
 
@@ -280,10 +298,10 @@ console.log('\n— what "open" means —')
   what was asked — so the alias exists to stop the most natural question having
   the narrowest answer.
 */
-check('open covers todo and in_progress', statusesFor('open').join(',') === 'todo,in_progress')
-check('a real status stays itself', statusesFor('done').join(',') === 'done')
-refuses('an unknown status is refused', () => statusesFor('wibble'), 'Unknown status')
-refuses('and the refusal mentions open', () => statusesFor('wibble'), 'open')
+check('open covers todo and in_progress', statusesFor('open', ISSUE_VOCAB).join(',') === 'todo,in_progress')
+check('a real status stays itself', statusesFor('done', ISSUE_VOCAB).join(',') === 'done')
+refuses('an unknown status is refused', () => statusesFor('wibble', ISSUE_VOCAB), 'Unknown status')
+refuses('and the refusal mentions open', () => statusesFor('wibble', ISSUE_VOCAB), 'open')
 
 console.log('\n— naming a change\'s value —')
 
@@ -499,7 +517,6 @@ console.log('— editing a project —')
   const other = 'b'.repeat(64)
   const project = (over: Partial<Project> = {}): Project => ({
     addr: '30850:abc:p1',
-    descriptionFormat: 'marker',
     id: 'p1',
     author: 'abc',
     createdAt: 0,
@@ -508,12 +525,11 @@ console.log('— editing a project —')
     contentFolder: 'f',
     status: 'planned',
     archived: false,
-    fields: {},
     ...over,
   })
 
   const plan = (flags: Record<string, string | true>, over: Partial<Project> = {}) =>
-    projectEdits(project(over), { positional: [], flags }, self)
+    projectEdits(project(over), { positional: [], flags }, self, PROJECT_VOCAB)
 
   const rename = plan({ title: 'Read state, everywhere' })
   check('a rename is one change to title', rename.length === 1 && rename[0].field === 'title')
@@ -561,8 +577,8 @@ console.log('— editing an issue —')
     string that matches no project, and no reader would report it.
   */
   const projects: Project[] = [
-    { addr: '30850:abc:p1', id: 'p1', author: 'abc', createdAt: 0, title: 'Peek: Feedback & Bugs', description: '', descriptionFormat: 'marker', contentFolder: 'f1', status: 'planned', archived: false, fields: {} },
-    { addr: '30850:abc:p2', id: 'p2', author: 'abc', createdAt: 0, title: 'Ship: Feedback & Bugs', description: '', descriptionFormat: 'marker', contentFolder: 'f2', status: 'planned', archived: false, fields: {} },
+    { addr: '30850:abc:p1', id: 'p1', author: 'abc', createdAt: 0, title: 'Peek: Feedback & Bugs', description: '', contentFolder: 'f1', status: 'planned', archived: false },
+    { addr: '30850:abc:p2', id: 'p2', author: 'abc', createdAt: 0, title: 'Ship: Feedback & Bugs', description: '', contentFolder: 'f2', status: 'planned', archived: false },
   ]
 
   const subject = issue({ addr: '30851:abc:9', title: 'Old title', description: 'old body', projectAddr: '30850:abc:p1' })
@@ -650,7 +666,7 @@ console.log('— editing a message —')
   const edit = (over: Partial<SignedEvent> & { target: string }): SignedEvent => ({
     id: over.id ?? 'e1',
     pubkey: 'abc',
-    kind: KIND.MESSAGE_EDIT,
+    kind: KIND_EDIT,
     created_at: over.created_at ?? 1_000,
     content: over.content ?? 'new text',
     sig: '',

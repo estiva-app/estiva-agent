@@ -51,10 +51,9 @@ import {
 import { buildBareFile, KIND, type SignedEvent } from '@estiva-app/protocol'
 import { decorationsOf, type EditFold } from '@estiva-app/conversation'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
-import { edited, findMessage } from '../conversation'
+import { edited, findMessage, publishEdit } from '../conversation'
+import { profilesOf, type Directory } from '../profiles'
 import { resolveOne } from '../resolve'
-import { Store } from '../../../src/store'
-import type { Directory } from '../../../src/profiles'
 
 const tagValue = (event: SignedEvent, name: string) =>
   event.tags.find((tag) => tag[0] === name)?.[1]
@@ -409,9 +408,7 @@ export const peekApp: AgentApp = {
         const { conversations, edits, resolved } = await readConversation(context, topic, cache)
 
         const speakers = conversations.flatMap((thread) => [thread.root, ...thread.replies].map((message) => message.author))
-        const directory = speakers.length
-          ? await new Store(context.relay, context.signer).profiles([...new Set(speakers)])
-          : (new Map() as Directory)
+        const directory: Directory = await profilesOf(relayQuery(context), speakers)
 
         return {
           id: topic.address.split(':')[2],
@@ -543,11 +540,7 @@ export const peekApp: AgentApp = {
           — a refusal that reads exactly like a permissions problem.
         */
         if (!message.folder) throw new BadRequest('That message carries no Folder, so an edit of it has nowhere to go.')
-        const result = await new Store(context.relay, context.signer).editMessage({
-          folder: message.folder,
-          messageEventId: message.id,
-          body,
-        })
+        const result = await publishEdit(context, { folder: message.folder, messageEventId: message.id, body })
         published(result, `an edit of a message on ${topic.title}`)
 
         return {

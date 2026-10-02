@@ -18,8 +18,27 @@
  * modules have and no third one is obliged to.
  */
 import type { EditFold } from '@estiva-app/conversation'
-import { BadRequest } from './cli'
+import { buildEdit } from '@estiva-app/protocol'
+import { BadRequest, type AgentContext } from './cli'
 import { resolveOne } from './resolve'
+
+/**
+ * Replace a message's text: SPEC §6.8's `kind:40003`, naming the target, in the
+ * **target's** Folder — the channel-scoped kind is refused anywhere else, with
+ * the kind granted and the signature fine (CON-4). Shared by `ship
+ * edit-comment` and `peek edit`; the relay decides who may.
+ */
+export async function publishEdit(
+  context: AgentContext,
+  args: { folder: string | undefined; messageEventId: string; body: string },
+): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
+  if (!args.folder) throw new BadRequest('That message names no Folder, so an edit of it has nowhere to be published.')
+  const signed = await context.signer.sign(
+    buildEdit(context.signer.pubkey, Date.now(), { channelUuid: args.folder, targetEventId: args.messageEventId, body: args.body }),
+  )
+  const result = await context.relay.publish(signed)
+  return { ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id }
+}
 
 /** The shape both folds hand back: an event id and the text that came with it. */
 export interface EditableMessage {

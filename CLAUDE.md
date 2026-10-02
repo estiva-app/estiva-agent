@@ -257,9 +257,11 @@ when you need to be sure you are talking about the same object twice.
 
 ## Cost
 
-`loadAll` pulls up to 2000 events and folds them on every call — no cache, by
-design. Pass `--project` when you know the project. Three commands in a row is
-three full scans, so gather what you need in one `show` rather than looping.
+`loadWorkspace` (`lib/agent/apps/ship-workspace.ts`) reads every Ship project
+and issue, every change to them, and the manifests that fold them on every call
+— no cache, by design, and `--project` filters the answer, not the read. Three
+commands in a row is three full scans, so gather what you need in one `show`
+rather than looping.
 
 ## If you are changing the agent tooling
 
@@ -316,26 +318,27 @@ The extension is packed *from* the plugin's bundle, so the two clients run
 identical bytes by construction rather than by discipline. `scripts/plugin.test.ts`
 checks that, and that the command the plugin declares actually starts.
 
-### The vendored protocol layer — read this before editing `src/` or `lib/nostr/`
+### Ship is read through its manifest — read this before editing `ship-workspace.ts`
 
-Both directories are **copies of `estiva-ship`, at identical paths**. Editing one
-here without editing Ship makes this repository disagree with the app about what
-the workspace says, which is the one thing it must not do. Check with:
+There is no copy of Ship's code here any more (PER-21). `lib/agent/apps/ship-workspace.ts`
+reads Ship's roots and changes, resolves the manifest each author recommends
+(`resolveManifest`), and folds them with interop's `projectEvents`; every write
+in `ship.ts` is a manifest action built by `buildActionEvents`, and comments and
+edits are `@estiva-app/conversation`'s. **If the agent and Ship disagree, the fix
+is in Ship's manifest or in interop — never a Ship-specific rule added here.**
+A rule restated in this repository is how the old copy drifted.
 
-```bash
-diff -r ../estiva-ship/src src
-diff -r ../estiva-ship/lib/nostr lib/nostr
-```
+`scripts/conformance.test.ts` is the automated check. It runs the agent's real
+read path over `conformance/fold-fixture.json` and the manifest Ship published
+(`conformance/ship-manifest.json`), and compares every printed field with
+`expected` — Ship's own fold's answer. A failure means the manifest and Ship's
+fold disagree, or interop folds differently; find out which. **Never regenerate
+the fixture or edit `expected` to make it pass**; that erases the finding.
 
-`scripts/conformance.test.ts` is the automated half, and it runs in **both**
-repositories against the same `conformance/fold-fixture.json`: the same events,
-folded by each repo's own `foldFolder`, must produce the same state. A failure
-means the two repos disagree — find out which one changed. **Never regenerate
-the fixture to make it pass**; that erases the finding.
-
-Regenerating is correct only when the fold needs to cover a shape of event
-nobody had recorded before, and then the new fixture *and* the `EVENTS_SHA256`
-constant have to land in both repositories.
+The fixture belongs to `estiva-ship`. `expected` is re-recorded there with
+`scripts/refresh-expected.ts` when Ship's fold changes on purpose, and the file
+is copied here unchanged. When Ship republishes its manifest, re-record it with
+`npx tsx scripts/record-ship-manifest.ts`.
 
 The fixture is production events plus deliberately adversarial ones, because
 recording production alone was not enough: it passed unchanged when the `ts`
@@ -344,10 +347,9 @@ a `ts` and none was outside the window — a healthy workspace contains no event
 trying to make its write always win, so the rules the fold is most careful about
 are exactly the ones production cannot demonstrate.
 
-The app modules read through `Store` and `foldFolder` rather than querying the
-relay directly, for the same reason. The fold holds the subtle rules — change
-ordering, issues filed outside their project's Folder, a status set by someone who did not author the
-issue — and reimplementing any of it would reintroduce the drift.
+The fold holds the subtle rules — change ordering, ties, a status set by
+someone who did not author the issue — and they live in Ship's manifest and in
+interop, where every reader gets the same answer.
 
 ### Tests
 
