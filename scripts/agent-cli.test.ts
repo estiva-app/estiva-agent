@@ -9,7 +9,7 @@
  *
  *   npx tsx scripts/agent-cli.test.ts
  */
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { BadRequest, acceptedFlags, flagValue, parseArgs, unknownFlag } from '../lib/agent/cli'
@@ -17,10 +17,10 @@ import { resolveMaybe } from '../lib/agent/resolve'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
+import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, moveFile, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
 import type { Issue, Project, Vocabulary } from '../lib/agent/apps/ship-workspace'
-import { buildActionEvent, topLevelFolders } from '@estiva-app/interop'
+import { buildActionEvent, buildActionEvents, topLevelFolders } from '@estiva-app/interop'
 import { findTopic, replyToOf, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
 import { KIND_EDIT, foldEdits } from '@estiva-app/conversation'
@@ -806,6 +806,89 @@ console.log('— assigning, and unassigning —')
   refuses('a display name is still refused', () => assigneeFor('Katerina', self), 'not unique')
   refuses('and the refusal names the escape hatch', () => assigneeFor('Katerina', self), 'none')
   refuses('a truncated key is refused', () => assigneeFor(other.slice(0, 40), self))
+}
+
+{
+  /*
+    SHA-28, through interop 0.48: an assignee is a member of the file, so the
+    change names them where the relay indexes it — `["p", key]` — and a clear
+    names nobody. Built from the manifest Ship published, as `edit-issue` does.
+  */
+  const shipManifest = JSON.parse(JSON.parse(readFileSync(join(import.meta.dirname, '..', 'conformance', 'ship-manifest.json'), 'utf8')).event.content)
+  const self = 'a'.repeat(64)
+  const qa2 = 'c'.repeat(64)
+  const assign = (value: string) => {
+    const built = buildActionEvents({
+      manifest: shipManifest,
+      kind: 30851,
+      address: `30851:${self}:issue-1`,
+      objectAuthor: self,
+      folder: 'f'.repeat(32),
+      actionId: 'assign-issue',
+      value,
+      pubkey: self,
+      createdAtMs: 1_000_000,
+    })
+    if (typeof built === 'string') throw new Error(built)
+    return built[0]
+  }
+  const pTags = (event: { tags: string[][] }) => event.tags.filter((tag) => tag[0] === 'p')
+  check('an assignee is a p tag on the change', JSON.stringify(pTags(assign(qa2))) === JSON.stringify([['p', qa2]]), JSON.stringify(pTags(assign(qa2))))
+  check('clearing the assignee names nobody', pTags(assign(assigneeFor('none', self))).length === 0, JSON.stringify(pTags(assign(''))))
+}
+
+console.log('— moving a project with what is under it (MAN-17) —')
+
+{
+  /*
+    interop 0.47's `planMoveFile` takes the source Folder's listing and moves
+    the file with everything listed beneath it, in one add and one remove.
+    Before, the agent moved the project alone and left a topic started under
+    it in the old Folder. Mirrors Ship's `Store.moveProject` (ship#239).
+  */
+  const self = 'a'.repeat(64)
+  const project = `30850:${self}:project-1`
+  const topic = `30840:${self}:topic-1`
+  const elsewhere = `30840:${self}:topic-2`
+  const from = { id: '1'.repeat(32), hasState: true }
+  const to = { id: '2'.repeat(32), hasState: true }
+  const listing = [
+    { ref: project, address: project },
+    { ref: topic, address: topic, parentRef: project, folder: from.id },
+    { ref: elsewhere, address: elsewhere, folder: from.id },
+  ]
+  const fake = () => {
+    const sent: { kind: number; tags: string[][] }[] = []
+    const context = {
+      signer: { pubkey: self, sign: async (event: { kind: number; tags: string[][] }) => ({ ...event, id: String(sent.length) }) },
+      relay: { publish: async (event: { kind: number; tags: string[][] }) => (sent.push(event), { ok: true }) },
+    } as unknown as Parameters<typeof moveFile>[0]
+    return { context, sent }
+  }
+  const named = (event: { tags: string[][] }) => event.tags.filter((tag) => tag[0] === 'a').map((tag) => tag[1]).sort()
+
+  {
+    {
+      const { context, sent } = fake()
+      const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
+      check('one add, then one remove', sent.length === 2 && sent.every((event) => event.kind === 1852), `${sent.length} sent`)
+      check('both name the project and the topic under it', sent.every((event) => JSON.stringify(named(event)) === JSON.stringify([project, topic].sort())), JSON.stringify(sent.map(named)))
+      check('a topic beside it stays where it is', !sent.some((event) => named(event).includes(elsewhere)))
+      check('the add goes to the target', sent[0].tags.some((tag) => tag[0] === 'h' && tag[1] === to.id))
+      check('and what went with it is reported', JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()))
+      check('no name rides on a Folder command', !sent.some((event) => event.tags.some((tag) => tag[0] === 'name')))
+    }
+    {
+      const { context, sent } = fake()
+      const moved = await moveFile(context, { address: project, from: [from], to: { ...to, private: true }, listings: new Map([[from.id, listing]]) })
+      check('a private target is refused before anything is sent', moved.refused === 'target-is-private' && sent.length === 0, moved.refused)
+    }
+    {
+      const { context, sent } = fake()
+      const moved = await moveFile(context, { address: project, from: [from], to: { ...to, hasState: false }, listings: new Map([[from.id, listing]]) })
+      check('a target with no state is refused before anything is sent', moved.refused === 'target-has-no-state' && sent.length === 0, moved.refused)
+    }
+  }
 }
 
 console.log('— who the workspace has seen —')

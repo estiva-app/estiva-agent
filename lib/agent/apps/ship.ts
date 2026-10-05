@@ -34,11 +34,16 @@ import { KIND_CHANGE, KIND_COMMENT, KIND_DELETION, KIND_EDIT } from '@estiva-app
 import {
   KIND_CHANNEL_METADATA,
   buildActionEvents,
+  createProjectionCache,
   listFolders,
   planMoveFile,
   planPlaceFile,
+  resolveFolderContents,
   topLevelFolders,
+  type FolderRef,
   type FolderSummary,
+  type MovableFile,
+  type MoveRefusal,
   type ResolvedManifest,
 } from '@estiva-app/interop'
 
@@ -796,29 +801,76 @@ async function publishUnsigned(context: AgentContext, unsigned: Parameters<Agent
 }
 
 /**
- * Ship's "Move to Folder…" (FOL-7), as interop plans it: a `kind:1852 add` to
- * the new Folder, then a `remove` from each one that lists it now. The add goes
- * first and alone — if it is refused, nothing is removed and the file is where
- * it was. A Folder with no state is refused before anything is sent, because a
- * command against it empties it (`planMoveFile`).
+ * What each source Folder lists, read at the moment of a move, with the file
+ * itself added where its row did not resolve — it is what is being moved.
+ * Ship's `writes.moveProject` (MAN-17): no profiles, and `null` when any one
+ * cannot be read, because a move planned without a listing leaves whatever is
+ * beneath the file behind.
  */
-async function moveFile(
+async function readListings(
   context: AgentContext,
-  args: { address: string; from: { id: string; hasState: boolean }[]; to: { id: string; hasState: boolean } },
-): Promise<{ refused?: string; added?: PublishOutcome; removed: { folder: string; result: PublishOutcome }[] }> {
+  address: string,
+  sources: readonly FolderRef[],
+): Promise<Map<string, MovableFile[]> | null> {
+  const cache = createProjectionCache()
+  const read = await Promise.all(
+    sources.map((folder) => resolveFolderContents(folder.id, relayQuery(context), noPeople, cache).then((content) => content.files, () => null)),
+  )
+  if (read.some((files) => files === null)) return null
+  return new Map(
+    sources.map((folder, i) => {
+      const files: MovableFile[] = read[i]!
+      return [folder.id, files.some((file) => file.address === address) ? files : [{ ref: address, address }, ...files]]
+    }),
+  )
+}
+
+const noPeople = async () => ({})
+
+/**
+ * Ship's "Move to Folder…" (FOL-7), as interop plans it (SPEC §3.3): a
+ * `kind:1852 add` to the new Folder naming the file and everything each source
+ * lists beneath it, then a `remove` from each one that lists it now. The adds
+ * go first — if one is refused, nothing is removed and the files are where they
+ * were. Refused before anything is sent when either side has no state (a
+ * command against it empties it) or the target is private (a listing never
+ * changes who can read a file). `Store.moveProject` in Ship, line for line.
+ */
+export async function moveFile(
+  context: AgentContext,
+  args: {
+    address: string
+    from: readonly FolderRef[]
+    to: FolderRef
+    /** Each source Folder's files, by Folder id ({@link readListings}). A source with none moves the file alone. */
+    listings: ReadonlyMap<string, readonly MovableFile[]>
+  },
+): Promise<{ refused?: MoveRefusal; added?: PublishOutcome; moved: string[]; removed: { folder: string; result: PublishOutcome }[] }> {
   const sources = args.from.filter((folder) => folder.id !== args.to.id)
-  if (sources.length === 0 && args.from.length > 0) return { removed: [] }
-  if (!args.to.hasState) return { refused: 'target-has-no-state', removed: [] }
+  if (sources.length === 0 && args.from.length > 0) return { moved: [], removed: [] }
+  if (!args.to.hasState) return { refused: 'target-has-no-state', moved: [], removed: [] }
   const now = Date.now()
-  const plans = sources.map((from) => planMoveFile(context.signer.pubkey, now, { address: args.address, from, to: args.to }))
-  for (const plan of plans) if (!plan.ok) return { refused: plan.reason, removed: [] }
+  const file = { ref: args.address, address: args.address }
+  const plans = sources.map((from) => planMoveFile(context.signer.pubkey, now, { file, from, to: args.to, listing: args.listings.get(from.id) ?? null }))
+  for (const plan of plans) if (!plan.ok) return { refused: plan.reason, moved: [], removed: [] }
+  if (args.to.private && sources.length === 0) return { refused: 'target-is-private', moved: [], removed: [] }
+  // Each plan is `[add to target, remove from source]`: every add, then every remove.
   const events = plans.map((plan) => (plan.ok ? plan.events : []))
-  const add = events[0]?.[0] ?? planPlaceFile(context.signer.pubkey, now, { folder: args.to.id, address: args.address, hasState: true })[0]
-  const added = await publishUnsigned(context, add)
+  const moved = [...new Set(plans.flatMap((plan) => (plan.ok ? plan.moved : [])))]
+  // One add per distinct set: a file listed in two Folders moves the same set out of each.
+  const named = (event: (typeof events)[number][number]) => JSON.stringify(event.tags.filter((tag) => tag[0] === 'a'))
+  const adds = [...new Map(events.flatMap((planned) => planned.slice(0, 1)).map((add) => [named(add), add])).values()]
+  if (adds.length === 0) adds.push(...planPlaceFile(context.signer.pubkey, now, { folder: args.to.id, address: args.address, hasState: true }))
   const removed: { folder: string; result: PublishOutcome }[] = []
-  if (!added.ok) return { added, removed }
-  for (const [i, source] of sources.entries()) removed.push({ folder: source.id, result: await publishUnsigned(context, events[i][1]) })
-  return { added, removed }
+  let added: PublishOutcome | undefined
+  for (const add of adds) {
+    added = await publishUnsigned(context, add)
+    if (!added.ok) return { added, moved: [], removed }
+  }
+  for (const [i, source] of sources.entries()) {
+    if (events[i][1]) removed.push({ folder: source.id, result: await publishUnsigned(context, events[i][1]) })
+  }
+  return { added, moved: moved.length > 0 ? moved : [args.address], removed }
 }
 
 /** A change to one field, as Ship's own UI writes it — the action that declares the field. */
@@ -1739,12 +1791,13 @@ export const shipApp: AgentApp = {
       /*
         Ship's "Move to Folder…" (FOL-7): a `kind:1852 add` to the new
         top-level Folder, then a `remove` from each one that lists it now,
-        through `Store.moveProject` and interop's `planMoveFile`. No
+        through `Store.moveProject` and interop's `planMoveFile` — each naming
+        the project and every file listed beneath it (MAN-17). No
         `kind:1851` — the record, its issues and its conversation keep their
         Folder, so a comment's `h` still names the channel both apps read.
       */
       signs: [PROTOCOL_KIND.FOLDER_COMMAND],
-      summary: 'move a project to another top-level Folder — its issues and conversation stay where they are',
+      summary: 'move a project, with what is filed under it, to another top-level Folder — its issues and conversation stay where they are',
       usage: 'move-project <ref> --folder <name|id>',
       async run(context, args) {
         const reference = args.positional[0]
@@ -1765,13 +1818,20 @@ export const shipApp: AgentApp = {
           throw new BadRequest(`“${project.title}” is already in ${name(to)}, and only there. Nothing was published.`)
         }
 
+        // What each source lists beneath the project moves with it (SPEC §3.3), read now; unread, nothing is sent.
+        const sources = from.filter((team) => team.id !== to.id && team.hasState).map((team) => ({ id: team.id, hasState: team.hasState }))
+        const listings = await readListings(context, project.addr, sources)
+        if (!listings) throw new BadRequest(`A Folder “${project.title}” is in could not be read, so what is under it would be left behind. Nothing was published.`)
+
         const moved = await moveFile(context, {
           address: project.addr,
           from: from.map((team) => ({ id: team.id, hasState: team.hasState })),
-          to: { id: to.id, hasState: to.hasState },
+          to: { id: to.id, hasState: to.hasState, ...(to.private ? { private: true } : {}) },
+          listings,
         })
         if (moved.refused === 'target-has-no-state') throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`)
         if (moved.refused === 'source-has-no-state') throw new BadRequest(`A Folder “${project.title}” is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`)
+        if (moved.refused === 'target-is-private') throw new BadRequest(`${name(to)} is private, and “${project.title}” would stay readable by the whole workspace. Nothing was published.`)
         if (moved.added) published(moved.added, `adding “${project.title}” to ${name(to)} (nothing else was sent; it is where it was)`)
 
         const stillIn = moved.removed
@@ -1782,6 +1842,8 @@ export const shipApp: AgentApp = {
           from: from.map((team) => ({ id: team.id, name: team.name })),
           to: { id: to.id, name: to.name },
           added: moved.added?.eventId,
+          // What was listed beneath it in the source — a topic started under it — and went with it.
+          with: moved.moved.filter((address) => address !== project.addr),
           removed: moved.removed.filter(({ result }) => result.ok).map(({ folder, result }) => ({ folder, eventId: result.eventId })),
           // A refused remove is still a move: it is in the new Folder and in these too. Run the same command again to retry.
           stillIn: stillIn.length > 0 ? stillIn : undefined,

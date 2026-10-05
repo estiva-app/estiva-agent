@@ -17426,19 +17426,63 @@ function planUnlistFile(pubkey, createdAtMs, args2) {
     return [];
   return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "remove", addresses: [args2.address] })];
 }
+function listedBeneath(listing, file) {
+  const byRef = new Map(listing.map((candidate) => [candidate.ref, candidate]));
+  const cycles = /* @__PURE__ */ new Map();
+  const onCycle = (ref) => {
+    let found = cycles.get(ref);
+    if (found !== void 0)
+      return found;
+    found = false;
+    const seen = /* @__PURE__ */ new Set();
+    for (let at = byRef.get(ref)?.parentRef; at && !seen.has(at); at = byRef.get(at)?.parentRef) {
+      if (at === ref) {
+        found = true;
+        break;
+      }
+      seen.add(at);
+    }
+    cycles.set(ref, found);
+    return found;
+  };
+  const isBeneath = (candidate) => {
+    if (onCycle(candidate.ref))
+      return false;
+    const seen = /* @__PURE__ */ new Set();
+    for (let at = candidate.parentRef; at && !seen.has(at); at = byRef.get(at)?.parentRef) {
+      if (at === file.ref)
+        return true;
+      if (onCycle(at))
+        return false;
+      seen.add(at);
+    }
+    return false;
+  };
+  return listing.filter((candidate) => candidate.ref !== file.ref && isBeneath(candidate));
+}
 function planMoveFile(pubkey, createdAtMs, args2) {
   if (args2.from.id === args2.to.id)
-    return { ok: true, events: [] };
+    return { ok: true, events: [], moved: [] };
   if (!args2.from.hasState)
     return { ok: false, reason: "source-has-no-state" };
   if (!args2.to.hasState)
     return { ok: false, reason: "target-has-no-state" };
+  const { file, listing } = args2;
+  const listed = listing?.find((candidate) => candidate.ref === file.ref || !!file.address && candidate.address === file.address);
+  const set = listing ? [...listed ? [listed] : [], ...listedBeneath(listing, listed ?? file)] : [file];
+  const moving = set.filter((candidate) => candidate.address);
+  if (args2.to.private && moving.some((candidate) => candidate.folder !== args2.to.id))
+    return { ok: false, reason: "target-is-private" };
+  const moved = [...new Set(moving.map((candidate) => candidate.address))];
+  if (!moved.length)
+    return { ok: true, events: [], moved };
   return {
     ok: true,
     events: [
-      buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "add", addresses: [args2.address] }),
-      buildFolderCommand(pubkey, createdAtMs, { folder: args2.from.id, op: "remove", addresses: [args2.address] })
-    ]
+      buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "add", addresses: moved }),
+      buildFolderCommand(pubkey, createdAtMs, { folder: args2.from.id, op: "remove", addresses: moved })
+    ],
+    moved
   };
 }
 
@@ -18045,7 +18089,7 @@ var BARE_FILE_MANIFEST = {
   
       `rename` is a `kind:1851` change to the `title` field, not a re-publish of
       the `30840`. The title slot already folds `title`, so a rename by anyone in
-      the team lands for every reader the way a re-parent does; a re-publish
+      the Folder lands for every reader the way a re-parent does; a re-publish
       could only ever be the author's, because a `30840` from another pubkey is a
       different address and not a refusal. `delete` is NIP-09's `kind:5` naming
       the address — the relay decides who may (the author, or the owner of an
@@ -18056,7 +18100,7 @@ var BARE_FILE_MANIFEST = {
     {
       id: "comment",
       label: "Comment",
-      description: "Say something about this file. The comment lands in the team Folder the file lives in, and is what every reader of the file sees under it.",
+      description: "Say something about this file. The comment lands in the Folder the file lives in, and is what every reader of the file sees under it.",
       effect: "writes",
       appliesTo: [String(KIND_BARE_FILE)],
       emits: { kind: KIND_COMMENT2, scope: "address" },
@@ -18065,7 +18109,7 @@ var BARE_FILE_MANIFEST = {
     {
       id: "rename",
       label: "Rename",
-      description: "Give this file a new title. A change event, so anyone in the team may, and every app reading the file folds it into the title.",
+      description: "Give this file a new title. A change event, so anyone in the Folder may, and every app reading the file folds it into the title.",
       effect: "writes",
       appliesTo: [String(KIND_BARE_FILE)],
       emits: { kind: 1851, field: "title" },
@@ -18074,14 +18118,14 @@ var BARE_FILE_MANIFEST = {
     /*
       `move` is the `parent` field SPEC §6.7 already defines, declared so a
       consumer draws the control from here as it draws Rename (FOL-4). The value
-      is the new parent's address, or empty for the top of the team. A move
+      is the new parent's address, or empty for the top of the Folder. A move
       never changes `h`: nesting organises and never grants access, so a file
-      moved under another stays readable by exactly the team it was.
+      moved under another stays readable by exactly the people it was.
     */
     {
       id: "move",
       label: "Move",
-      description: "Put this file under another file in the same team, or back at the top. A change event, so anyone in the team may; who can read the file does not change.",
+      description: "Put this file under another file in the same Folder, or back at the top. A change event, so anyone in the Folder may; who can read the file does not change.",
       effect: "writes",
       appliesTo: [String(KIND_BARE_FILE)],
       emits: { kind: 1851, field: "parent" },
@@ -18090,7 +18134,7 @@ var BARE_FILE_MANIFEST = {
     /*
       `archive` is the one field every file may carry (FOL-46): `true` hides the
       file and everything under it from every list, an empty value brings it
-      back. A change, so anyone in the team may, and the archiving change's
+      back. A change, so anyone in the Folder may, and the archiving change's
       `content` is the resolution summary a person gave (`ActionEventArgs.note`).
     */
     {
@@ -18314,7 +18358,13 @@ function archiveRuleOf(manifest) {
   return manifest?.records ?? ARCHIVE_RULE;
 }
 var PLACEHOLDER_ARCHIVE_NOTE = "archived";
-function archiveOf(changes, address, rule) {
+function archiveOf(changes, address, rule, folderAdmins) {
+  const [kind, , folderId] = address.split(":");
+  if (Number(kind) === KIND_CHANNEL) {
+    if (!folderAdmins?.size)
+      return void 0;
+    changes = changes.filter((change) => tagValue2(change, "h") === folderId && folderAdmins.has(change.pubkey));
+  }
   let last;
   for (const change of changes) {
     if (change.kind !== rule.changeKind || tagValue2(change, rule.targetTag) !== address)
@@ -18668,6 +18718,16 @@ function buildCreationEvent(args2) {
       return `"${held}" is not one of ${vocab.map((e) => e.value).join(", ")}.`;
     }
   }
+  const people = [];
+  for (const [name, held] of Object.entries(value)) {
+    if (properties[name]?.type !== "pubkey")
+      continue;
+    const problem = personKeyProblem(declared.label, held);
+    if (problem)
+      return problem;
+    if (held !== "" && !people.includes(held))
+      people.push(held);
+  }
   if (isAddressableKind(declared.emits.kind) && !newId) {
     return `Creating a kind ${declared.emits.kind} needs an identifier, and none was supplied.`;
   }
@@ -18699,6 +18759,8 @@ function buildCreationEvent(args2) {
     tags.push([declared.emits.setTag, address]);
   }
   tags.push([placement, folder], ...prose);
+  for (const person of people)
+    tags.push(["p", person]);
   return {
     pubkey: args2.pubkey,
     created_at: Math.floor(args2.createdAtMs / 1e3),
@@ -18706,6 +18768,12 @@ function buildCreationEvent(args2) {
     tags,
     content: bodyField ? value[bodyField] ?? "" : ""
   };
+}
+var PERSON_KEY = /^[0-9a-f]{64}$/;
+function personKeyProblem(label, value) {
+  if (value === "" || PERSON_KEY.test(value))
+    return void 0;
+  return `"${label}" needs a person picked from the list, so nothing was changed.`;
 }
 function buildActionEvent(args2) {
   const declared = args2.manifest.actions?.find((a) => a.id === args2.actionId);
@@ -18792,6 +18860,12 @@ function buildOneActionEvent(args2) {
       return `"${value}" is not one of ${vocab.map((e) => e.value).join(", ")}.`;
     }
   }
+  const namesPerson = !!declared.emits.field && declared.input?.type === "pubkey";
+  if (namesPerson) {
+    const problem = personKeyProblem(declared.label, value);
+    if (problem)
+      return problem;
+  }
   const prose = declared.emits.field ? proseTags({ label: declared.label, declared: declared.input?.format, contentFormat: args2.contentFormat, value }) : [];
   if (typeof prose === "string")
     return prose;
@@ -18827,6 +18901,8 @@ function buildOneActionEvent(args2) {
   if (records.order?.includes("ts"))
     tags.push(["ts", String(args2.createdAtMs)]);
   tags.push(...files);
+  if (namesPerson && value !== "")
+    tags.push(["p", value]);
   const moved = declared.emits.field ? movedByOf(manifest, kind) : void 0;
   const parentAddress = moved?.parentKind === void 0 ? /^\d+:[0-9a-f]{64}:/ : new RegExp(`^${moved.parentKind}:[0-9a-f]{64}:`);
   if (moved?.field === declared.emits.field && typeof value === "string" && parentAddress.test(value)) {
@@ -18842,37 +18918,63 @@ function buildOneActionEvent(args2) {
 }
 var KIND_FOLDER_STATE = 30890;
 var KIND_CHANNEL = 39e3;
+var KIND_CHANNEL_ADMINS = 39001;
+var FOLDER_ADMIN_ROLES = /* @__PURE__ */ new Set(["owner", "admin"]);
 var nameOf = (event) => event ? tagValue2(event, "name") : void 0;
+function folderAdminsOf(admins, channel) {
+  if (!admins || !channel || admins.pubkey !== channel.pubkey)
+    return [];
+  return [
+    ...new Set(admins.tags.filter((tag) => tag[0] === "p" && tag[1] && tag.slice(2).some((role) => FOLDER_ADMIN_ROLES.has(role))).map((tag) => tag[1]))
+  ];
+}
+function folderArchiveOf(changes, folder) {
+  return folder.channel ? archiveOf(changes, folder.channel, ARCHIVE_RULE, new Set(folder.admins ?? [])) : void 0;
+}
 function topLevelFolders(folders) {
   return folders.filter((folder) => folder.hasState && !folder.listedIn?.length && !folder.archived);
 }
 async function listFolders(query) {
   const events = await query([
     { kinds: [KIND_FOLDER_STATE], limit: 500 },
-    { kinds: [KIND_CHANNEL], limit: 500 }
+    { kinds: [KIND_CHANNEL], limit: 500 },
+    { kinds: [KIND_CHANNEL_ADMINS], limit: 500 }
   ]);
   const byId = /* @__PURE__ */ new Map();
+  const channelOf = /* @__PURE__ */ new Map();
+  const adminsOf = /* @__PURE__ */ new Map();
   for (const event of events) {
     const id = tagValue2(event, "d");
     if (!id)
       continue;
+    if (event.kind === KIND_CHANNEL)
+      channelOf.set(id, event);
+    if (event.kind === KIND_CHANNEL_ADMINS)
+      adminsOf.set(id, event);
+    if (event.kind !== KIND_FOLDER_STATE && event.kind !== KIND_CHANNEL)
+      continue;
     const state = event.kind === KIND_FOLDER_STATE;
     const existing = byId.get(id);
-    if (existing && !state)
-      continue;
-    const addresses = state ? event.tags.filter((tag) => tag[0] === "a" && tag[1]).map((tag) => tag[1]) : [];
+    const addresses = state ? event.tags.filter((tag) => tag[0] === "a" && tag[1]).map((tag) => tag[1]) : existing?.addresses ?? [];
     byId.set(id, {
       id,
-      name: tagValue2(event, "name") ?? existing?.name,
       hasState: state || (existing?.hasState ?? false),
       ...addresses.length ? { addresses } : {}
     });
   }
-  for (const event of events) {
-    const id = tagValue2(event, "d");
-    const folder = id && event.kind === KIND_CHANNEL ? byId.get(id) : void 0;
-    if (folder)
-      folder.channel = pointerToAddress({ kind: KIND_CHANNEL, pubkey: event.pubkey, identifier: id, relays: [] });
+  for (const [id, folder] of byId) {
+    const channel = channelOf.get(id);
+    if (!channel)
+      continue;
+    const name = nameOf(channel);
+    if (name !== void 0)
+      folder.name = name;
+    if (channel.tags.some((tag) => tag[0] === "private"))
+      folder.private = true;
+    const admins = folderAdminsOf(adminsOf.get(id), channel);
+    if (admins.length)
+      folder.admins = admins;
+    folder.channel = pointerToAddress({ kind: KIND_CHANNEL, pubkey: channel.pubkey, identifier: id, relays: [] });
   }
   const listedIn = /* @__PURE__ */ new Map();
   for (const event of events) {
@@ -18904,7 +19006,7 @@ async function listFolders(query) {
 }
 function markArchivedFolders(byId, recordsOf, changes) {
   for (const folder of byId.values()) {
-    const own = folder.channel ? archiveOf(changes, folder.channel, ARCHIVE_RULE) : void 0;
+    const own = folderArchiveOf(changes, folder);
     if (own) {
       folder.archived = own;
       continue;
@@ -19000,15 +19102,19 @@ async function placeRecordChannels(events, byId, listedIn, query) {
 async function resolveFolderContents(folder, query, lookupPeople, cache, options = {}) {
   const identity = await query([
     { kinds: [KIND_FOLDER_STATE], "#d": [folder], limit: 1 },
-    { kinds: [KIND_CHANNEL], "#d": [folder], limit: 1 }
+    { kinds: [KIND_CHANNEL], "#d": [folder], limit: 1 },
+    { kinds: [KIND_CHANNEL_ADMINS], "#d": [folder], limit: 1 }
   ]);
   const state = identity.find((e) => e.kind === KIND_FOLDER_STATE && tagValue2(e, "d") === folder);
   const channel = identity.find((e) => e.kind === KIND_CHANNEL && tagValue2(e, "d") === folder);
+  const admins = folderAdminsOf(identity.find((e) => e.kind === KIND_CHANNEL_ADMINS && tagValue2(e, "d") === folder), channel);
   const channelAddress = channel ? pointerToAddress({ kind: KIND_CHANNEL, pubkey: channel.pubkey, identifier: folder, relays: [] }) : void 0;
   const summary = {
     id: folder,
-    name: nameOf(state) ?? nameOf(channel),
+    name: nameOf(channel),
     hasState: !!state,
+    ...channel?.tags.some((tag) => tag[0] === "private") ? { private: true } : {},
+    ...admins.length ? { admins } : {},
     ...channelAddress ? { channel: channelAddress } : {},
     ...state ? { address: pointerToAddress({ kind: state.kind, pubkey: state.pubkey, identifier: folder, relays: [] }) } : {}
   };
@@ -19021,7 +19127,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
     }
   ) : await addressesByContainment(folder, query);
   if (addresses.length === 0) {
-    const archived = channelAddress ? archiveOf(await readArchiveChanges([channelAddress], query), channelAddress, ARCHIVE_RULE) : void 0;
+    const archived = channelAddress ? folderArchiveOf(await readArchiveChanges([channelAddress], query), summary) : void 0;
     return { ...summary, ...archived ? { archived } : {}, files: [], source: state ? "state" : "channel" };
   }
   const pointers = addresses.flatMap((address) => {
@@ -19055,6 +19161,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
       ...[...manifests.values()].flatMap((r) => r.manifest.records ? [r.manifest.records.changeKind] : [])
     ])
   ];
+  const nestedFolderIds = pointers.filter(({ pointer }) => pointer.kind === KIND_CHANNEL).map(({ pointer }) => pointer.identifier);
   const events = await query([
     ...[...groups.values()].map(({ pointer, addresses: group }) => ({
       kinds: [pointer.kind],
@@ -19067,9 +19174,11 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
     // changes cannot push them off the page — the filter above holds 500
     // changes for every file together, and one Folder has already had 688.
     // Same request.
-    ...archiveFilters(channelAddress ? [...addresses, channelAddress] : addresses)
+    ...archiveFilters(channelAddress ? [...addresses, channelAddress] : addresses),
+    // A Folder listed here counts its archive only from its own admins (§3.2). Same request.
+    ...nestedFolderIds.length ? [{ kinds: [KIND_CHANNEL_ADMINS], "#d": nestedFolderIds, limit: nestedFolderIds.length }] : []
   ]);
-  const ownArchive = channelAddress ? archiveOf(events, channelAddress, ARCHIVE_RULE) : void 0;
+  const ownArchive = folderArchiveOf(events, summary);
   if (ownArchive)
     summary.archived = ownArchive;
   const listed = [];
@@ -19088,7 +19197,8 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
       continue;
     const records = foldRuleOf(resolved.manifest);
     const folded = foldChanges(events.filter((e) => e.kind === records.changeKind && hasTagValue(e, records.targetTag, address)), records);
-    const archive = archiveOf(events, address, archiveRuleOf(resolved.manifest));
+    const nestedAdmins = pointer.kind === KIND_CHANNEL ? new Set(folderAdminsOf(events.find((e) => e.kind === KIND_CHANNEL_ADMINS && tagValue2(e, "d") === pointer.identifier), root)) : void 0;
+    const archive = archiveOf(events, address, archiveRuleOf(resolved.manifest), nestedAdmins);
     archiveByAddress.set(address, archive);
     const parent = parentRefOf(resolved.manifest, pointer.kind, root, folded);
     parentByAddress.set(address, parent);
@@ -19723,20 +19833,44 @@ async function publishUnsigned(context2, unsigned) {
   const result = await context2.relay.publish(signed);
   return { ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id };
 }
+async function readListings(context2, address, sources) {
+  const cache = createProjectionCache();
+  const read = await Promise.all(
+    sources.map((folder) => resolveFolderContents(folder.id, relayQuery(context2), noPeople, cache).then((content) => content.files, () => null))
+  );
+  if (read.some((files) => files === null)) return null;
+  return new Map(
+    sources.map((folder, i) => {
+      const files = read[i];
+      return [folder.id, files.some((file) => file.address === address) ? files : [{ ref: address, address }, ...files]];
+    })
+  );
+}
+var noPeople = async () => ({});
 async function moveFile(context2, args2) {
   const sources = args2.from.filter((folder) => folder.id !== args2.to.id);
-  if (sources.length === 0 && args2.from.length > 0) return { removed: [] };
-  if (!args2.to.hasState) return { refused: "target-has-no-state", removed: [] };
+  if (sources.length === 0 && args2.from.length > 0) return { moved: [], removed: [] };
+  if (!args2.to.hasState) return { refused: "target-has-no-state", moved: [], removed: [] };
   const now = Date.now();
-  const plans = sources.map((from) => planMoveFile(context2.signer.pubkey, now, { address: args2.address, from, to: args2.to }));
-  for (const plan of plans) if (!plan.ok) return { refused: plan.reason, removed: [] };
+  const file = { ref: args2.address, address: args2.address };
+  const plans = sources.map((from) => planMoveFile(context2.signer.pubkey, now, { file, from, to: args2.to, listing: args2.listings.get(from.id) ?? null }));
+  for (const plan of plans) if (!plan.ok) return { refused: plan.reason, moved: [], removed: [] };
+  if (args2.to.private && sources.length === 0) return { refused: "target-is-private", moved: [], removed: [] };
   const events = plans.map((plan) => plan.ok ? plan.events : []);
-  const add = events[0]?.[0] ?? planPlaceFile(context2.signer.pubkey, now, { folder: args2.to.id, address: args2.address, hasState: true })[0];
-  const added = await publishUnsigned(context2, add);
+  const moved = [...new Set(plans.flatMap((plan) => plan.ok ? plan.moved : []))];
+  const named = (event) => JSON.stringify(event.tags.filter((tag) => tag[0] === "a"));
+  const adds = [...new Map(events.flatMap((planned) => planned.slice(0, 1)).map((add) => [named(add), add])).values()];
+  if (adds.length === 0) adds.push(...planPlaceFile(context2.signer.pubkey, now, { folder: args2.to.id, address: args2.address, hasState: true }));
   const removed = [];
-  if (!added.ok) return { added, removed };
-  for (const [i, source] of sources.entries()) removed.push({ folder: source.id, result: await publishUnsigned(context2, events[i][1]) });
-  return { added, removed };
+  let added;
+  for (const add of adds) {
+    added = await publishUnsigned(context2, add);
+    if (!added.ok) return { added, moved: [], removed };
+  }
+  for (const [i, source] of sources.entries()) {
+    if (events[i][1]) removed.push({ folder: source.id, result: await publishUnsigned(context2, events[i][1]) });
+  }
+  return { added, moved: moved.length > 0 ? moved : [args2.address], removed };
 }
 async function setField(context2, workspace, target, field, value, note) {
   const resolved = workspace.manifestFor(target.addr);
@@ -20361,12 +20495,13 @@ Pass an address to say which.`
       /*
         Ship's "Move to Folder…" (FOL-7): a `kind:1852 add` to the new
         top-level Folder, then a `remove` from each one that lists it now,
-        through `Store.moveProject` and interop's `planMoveFile`. No
+        through `Store.moveProject` and interop's `planMoveFile` — each naming
+        the project and every file listed beneath it (MAN-17). No
         `kind:1851` — the record, its issues and its conversation keep their
         Folder, so a comment's `h` still names the channel both apps read.
       */
       signs: [KIND.FOLDER_COMMAND],
-      summary: "move a project to another top-level Folder \u2014 its issues and conversation stay where they are",
+      summary: "move a project, with what is filed under it, to another top-level Folder \u2014 its issues and conversation stay where they are",
       usage: "move-project <ref> --folder <name|id>",
       async run(context2, args2) {
         const reference = args2.positional[0];
@@ -20383,13 +20518,18 @@ Pass an address to say which.`
         if (from.length === 1 && from[0].id === to.id) {
           throw new BadRequest(`\u201C${project.title}\u201D is already in ${name(to)}, and only there. Nothing was published.`);
         }
+        const sources = from.filter((team) => team.id !== to.id && team.hasState).map((team) => ({ id: team.id, hasState: team.hasState }));
+        const listings = await readListings(context2, project.addr, sources);
+        if (!listings) throw new BadRequest(`A Folder \u201C${project.title}\u201D is in could not be read, so what is under it would be left behind. Nothing was published.`);
         const moved = await moveFile(context2, {
           address: project.addr,
           from: from.map((team) => ({ id: team.id, hasState: team.hasState })),
-          to: { id: to.id, hasState: to.hasState }
+          to: { id: to.id, hasState: to.hasState, ...to.private ? { private: true } : {} },
+          listings
         });
         if (moved.refused === "target-has-no-state") throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`);
         if (moved.refused === "source-has-no-state") throw new BadRequest(`A Folder \u201C${project.title}\u201D is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`);
+        if (moved.refused === "target-is-private") throw new BadRequest(`${name(to)} is private, and \u201C${project.title}\u201D would stay readable by the whole workspace. Nothing was published.`);
         if (moved.added) published(moved.added, `adding \u201C${project.title}\u201D to ${name(to)} (nothing else was sent; it is where it was)`);
         const stillIn = moved.removed.filter(({ result }) => !result.ok).map(({ folder, result }) => ({ folder, name: teams.find((team) => team.id === folder)?.name, refused: result.reason ?? "no reason given" }));
         return {
@@ -20397,6 +20537,8 @@ Pass an address to say which.`
           from: from.map((team) => ({ id: team.id, name: team.name })),
           to: { id: to.id, name: to.name },
           added: moved.added?.eventId,
+          // What was listed beneath it in the source — a topic started under it — and went with it.
+          with: moved.moved.filter((address) => address !== project.addr),
           removed: moved.removed.filter(({ result }) => result.ok).map(({ folder, result }) => ({ folder, eventId: result.eventId })),
           // A refused remove is still a move: it is in the new Folder and in these too. Run the same command again to retry.
           stillIn: stillIn.length > 0 ? stillIn : void 0,
@@ -20637,7 +20779,7 @@ function pointerOf2(address) {
   const [kind, pubkey, identifier] = address.split(":");
   return { kind: Number(kind), pubkey, identifier, relays: [] };
 }
-var noPeople = async () => ({});
+var noPeople2 = async () => ({});
 function relayQuery2(context2) {
   return (filters) => context2.relay.queryAll(filters);
 }
@@ -20649,7 +20791,7 @@ async function loadTopics(context2, cache, folderRef) {
   const visited = new Set(queue.map((folder) => folder.id));
   const topics = /* @__PURE__ */ new Map();
   for (let folder = queue.shift(); folder; folder = queue.shift()) {
-    const content = await resolveFolderContents(folder.id, query, noPeople, cache);
+    const content = await resolveFolderContents(folder.id, query, noPeople2, cache);
     for (const file of content.files) {
       if (!file.address) continue;
       if (file.kind === KIND_CHANNEL_METADATA) {
