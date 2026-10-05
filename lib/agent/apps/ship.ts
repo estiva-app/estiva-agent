@@ -1812,7 +1812,9 @@ export const shipApp: AgentApp = {
 
         const moved = await moveFile(context, {
           address: project.addr,
-          from: from.map((team) => ({ id: team.id, hasState: team.hasState, addresses: team.addresses ?? [] })),
+          // Each names the project — it is what is being moved, out of its own Folder too, which may hold it by containment
+          // while a topic under it is listed — so the planner moves the two together.
+          from: from.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
           to: { id: to.id, hasState: to.hasState, ...(to.private ? { private: true } : {}) },
           listings,
         })

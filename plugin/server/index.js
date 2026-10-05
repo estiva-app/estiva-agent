@@ -20553,7 +20553,9 @@ Pass an address to say which.`
         if (!(listings instanceof Map)) throw new BadRequest(`A Folder \u201C${project.title}\u201D is in could not be read (${listings.unread}), so what is under it would be left behind. Nothing was published; run the same command again.`);
         const moved = await moveFile(context2, {
           address: project.addr,
-          from: from.map((team) => ({ id: team.id, hasState: team.hasState, addresses: team.addresses ?? [] })),
+          // Each names the project — it is what is being moved, out of its own Folder too, which may hold it by containment
+          // while a topic under it is listed — so the planner moves the two together.
+          from: from.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
           to: { id: to.id, hasState: to.hasState, ...to.private ? { private: true } : {} },
           listings
         });
