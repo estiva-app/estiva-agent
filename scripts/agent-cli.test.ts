@@ -907,7 +907,7 @@ console.log('— moving a project with what is under it (MAN-17) —')
       {
         const { context, sent } = answering(false)
         const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
-        check('a refused add removes nothing', sent.length === 1 && moved.removed.length === 0 && moved.added?.ok === false && !moved.partly)
+        check('a refused add removes nothing', sent.length === 1 && moved.removed.length === 0 && moved.added?.ok === false)
       }
       {
         const { context, sent } = answering(true, false)
@@ -915,16 +915,30 @@ console.log('— moving a project with what is under it (MAN-17) —')
         check('a refused remove is reported against its Folder', sent.length === 2 && moved.added?.ok === true && moved.removed[0]?.folder === from.id && moved.removed[0]?.result.ok === false)
       }
       {
-        // Listed in two Folders with different sets beneath it: two adds, and the second is refused.
+        // Listed in two Folders with different sets beneath it: one add naming both (SHI-37), so it lands whole or not at all.
         const other = { id: '3'.repeat(32), hasState: true }
-        const { context, sent } = answering(true, false)
-        const moved = await moveFile(context, {
-          address: project,
-          from: [from, other],
-          to,
-          listings: new Map([[from.id, listing], [other.id, [{ ref: project, address: project }]]]),
-        })
-        check('a second add refused after the first landed is reported as partly moved', sent.length === 2 && moved.partly === true && moved.removed.length === 0)
+        const second = `30840:${self}:topic-3`
+        const listings = new Map([
+          [from.id, listing],
+          [other.id, [{ ref: project, address: project }, { ref: second, address: second, parentRef: project, folder: other.id }]],
+        ])
+        {
+          const { context, sent } = answering(true)
+          await moveFile(context, { address: project, from: [from, other], to, listings })
+          check('two sources: one add naming everything under it in either', sent.filter((event) => event.tags.some((tag) => tag[0] === 'op' && tag[1] === 'add')).length === 1 && JSON.stringify(named(sent[0])) === JSON.stringify([project, topic, second].sort()), JSON.stringify(sent.map(named)))
+          check('…then a remove from each', sent.length === 3)
+        }
+        {
+          const { context, sent } = answering(false)
+          const moved = await moveFile(context, { address: project, from: [from, other], to, listings })
+          check('…and that add refused leaves nothing in the target and removes nothing', sent.length === 1 && moved.added?.ok === false && moved.removed.length === 0)
+        }
+      }
+      {
+        // The project row did not resolve, but the Folder's state names it: it still moves (the planner, not the read, adds it).
+        const { context, sent } = answering()
+        const moved = await moveFile(context, { address: project, from: [{ ...from, addresses: [project, topic] }], to, listings: new Map([[from.id, listing.slice(1)]]) })
+        check('a project whose row did not resolve still moves, with the topic under it', JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()) && sent.length === 2)
       }
     }
   }
