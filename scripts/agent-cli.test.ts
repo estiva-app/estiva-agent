@@ -888,6 +888,45 @@ console.log('— moving a project with what is under it (MAN-17) —')
       const moved = await moveFile(context, { address: project, from: [from], to: { ...to, hasState: false }, listings: new Map([[from.id, listing]]) })
       check('a target with no state is refused before anything is sent', moved.refused === 'target-has-no-state' && sent.length === 0, moved.refused)
     }
+    {
+      const { context, sent } = fake()
+      const moved = await moveFile(context, { address: project, from: [], to: { ...to, private: true }, listings: new Map() })
+      check('placing a project listed nowhere into a private Folder is refused too', moved.refused === 'target-is-private' && sent.length === 0, moved.refused)
+    }
+    {
+      // The relay's answer per publish, in order.
+      const answering = (...answers: boolean[]) => {
+        const { context, sent } = fake()
+        ;(context.relay as unknown as { publish: (event: { kind: number; tags: string[][] }) => Promise<{ ok: boolean; reason?: string }> }).publish = async (event) => {
+          sent.push(event)
+          const ok = answers[sent.length - 1] ?? true
+          return ok ? { ok } : { ok, reason: 'refused' }
+        }
+        return { context, sent }
+      }
+      {
+        const { context, sent } = answering(false)
+        const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
+        check('a refused add removes nothing', sent.length === 1 && moved.removed.length === 0 && moved.added?.ok === false && !moved.partly)
+      }
+      {
+        const { context, sent } = answering(true, false)
+        const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
+        check('a refused remove is reported against its Folder', sent.length === 2 && moved.added?.ok === true && moved.removed[0]?.folder === from.id && moved.removed[0]?.result.ok === false)
+      }
+      {
+        // Listed in two Folders with different sets beneath it: two adds, and the second is refused.
+        const other = { id: '3'.repeat(32), hasState: true }
+        const { context, sent } = answering(true, false)
+        const moved = await moveFile(context, {
+          address: project,
+          from: [from, other],
+          to,
+          listings: new Map([[from.id, listing], [other.id, [{ ref: project, address: project }]]]),
+        })
+        check('a second add refused after the first landed is reported as partly moved', sent.length === 2 && moved.partly === true && moved.removed.length === 0)
+      }
+    }
   }
 }
 

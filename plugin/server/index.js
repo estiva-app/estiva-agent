@@ -19836,9 +19836,15 @@ async function publishUnsigned(context2, unsigned) {
 async function readListings(context2, address, sources) {
   const cache = createProjectionCache();
   const read = await Promise.all(
-    sources.map((folder) => resolveFolderContents(folder.id, relayQuery(context2), noPeople, cache).then((content) => content.files, () => null))
+    sources.map(
+      (folder) => resolveFolderContents(folder.id, relayQuery(context2), noPeople, cache).then(
+        (content) => content.files,
+        (error2) => ({ unread: error2 instanceof Error ? error2.message : String(error2) })
+      )
+    )
   );
-  if (read.some((files) => files === null)) return null;
+  const failed = read.find((files) => !Array.isArray(files));
+  if (failed) return failed;
   return new Map(
     sources.map((folder, i) => {
       const files = read[i];
@@ -19855,17 +19861,19 @@ async function moveFile(context2, args2) {
   const file = { ref: args2.address, address: args2.address };
   const plans = sources.map((from) => planMoveFile(context2.signer.pubkey, now, { file, from, to: args2.to, listing: args2.listings.get(from.id) ?? null }));
   for (const plan of plans) if (!plan.ok) return { refused: plan.reason, moved: [], removed: [] };
-  if (args2.to.private && sources.length === 0) return { refused: "target-is-private", moved: [], removed: [] };
   const events = plans.map((plan) => plan.ok ? plan.events : []);
   const moved = [...new Set(plans.flatMap((plan) => plan.ok ? plan.moved : []))];
   const named = (event) => JSON.stringify(event.tags.filter((tag) => tag[0] === "a"));
   const adds = [...new Map(events.flatMap((planned) => planned.slice(0, 1)).map((add) => [named(add), add])).values()];
-  if (adds.length === 0) adds.push(...planPlaceFile(context2.signer.pubkey, now, { folder: args2.to.id, address: args2.address, hasState: true }));
+  if (adds.length === 0) {
+    if (args2.to.private) return { refused: "target-is-private", moved: [], removed: [] };
+    adds.push(...planPlaceFile(context2.signer.pubkey, now, { folder: args2.to.id, address: args2.address, hasState: true }));
+  }
   const removed = [];
   let added;
-  for (const add of adds) {
+  for (const [i, add] of adds.entries()) {
     added = await publishUnsigned(context2, add);
-    if (!added.ok) return { added, moved: [], removed };
+    if (!added.ok) return { added, partly: i > 0 || void 0, moved: [], removed };
   }
   for (const [i, source] of sources.entries()) {
     if (events[i][1]) removed.push({ folder: source.id, result: await publishUnsigned(context2, events[i][1]) });
@@ -20520,7 +20528,7 @@ Pass an address to say which.`
         }
         const sources = from.filter((team) => team.id !== to.id && team.hasState).map((team) => ({ id: team.id, hasState: team.hasState }));
         const listings = await readListings(context2, project.addr, sources);
-        if (!listings) throw new BadRequest(`A Folder \u201C${project.title}\u201D is in could not be read, so what is under it would be left behind. Nothing was published.`);
+        if (!(listings instanceof Map)) throw new BadRequest(`A Folder \u201C${project.title}\u201D is in could not be read (${listings.unread}), so what is under it would be left behind. Nothing was published; run the same command again.`);
         const moved = await moveFile(context2, {
           address: project.addr,
           from: from.map((team) => ({ id: team.id, hasState: team.hasState })),
@@ -20530,7 +20538,12 @@ Pass an address to say which.`
         if (moved.refused === "target-has-no-state") throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`);
         if (moved.refused === "source-has-no-state") throw new BadRequest(`A Folder \u201C${project.title}\u201D is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`);
         if (moved.refused === "target-is-private") throw new BadRequest(`${name(to)} is private, and \u201C${project.title}\u201D would stay readable by the whole workspace. Nothing was published.`);
-        if (moved.added) published(moved.added, `adding \u201C${project.title}\u201D to ${name(to)} (nothing else was sent; it is where it was)`);
+        if (moved.added) {
+          published(
+            moved.added,
+            moved.partly ? `adding the rest of what is under \u201C${project.title}\u201D to ${name(to)} (part of it is now listed there as well; nothing was removed \u2014 run the same command again)` : `adding \u201C${project.title}\u201D to ${name(to)} (nothing else was sent; it is where it was)`
+          );
+        }
         const stillIn = moved.removed.filter(({ result }) => !result.ok).map(({ folder, result }) => ({ folder, name: teams.find((team) => team.id === folder)?.name, refused: result.reason ?? "no reason given" }));
         return {
           moved: { title: project.title, addr: project.addr },
@@ -20538,7 +20551,10 @@ Pass an address to say which.`
           to: { id: to.id, name: to.name },
           added: moved.added?.eventId,
           // What was listed beneath it in the source — a topic started under it — and went with it.
-          with: moved.moved.filter((address) => address !== project.addr),
+          with: moved.moved.filter((address) => address !== project.addr).map((address) => {
+            const row = [...listings.values()].flat().find((file) => file.address === address);
+            return { title: row?.slots?.title?.value, type: row?.noun, address };
+          }),
           removed: moved.removed.filter(({ result }) => result.ok).map(({ folder, result }) => ({ folder, eventId: result.eventId })),
           // A refused remove is still a move: it is in the new Folder and in these too. Run the same command again to retry.
           stillIn: stillIn.length > 0 ? stillIn : void 0,
