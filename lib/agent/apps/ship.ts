@@ -36,8 +36,7 @@ import {
   buildActionEvents,
   createProjectionCache,
   listFolders,
-  planMoveFile,
-  planPlaceFile,
+  planMoveFromFolders,
   resolveFolderContents,
   topLevelFolders,
   type FolderRef,
@@ -801,21 +800,17 @@ async function publishUnsigned(context: AgentContext, unsigned: Parameters<Agent
 }
 
 /**
- * What each source Folder lists, read at the moment of a move, with the file
- * itself added where its row did not resolve — it is what is being moved.
- * Ship's `writes.moveProject` (MAN-17): no profiles, and `null` when any one
- * cannot be read, because a move planned without a listing leaves whatever is
- * beneath the file behind.
+ * What each source Folder lists, read at the moment of a move, archived files
+ * included: what is archived beneath the file moves with it (SHI-37). Ship's
+ * `writes.moveProject` (MAN-17): no profiles, and `unread` when any one cannot
+ * be read, because a move planned without a listing leaves whatever is beneath
+ * the file behind.
  */
-async function readListings(
-  context: AgentContext,
-  address: string,
-  sources: readonly FolderRef[],
-): Promise<Map<string, MovableFile[]> | { unread: string }> {
+async function readListings(context: AgentContext, sources: readonly FolderRef[]): Promise<Map<string, MovableFile[]> | { unread: string }> {
   const cache = createProjectionCache()
   const read = await Promise.all(
     sources.map((folder) =>
-      resolveFolderContents(folder.id, relayQuery(context), noPeople, cache).then(
+      resolveFolderContents(folder.id, relayQuery(context), noPeople, cache, { includeArchived: true }).then(
         (content) => content.files as MovableFile[],
         (error: unknown) => ({ unread: error instanceof Error ? error.message : String(error) }),
       ),
@@ -823,64 +818,45 @@ async function readListings(
   )
   const failed = read.find((files): files is { unread: string } => !Array.isArray(files))
   if (failed) return failed
-  return new Map(
-    sources.map((folder, i) => {
-      const files = read[i] as MovableFile[]
-      return [folder.id, files.some((file) => file.address === address) ? files : [{ ref: address, address }, ...files]]
-    }),
-  )
+  return new Map(sources.map((folder, i) => [folder.id, read[i] as MovableFile[]]))
 }
 
 const noPeople = async () => ({})
 
 /**
- * Ship's "Move to Folder…" (FOL-7), as interop plans it (SPEC §3.3): a
- * `kind:1852 add` to the new Folder naming the file and everything each source
- * lists beneath it, then a `remove` from each one that lists it now. The adds
- * go first — if one is refused, nothing is removed and the files are where they
- * were. Refused before anything is sent when either side has no state (a
- * command against it empties it) or the target is private (a listing never
- * changes who can read a file). `Store.moveProject` in Ship, line for line.
+ * Ship's "Move to Folder…" (FOL-7), as interop's `planMoveFromFolders` plans
+ * it (SPEC §3.3), the planner Ship and Peek move by too: one `kind:1852 add` to
+ * the new Folder naming the file and everything any source lists beneath it,
+ * then a `remove` from each one that lists it now. The add goes first and
+ * lands whole or not at all — refused, nothing is removed and the files are
+ * where they were (SHI-37). Refused before anything is sent when either side
+ * has no state (a command against it empties it) or the target is private (a
+ * listing never changes who can read a file).
  */
 export async function moveFile(
   context: AgentContext,
   args: {
     address: string
+    /** The Folders that list it now, with `addresses` — the file leaves one that names it even when its row did not resolve. */
     from: readonly FolderRef[]
     to: FolderRef
     /** Each source Folder's files, by Folder id ({@link readListings}). A source with none moves the file alone. */
     listings: ReadonlyMap<string, readonly MovableFile[]>
   },
-): Promise<{ refused?: MoveRefusal; added?: PublishOutcome; partly?: true; moved: string[]; removed: { folder: string; result: PublishOutcome }[] }> {
-  const sources = args.from.filter((folder) => folder.id !== args.to.id)
-  if (sources.length === 0 && args.from.length > 0) return { moved: [], removed: [] }
-  if (!args.to.hasState) return { refused: 'target-has-no-state', moved: [], removed: [] }
-  const now = Date.now()
-  const file = { ref: args.address, address: args.address }
-  const plans = sources.map((from) => planMoveFile(context.signer.pubkey, now, { file, from, to: args.to, listing: args.listings.get(from.id) ?? null }))
-  for (const plan of plans) if (!plan.ok) return { refused: plan.reason, moved: [], removed: [] }
-  // Each plan is `[add to target, remove from source]`: every add, then every remove.
-  const events = plans.map((plan) => (plan.ok ? plan.events : []))
-  const moved = [...new Set(plans.flatMap((plan) => (plan.ok ? plan.moved : [])))]
-  // One add per distinct set: a file listed in two Folders moves the same set out of each.
-  const named = (event: (typeof events)[number][number]) => JSON.stringify(event.tags.filter((tag) => tag[0] === 'a'))
-  const adds = [...new Map(events.flatMap((planned) => planned.slice(0, 1)).map((add) => [named(add), add])).values()]
-  if (adds.length === 0) {
-    // Placed rather than moved — listed nowhere yet — so the planner's private check never ran: a project's root carries no `h`.
-    if (args.to.private) return { refused: 'target-is-private', moved: [], removed: [] }
-    adds.push(...planPlaceFile(context.signer.pubkey, now, { folder: args.to.id, address: args.address, hasState: true }))
-  }
+): Promise<{ refused?: MoveRefusal; added?: PublishOutcome; moved: string[]; removed: { folder: string; result: PublishOutcome }[] }> {
+  const plan = planMoveFromFolders(context.signer.pubkey, Date.now(), {
+    file: { ref: args.address, address: args.address },
+    from: args.from,
+    to: args.to,
+    listings: args.listings,
+  })
+  if (!plan.ok) return { refused: plan.reason, moved: [], removed: [] }
+  if (!plan.add) return { moved: [], removed: [] }
+  const added = await publishUnsigned(context, plan.add)
+  if (!added.ok) return { added, moved: [], removed: [] }
   const removed: { folder: string; result: PublishOutcome }[] = []
-  let added: PublishOutcome | undefined
-  for (const [i, add] of adds.entries()) {
-    added = await publishUnsigned(context, add)
-    // An earlier add landed: part of the set is in the target too, and nothing was removed.
-    if (!added.ok) return { added, partly: i > 0 || undefined, moved: [], removed }
-  }
-  for (const [i, source] of sources.entries()) {
-    if (events[i][1]) removed.push({ folder: source.id, result: await publishUnsigned(context, events[i][1]) })
-  }
-  return { added, moved: moved.length > 0 ? moved : [args.address], removed }
+  for (const { folder, event } of plan.removes) removed.push({ folder, result: await publishUnsigned(context, event) })
+  return { added, moved: plan.moved, removed }
 }
 
 /** A change to one field, as Ship's own UI writes it — the action that declares the field. */
@@ -1801,8 +1777,9 @@ export const shipApp: AgentApp = {
       /*
         Ship's "Move to Folder…" (FOL-7): a `kind:1852 add` to the new
         top-level Folder, then a `remove` from each one that lists it now,
-        through `Store.moveProject` and interop's `planMoveFile` — each naming
-        the project and every file listed beneath it (MAN-17). No
+        through interop's `planMoveFromFolders`, as `Store.moveProject` does —
+        one add naming the project and every file listed beneath it, archived
+        ones included (MAN-17, SHI-37). No
         `kind:1851` — the record, its issues and its conversation keep their
         Folder, so a comment's `h` still names the channel both apps read.
       */
@@ -1830,26 +1807,21 @@ export const shipApp: AgentApp = {
 
         // What each source lists beneath the project moves with it (SPEC §3.3), read now; unread, nothing is sent.
         const sources = from.filter((team) => team.id !== to.id && team.hasState).map((team) => ({ id: team.id, hasState: team.hasState }))
-        const listings = await readListings(context, project.addr, sources)
+        const listings = await readListings(context, sources)
         if (!(listings instanceof Map)) throw new BadRequest(`A Folder “${project.title}” is in could not be read (${listings.unread}), so what is under it would be left behind. Nothing was published; run the same command again.`)
 
         const moved = await moveFile(context, {
           address: project.addr,
-          from: from.map((team) => ({ id: team.id, hasState: team.hasState })),
+          // Each names the project — it is what is being moved, out of its own Folder too, which may hold it by containment
+          // while a topic under it is listed — so the planner moves the two together.
+          from: from.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
           to: { id: to.id, hasState: to.hasState, ...(to.private ? { private: true } : {}) },
           listings,
         })
         if (moved.refused === 'target-has-no-state') throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`)
         if (moved.refused === 'source-has-no-state') throw new BadRequest(`A Folder “${project.title}” is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`)
         if (moved.refused === 'target-is-private') throw new BadRequest(`${name(to)} is private, and “${project.title}” would stay readable by the whole workspace. Nothing was published.`)
-        if (moved.added) {
-          published(
-            moved.added,
-            moved.partly
-              ? `adding the rest of what is under “${project.title}” to ${name(to)} (part of it is now listed there as well; nothing was removed — run the same command again)`
-              : `adding “${project.title}” to ${name(to)} (nothing else was sent; it is where it was)`,
-          )
-        }
+        if (moved.added) published(moved.added, `adding “${project.title}” to ${name(to)} (nothing else was sent; it is where it was)`)
 
         const stillIn = moved.removed
           .filter(({ result }) => !result.ok)
