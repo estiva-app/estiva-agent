@@ -9007,28 +9007,28 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   const superParse = inst._zod.parse;
   const _normalized = cached(() => normalizeDef(def));
   const generateFastpass = (shape) => {
-    const doc = new Doc(["shape", "payload", "ctx"]);
+    const doc2 = new Doc(["shape", "payload", "ctx"]);
     const normalized = _normalized.value;
     const parseStr = (key) => {
       const k = esc(key);
       return `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
     };
-    doc.write(`const input = payload.value;`);
+    doc2.write(`const input = payload.value;`);
     const ids = /* @__PURE__ */ Object.create(null);
     let counter = 0;
     for (const key of normalized.keys) {
       ids[key] = `key_${counter++}`;
     }
-    doc.write(`const newResult = {};`);
+    doc2.write(`const newResult = {};`);
     for (const key of normalized.keys) {
       const id = ids[key];
       const k = esc(key);
       const schema = shape[key];
       const isOptionalIn = schema?._zod?.optin === "optional";
       const isOptionalOut = schema?._zod?.optout === "optional";
-      doc.write(`const ${id} = ${parseStr(key)};`);
+      doc2.write(`const ${id} = ${parseStr(key)};`);
       if (isOptionalIn && isOptionalOut) {
-        doc.write(`
+        doc2.write(`
         if (${id}.issues.length) {
           if (${k} in input) {
             payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
@@ -9048,7 +9048,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
         
       `);
       } else if (!isOptionalIn) {
-        doc.write(`
+        doc2.write(`
         const ${id}_present = ${k} in input;
         if (${id}.issues.length) {
           payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
@@ -9075,7 +9075,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
 
       `);
       } else {
-        doc.write(`
+        doc2.write(`
         if (${id}.issues.length) {
           payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
             ...iss,
@@ -9094,9 +9094,9 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
       `);
       }
     }
-    doc.write(`payload.value = newResult;`);
-    doc.write(`return payload;`);
-    const fn = doc.compile();
+    doc2.write(`payload.value = newResult;`);
+    doc2.write(`return payload;`);
+    const fn = doc2.compile();
     return (payload, ctx) => fn(shape, payload, ctx);
   };
   let fastpass;
@@ -16053,6 +16053,203 @@ function findNostrUris(text2) {
   return [...(text2 ?? "").matchAll(NOSTR_URI_RE)].map((m) => `nostr:${m[1].toLowerCase()}`);
 }
 
+// node_modules/@estiva-app/protocol/dist/content.js
+var MARK_TOKENS = [
+  { token: "***", keys: ["bold", "italic"] },
+  { token: "**", keys: ["bold"] },
+  { token: "__", keys: ["underline"] },
+  { token: "*", keys: ["italic"] },
+  { token: "`", keys: ["code"], literal: true }
+];
+var isWordChar = (ch) => ch !== void 0 && /[A-Za-z0-9]/.test(ch);
+function findMarkClose(text2, token, from, fenced) {
+  let idx = text2.indexOf(token, from);
+  while (idx !== -1) {
+    if (!fenced || !isWordChar(text2[idx + token.length]))
+      return idx;
+    idx = text2.indexOf(token, idx + 1);
+  }
+  return -1;
+}
+function toMarkSpan(text2, active) {
+  const span = { text: text2 };
+  for (const key of active)
+    span[key] = true;
+  return span;
+}
+function scanMarks(text2, active) {
+  for (let i = 0; i < text2.length; i++) {
+    for (const { token, keys, literal: literal2 } of MARK_TOKENS) {
+      if (keys.some((k) => active.includes(k)))
+        continue;
+      if (!text2.startsWith(token, i))
+        continue;
+      const fenced = !literal2;
+      if (fenced && isWordChar(text2[i - 1]))
+        continue;
+      const close = findMarkClose(text2, token, i + token.length, fenced);
+      if (close === -1)
+        continue;
+      const inner = text2.slice(i + token.length, close);
+      if (!inner || /^\s/.test(inner) || /\s$/.test(inner))
+        continue;
+      const spans = [];
+      const before = text2.slice(0, i);
+      if (before)
+        spans.push(toMarkSpan(before, active));
+      if (literal2) {
+        spans.push({ text: inner, code: true });
+      } else {
+        spans.push(...scanMarks(inner, [...active, ...keys]));
+      }
+      spans.push(...scanMarks(text2.slice(close + token.length), active));
+      return spans;
+    }
+  }
+  return text2 ? [toMarkSpan(text2, active)] : [];
+}
+function parseInlineMarks(text2) {
+  return scanMarks(text2, []).flatMap(splitReferences);
+}
+function splitReferences(span) {
+  if (span.code || !span.text.includes("nostr:"))
+    return [span];
+  const out = [];
+  let last = 0;
+  for (const match of span.text.matchAll(NOSTR_URI_RE)) {
+    const at = match.index ?? 0;
+    if (at > last)
+      out.push({ ...span, text: span.text.slice(last, at) });
+    const uri = `nostr:${match[1].toLowerCase()}`;
+    out.push({ ...span, text: match[0], reference: uri });
+    last = at + match[0].length;
+  }
+  if (last < span.text.length)
+    out.push({ ...span, text: span.text.slice(last) });
+  return out;
+}
+function wrapInlineMarks(text2, markNames) {
+  if (markNames.has("reference"))
+    return text2;
+  if (!text2)
+    return text2;
+  const bold = markNames.has("bold");
+  const italic = markNames.has("italic");
+  const underline = markNames.has("underline");
+  const code = markNames.has("code");
+  if (!bold && !italic && !underline && !code)
+    return text2;
+  const m = text2.match(/^(\s*)([\s\S]*?)(\s*)$/);
+  const [, lead, core, trail] = m;
+  if (!core)
+    return text2;
+  if (code)
+    return `${lead}\`${core}\`${trail}`;
+  let out = core;
+  if (bold && italic)
+    out = `***${out}***`;
+  else if (bold)
+    out = `**${out}**`;
+  else if (italic)
+    out = `*${out}*`;
+  if (underline)
+    out = `__${out}__`;
+  return lead + out + trail;
+}
+var HEADING_LINE_RE = /^#{1,2}\s/;
+var QUOTE_LINE_RE = /^>\s/;
+var FENCE_RE = /^```/;
+function fenceCloses(lines, from) {
+  if (!FENCE_RE.test(lines[from]))
+    return -1;
+  for (let j = from + 1; j < lines.length; j++)
+    if (FENCE_RE.test(lines[j]))
+      return j;
+  return -1;
+}
+function parseBodySegments(body) {
+  const lines = body.split("\n");
+  const segments = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fenceEnd = fenceCloses(lines, i);
+    if (fenceEnd !== -1) {
+      const language = line.slice(3).trim();
+      segments.push({
+        type: "code",
+        ...language ? { language } : {},
+        lines: lines.slice(i + 1, fenceEnd)
+      });
+      i = fenceEnd + 1;
+    } else if (HEADING_LINE_RE.test(line) && !line.startsWith("###")) {
+      segments.push({
+        type: "heading",
+        level: line.startsWith("##") ? 2 : 1,
+        text: line.replace(HEADING_LINE_RE, "")
+      });
+      i++;
+    } else if (/^[-•]\s/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^[-•]\s/.test(lines[i])) {
+        items.push(lines[i].replace(/^[-•]\s/, ""));
+        i++;
+      }
+      segments.push({ type: "bullet", items });
+    } else if (/^\d+\.\s/.test(line)) {
+      const items = [];
+      const first = Number.parseInt(line, 10);
+      while (i < lines.length && /^\d+\.\s/.test(lines[i])) {
+        items.push(lines[i].replace(/^\d+\.\s/, ""));
+        i++;
+      }
+      segments.push({ type: "numbered", items, ...first > 1 ? { start: first } : {} });
+    } else if (QUOTE_LINE_RE.test(line)) {
+      const quoteLines = [];
+      while (i < lines.length && QUOTE_LINE_RE.test(lines[i])) {
+        quoteLines.push(lines[i].replace(QUOTE_LINE_RE, ""));
+        i++;
+      }
+      segments.push({ type: "quote", lines: quoteLines });
+    } else {
+      const textLines = [];
+      while (i < lines.length && fenceCloses(lines, i) === -1 && !/^[-•]\s/.test(lines[i]) && !/^\d+\.\s/.test(lines[i]) && !QUOTE_LINE_RE.test(lines[i]) && !(HEADING_LINE_RE.test(lines[i]) && !lines[i].startsWith("###"))) {
+        textLines.push(lines[i]);
+        i++;
+      }
+      let chunk = [];
+      for (const l of textLines) {
+        if (l === "") {
+          if (chunk.length > 0) {
+            segments.push({ type: "text", lines: chunk });
+            chunk = [];
+          }
+        } else {
+          chunk.push(l);
+        }
+      }
+      if (chunk.length > 0)
+        segments.push({ type: "text", lines: chunk });
+    }
+  }
+  return segments;
+}
+var MARK_ORDER = ["bold", "italic", "underline", "code"];
+function markersToInlineNodes(text2) {
+  return parseInlineMarks(text2).map((span) => {
+    const marks = MARK_ORDER.filter((m) => span[m]).map((type) => ({ type }));
+    if (span.reference)
+      marks.push({ type: "reference", attrs: { uri: span.reference } });
+    return marks.length ? { type: "text", text: span.text, marks } : { type: "text", text: span.text };
+  });
+}
+function inlineNodesToMarkers(nodes) {
+  return nodes.map((node) => wrapInlineMarks(node.text, new Set((node.marks ?? []).map((m) => m.type)))).join("");
+}
+function inlineNodesToText(nodes) {
+  return nodes.map((n) => n.text).join("");
+}
+
 // node_modules/@estiva-app/protocol/dist/blocks.js
 var BlockDocumentError = class extends Error {
   problems;
@@ -16145,8 +16342,18 @@ function parseBlockDocument(input) {
     throw new BlockDocumentError(problems);
   return value;
 }
-function serializeBlockDocument(doc) {
-  return JSON.stringify(doc);
+function serializeBlockDocument(doc2) {
+  return JSON.stringify(doc2);
+}
+function newBlockId() {
+  return bytesToHex(randomBytes(6));
+}
+function inlineTextOf(block) {
+  if (!Array.isArray(block.content))
+    return "";
+  if (isInlineRun(block.content))
+    return inlineNodesToText(block.content);
+  return block.content.map(inlineTextOf).join("\n");
 }
 
 // node_modules/@estiva-app/protocol/dist/events.js
@@ -16797,6 +17004,141 @@ function contentFormatOf(event) {
   return declared === BLOCK_DOCUMENT_FORMAT ? "blocks" : "unknown";
 }
 
+// node_modules/@estiva-app/protocol/dist/bridge-content.js
+var isInlineRun2 = (content) => Array.isArray(content) && content.length > 0 && typeof content[0] === "object" && content[0] !== null && content[0].type === "text";
+function textOf(block) {
+  if (!Array.isArray(block.content))
+    return "";
+  if (isInlineRun2(block.content))
+    return block.content.map((n) => n.text).join("");
+  return block.content.map(textOf).join("\n");
+}
+var keyOf = (block) => `${block.type}\0${textOf(block)}`;
+function blockFromSegment(seg) {
+  switch (seg.type) {
+    case "heading":
+      return { type: "heading", id: "", attrs: { level: seg.level }, content: markersToInlineNodes(seg.text) };
+    case "bullet":
+      return {
+        type: "bulletList",
+        id: "",
+        content: seg.items.map((item) => ({ type: "listItem", id: "", content: markersToInlineNodes(item) }))
+      };
+    case "numbered":
+      return {
+        type: "orderedList",
+        id: "",
+        ...seg.start ? { attrs: { start: seg.start } } : {},
+        content: seg.items.map((item) => ({ type: "listItem", id: "", content: markersToInlineNodes(item) }))
+      };
+    case "quote":
+      return { type: "blockquote", id: "", content: markersToInlineNodes(seg.lines.join("\n")) };
+    case "code":
+      return {
+        type: "codeBlock",
+        id: "",
+        ...seg.language ? { attrs: { language: seg.language } } : {},
+        // A fence is literal — its content is never mark-parsed.
+        content: [{ type: "text", text: seg.lines.join("\n") }]
+      };
+    case "text":
+      return { type: "paragraph", id: "", content: markersToInlineNodes(seg.lines.join("\n")) };
+  }
+}
+function markerTextToBlockDocument(text2, previous) {
+  const fresh = parseBodySegments(text2).map(blockFromSegment);
+  const old = previous?.content ?? [];
+  const takenIds = /* @__PURE__ */ new Set();
+  const usedOld = /* @__PURE__ */ new Set();
+  const byKey = /* @__PURE__ */ new Map();
+  old.forEach((block, i) => {
+    if (!block.id)
+      return;
+    const list = byKey.get(keyOf(block)) ?? [];
+    list.push(i);
+    byKey.set(keyOf(block), list);
+  });
+  const ids = fresh.map((block) => {
+    const candidates = byKey.get(keyOf(block));
+    while (candidates && candidates.length) {
+      const i = candidates.shift();
+      if (usedOld.has(i))
+        continue;
+      usedOld.add(i);
+      takenIds.add(old[i].id);
+      return old[i].id;
+    }
+    return void 0;
+  });
+  fresh.forEach((block, i) => {
+    if (ids[i] !== void 0)
+      return;
+    const candidate = old[i];
+    if (!candidate || usedOld.has(i) || candidate.type !== block.type || !candidate.id)
+      return;
+    if (takenIds.has(candidate.id))
+      return;
+    usedOld.add(i);
+    takenIds.add(candidate.id);
+    ids[i] = candidate.id;
+  });
+  const mint = () => {
+    let id = newBlockId();
+    while (takenIds.has(id))
+      id = newBlockId();
+    takenIds.add(id);
+    return id;
+  };
+  const fill = (block, id) => {
+    const children = Array.isArray(block.content) && !isInlineRun2(block.content) ? block.content.map((child) => fill(child)) : void 0;
+    return {
+      ...block,
+      id: id ?? (block.id || mint()),
+      ...children ? { content: children } : {}
+    };
+  };
+  return { type: "doc", content: fresh.map((block, i) => fill(block, ids[i] || void 0)) };
+}
+var itemText = (item) => isInlineRun2(item.content) ? inlineNodesToMarkers(item.content) : "";
+function blockDocumentToMarkerText(doc2) {
+  const lines = [];
+  for (const block of doc2.content) {
+    const inline = isInlineRun2(block.content) ? inlineNodesToMarkers(block.content) : "";
+    switch (block.type) {
+      case "heading": {
+        const level = block.attrs?.level === 2 ? 2 : 1;
+        lines.push(`${"#".repeat(level)} ${inline}`);
+        break;
+      }
+      case "bulletList":
+        for (const item of block.content ?? [])
+          lines.push(`- ${itemText(item)}`);
+        break;
+      case "orderedList": {
+        const start = typeof block.attrs?.start === "number" ? block.attrs.start : 1;
+        (block.content ?? []).forEach((item, i) => lines.push(`${start + i}. ${itemText(item)}`));
+        break;
+      }
+      case "blockquote":
+        for (const line of inline.split("\n"))
+          lines.push(`> ${line}`);
+        break;
+      case "codeBlock": {
+        const language = typeof block.attrs?.language === "string" ? block.attrs.language : "";
+        lines.push("```" + language, inline, "```");
+        break;
+      }
+      case "horizontalRule":
+        lines.push("---");
+        break;
+      default:
+        lines.push(inline || textOf(block));
+    }
+    lines.push("");
+  }
+  return lines.join("\n").replace(/\n+$/, "");
+}
+
 // node_modules/@estiva-app/protocol/dist/media.js
 function imetaTag(meta2) {
   const parts = [`url ${meta2.url}`, `m ${meta2.m}`, `x ${meta2.x}`, `size ${meta2.size}`];
@@ -17395,6 +17737,199 @@ function findMessage(messages, reference) {
   });
 }
 
+// lib/agent/descriptions.ts
+var doc = (content) => ({ type: "doc", content });
+var childBlocks = (block) => Array.isArray(block.content) && block.content.length > 0 && block.content.every((node) => typeof node.id === "string") ? block.content : void 0;
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).filter(([, v]) => v !== void 0);
+    return `{${entries.sort(([a], [b]) => a < b ? -1 : 1).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+var protocolText = (block) => blockDocumentToMarkerText(doc([trimRuns(block)]));
+function trimRuns(block) {
+  const children = childBlocks(block);
+  if (children) return { ...block, content: children.map(trimRuns) };
+  if (!Array.isArray(block.content) || block.content.length === 0) return block;
+  const run = [...block.content];
+  while (run.length) {
+    const last = run[run.length - 1];
+    if (last.type !== "text" || typeof last.text !== "string") break;
+    const trimmedText = last.text.replace(/\s+$/, "");
+    if (trimmedText) {
+      run[run.length - 1] = { ...last, text: trimmedText };
+      break;
+    }
+    run.pop();
+  }
+  return { ...block, content: run };
+}
+function reparse(text2, previous) {
+  const old = new Map(previous.filter((block) => block.id).map((block) => [block.id, block]));
+  return markerTextToBlockDocument(text2, doc(previous)).content.map((fresh) => {
+    const before = old.get(fresh.id);
+    if (!before) return fresh;
+    const children = carryChildIds(childBlocks(before) ?? [], childBlocks(fresh));
+    const updated = { ...fresh, ...children ? { content: children } : {} };
+    if (readsTheSame(before, updated)) return before;
+    const { content: _content, ...beforeShape } = before;
+    const kept = { ...beforeShape, ...updated.content !== void 0 ? { content: updated.content } : {} };
+    return protocolText(kept) === protocolText(updated) ? kept : updated;
+  });
+}
+function carryChildIds(before, after) {
+  if (!after) return void 0;
+  const used = /* @__PURE__ */ new Set();
+  const unchanged = after.map((child) => {
+    const i = before.findIndex((candidate, j) => !used.has(j) && readsTheSame(candidate, child));
+    if (i < 0) return void 0;
+    used.add(i);
+    return i;
+  });
+  return after.map((child, i) => {
+    if (unchanged[i] !== void 0) return before[unchanged[i]];
+    const candidate = before[i];
+    if (!candidate || used.has(i) || candidate.type !== child.type) return child;
+    used.add(i);
+    const { content: _content, ...shape } = candidate;
+    return { ...shape, ...child.content !== void 0 ? { content: child.content } : {} };
+  });
+}
+var readsTheSame = (a, b) => a.type === b.type && canonical(visible({ ...a, id: "" })) === canonical(visible({ ...b, id: "" }));
+function spellable(block) {
+  const text2 = protocolText(block);
+  if (!text2.trim()) return false;
+  const back = reparse(text2, [block]);
+  return back.length === 1 && canonical(visible(back[0])) === canonical(visible(block));
+}
+function visible(block) {
+  const children = childBlocks(block);
+  if (children) return { ...block, content: children.map(visible) };
+  if (!Array.isArray(block.content)) return block;
+  const characters = [];
+  for (const node of block.content) {
+    if (node.type !== "text" || typeof node.text !== "string") {
+      characters.push(["", canonical(node)]);
+      continue;
+    }
+    const { text: text2, type: _type, ...rest } = node;
+    const marks = canonical(rest);
+    for (const character of text2) characters.push([character, /\s/.test(character) ? "" : marks]);
+  }
+  while (characters.length && characters[characters.length - 1][0] !== "" && /\s/.test(characters[characters.length - 1][0])) characters.pop();
+  return { ...block, content: characters.map(([character, marks]) => character + "\0" + marks).join("") };
+}
+function standIn(block) {
+  const attrs = block.attrs ?? {};
+  if (block.type === "table") {
+    const rows = childBlocks(block) ?? [];
+    return rows.map((row) => `| ${(childBlocks(row) ?? []).map((cell) => cellText(cell)).join(" | ")} |`).join("\n");
+  }
+  if (block.type === "attachment") {
+    const name = typeof attrs.filename === "string" && attrs.filename ? attrs.filename : typeof attrs.url === "string" ? attrs.url : block.id;
+    return `[attachment: ${name}]`;
+  }
+  const text2 = protocolText(block);
+  return text2.trim() ? text2 : `[${block.type}: ${block.id}]`;
+}
+var cellText = (cell) => (childBlocks(cell) ?? []).map((child) => childBlocks(child) ? cellText(child) : inlineTextOf(child)).join(" ").replace(/\s+/g, " ").trim();
+var blockText = (block) => spellable(block) ? protocolText(block) : standIn(block);
+function descriptionText(value, format) {
+  if (format !== "blocks") return value;
+  try {
+    return parseBlockDocument(value).content.map(blockText).join("\n\n");
+  } catch {
+    return value;
+  }
+}
+var formatName = (format) => format === "blocks" ? BLOCK_DOCUMENT_FORMAT : format === "unknown" ? "unknown" : "marker";
+function findChunk(text2, chunk, from) {
+  for (let at = text2.indexOf(chunk, from); at >= 0; at = text2.indexOf(chunk, at + 1)) {
+    const before = text2.slice(0, at);
+    const after = text2.slice(at + chunk.length);
+    if ((before.trim() === "" || before.endsWith("\n\n")) && (after.trim() === "" || after.startsWith("\n\n"))) return at;
+  }
+  return -1;
+}
+function editBlockDocument(previous, text2) {
+  const before = parseBlockDocument(previous).content;
+  const chunks = before.map(blockText);
+  const pieces = [];
+  let cursor = 0;
+  let pending2 = [];
+  before.forEach((block, i) => {
+    const chunk = chunks[i];
+    const at = chunk.trim() ? findChunk(text2, chunk, cursor) : -1;
+    if (at < 0) {
+      pending2.push(block);
+      return;
+    }
+    pieces.push({ text: text2.slice(cursor, at), replaces: pending2 }, { keep: block });
+    pending2 = [];
+    cursor = at + chunk.length;
+  });
+  pieces.push({ text: text2.slice(cursor), replaces: pending2 });
+  const out = [];
+  let kept = 0;
+  let edited2 = 0;
+  let added = 0;
+  for (const piece of pieces) {
+    if ("keep" in piece) {
+      out.push(piece.keep);
+      kept++;
+      continue;
+    }
+    const { text: stretch, replaces } = piece;
+    if (stretch.trim() === replaces.map(blockText).join("\n\n").trim()) {
+      out.push(...replaces);
+      kept += replaces.length;
+      continue;
+    }
+    if (stretch.trim() === "") continue;
+    const fixed = replaces.find((block) => !spellable(block));
+    if (fixed) {
+      throw new BadRequest(
+        `The new description changes the text around a ${fixed.type} block (${JSON.stringify(blockText(fixed).slice(0, 60))}) that text cannot carry, so writing it would replace that block with plain text. Leave its lines exactly as \`show\` printed them, with a blank line on each side, or change that block in the app. Nothing was published.`
+      );
+    }
+    const ids = new Set(replaces.map((block) => block.id));
+    for (const block of reparse(stretch, replaces)) {
+      out.push(block);
+      if (ids.has(block.id)) edited2++;
+      else added++;
+    }
+  }
+  const result = doc(out);
+  const problems = validateBlockDocument(result);
+  if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join("; ")}. Nothing was published.`);
+  const present = new Set(allIds(out));
+  return {
+    value: serializeBlockDocument(result),
+    kept,
+    edited: edited2,
+    added,
+    removed: allIds(before).filter((id) => !present.has(id))
+  };
+}
+function allIds(blocks) {
+  return blocks.flatMap((block) => [block.id, ...allIds(childBlocks(block) ?? [])]).filter(Boolean);
+}
+function describe2(previous, format, text2) {
+  if (format === "unknown") {
+    throw new BadRequest("This description is in a content format this version does not read, so it cannot be edited without losing it. Nothing was published.");
+  }
+  if (format !== "blocks") return { value: text2 };
+  try {
+    parseBlockDocument(previous);
+  } catch {
+    throw new BadRequest("This description is tagged as a block document but does not parse as one, so it cannot be edited safely. Nothing was published.");
+  }
+  const { value, ...blocks } = editBlockDocument(previous, text2);
+  return { value, contentFormat: BLOCK_DOCUMENT_FORMAT, blocks };
+}
+
 // node_modules/@estiva-app/conversation/dist/kinds.js
 var KIND_MESSAGE = KIND.STREAM_MESSAGE;
 var KIND_COMMENT = KIND.COMMENT;
@@ -17685,7 +18220,7 @@ async function mentionedKeys(value, workspace) {
   const lookup = workspace.lookup ?? nip05Lookup;
   const keys = /* @__PURE__ */ new Map();
   for (const name of names) {
-    const key = await keyOf(name, domain, lookup);
+    const key = await keyOf2(name, domain, lookup);
     if (!keys.has(key)) keys.set(key, name);
   }
   const members = await workspace.members();
@@ -17693,7 +18228,7 @@ async function mentionedKeys(value, workspace) {
   if (outsider) throw new BadRequest(`${outsider[1]} is not a member of this workspace. Nothing was published.`);
   return [...keys.keys()];
 }
-async function keyOf(name, domain, lookup) {
+async function keyOf2(name, domain, lookup) {
   if (HEX_KEY.test(name)) return name.toLowerCase();
   if (/^(nostr:)?npub1/i.test(name)) {
     try {
@@ -19600,7 +20135,8 @@ async function loadWorkspace(context2) {
       author: root.pubkey,
       createdAt: root.created_at,
       title: object3.slots.title?.value ?? "",
-      description: object3.slots.body?.value ?? ""
+      description: object3.slots.body?.value ?? "",
+      descriptionFormat: object3.slots.body?.format
     };
     if (object3.kind === KIND2.PROJECT) {
       projects.push({
@@ -19743,6 +20279,7 @@ function projectRow(project, vocab) {
 var DEFAULT_ACTIVITY = 50;
 var BLURB = 200;
 function projectSummary(project, directory, vocab) {
+  const text2 = descriptionText(project.description, project.descriptionFormat);
   return {
     ref: project.addr,
     short: short(project.id),
@@ -19766,8 +20303,8 @@ function projectSummary(project, directory, vocab) {
           truncated are both visibly different from a value, which is the property
           that was missing.
         */
-    description: project.description.length > BLURB ? `${project.description.slice(0, BLURB)}\u2026` : project.description,
-    descriptionTruncated: project.description.length > BLURB || void 0,
+    description: text2.length > BLURB ? `${text2.slice(0, BLURB)}\u2026` : text2,
+    descriptionTruncated: text2.length > BLURB || void 0,
     issues: void 0
   };
 }
@@ -19846,6 +20383,26 @@ function findIssue(issues, reference) {
 function findProject(projects, reference) {
   return resolveOne(projects, reference, PROJECT_BY);
 }
+function descriptionEdit(subject, text2) {
+  const { value, contentFormat, blocks } = describe2(subject.description, subject.descriptionFormat, text2);
+  return {
+    field: "description",
+    from: descriptionText(subject.description, subject.descriptionFormat),
+    value,
+    note: "Description",
+    ...contentFormat ? { contentFormat, text: text2, blocks } : {}
+  };
+}
+function appliedEdit(edit, eventId) {
+  return {
+    field: edit.field,
+    from: edit.from,
+    to: edit.text ?? edit.value,
+    eventId,
+    ...edit.contentFormat ? { format: edit.contentFormat, blocks: edit.blocks } : {},
+    ...edit.blocks?.removed.length ? { note: `${edit.blocks.removed.length} block(s) are no longer in the description; a comment anchored to one now shows as detached (\xA713.6).` } : {}
+  };
+}
 function projectEdits(project, args2, self, vocab) {
   const edits = [];
   const title = flagValue(args2, "title");
@@ -19854,9 +20411,7 @@ function projectEdits(project, args2, self, vocab) {
     edits.push({ field: "title", from: project.title, value: title, note: "Rename" });
   }
   const description = flagValue(args2, "description");
-  if (description !== void 0) {
-    edits.push({ field: "description", from: project.description, value: description, note: "Description" });
-  }
+  if (description !== void 0) edits.push(descriptionEdit(project, description));
   const status2 = flagValue(args2, "status");
   if (status2 !== void 0) {
     const wanted = status2.toLowerCase();
@@ -19917,9 +20472,7 @@ function issueEdits(issue2, args2, projects) {
     edits.push({ field: "title", from: issue2.title, value: title, note: "Rename" });
   }
   const description = flagValue(args2, "description");
-  if (description !== void 0) {
-    edits.push({ field: "description", from: issue2.description, value: description, note: "Description" });
-  }
+  if (description !== void 0) edits.push(descriptionEdit(issue2, description));
   const project = flagValue(args2, "project");
   if (project !== void 0) {
     const detached = project === "none" || project === "";
@@ -20040,6 +20593,7 @@ async function act(context2, workspace, target, actionId, value, signs, extra = 
     newId: extra.newId,
     folderHasState: extra.folderHasState,
     listedIn: extra.listedIn,
+    contentFormat: extra.contentFormat,
     pubkey: context2.signer.pubkey,
     createdAtMs: Date.now()
   });
@@ -20095,14 +20649,14 @@ async function moveFile(context2, args2) {
   for (const { folder, event } of plan.removes) removed.push({ folder, result: await publishUnsigned(context2, event) });
   return { added, moved: plan.moved, removed };
 }
-async function setField(context2, workspace, target, field, value, note) {
+async function setField(context2, workspace, target, field, value, note, contentFormat) {
   const resolved = workspace.manifestFor(target.addr);
   const kind = target.addr.split(":")[0];
   const action = (resolved?.manifest.actions ?? []).find(
     (candidate) => candidate.emits?.field === field && (Array.isArray(candidate.appliesTo) ? candidate.appliesTo.includes(kind) : candidate.appliesTo === kind)
   );
   if (!action) throw new BadRequest(`Ship's manifest declares no action that sets ${field} on this object.`);
-  const [outcome] = await act(context2, workspace, target, action.id, value, [KIND_CHANGE], { note });
+  const [outcome] = await act(context2, workspace, target, action.id, value, [KIND_CHANGE], { note, contentFormat });
   return outcome;
 }
 async function timelineFor(context2, state, addr2, extraPubkeys) {
@@ -20274,7 +20828,8 @@ async function showProject(context2, state, project) {
     lead: who(directory, project.lead),
     author: who(directory, project.author),
     archived: archiveSummary(directory, project.archive),
-    description: project.description,
+    description: descriptionText(project.description, project.descriptionFormat),
+    descriptionFormat: formatName(project.descriptionFormat),
     createdAt: new Date(project.createdAt * 1e3).toISOString(),
     folder: project.contentFolder,
     issues: issues.map((issue2) => issueSummary(issue2, directory, state.vocab.issue)),
@@ -20528,7 +21083,7 @@ var shipApp = {
           title: issue2.title,
           status: issue2.status,
           assignee: who(directory, issue2.assignee),
-          pullRequest: pullRequestOn([...comments.map((c) => c.body).reverse(), issue2.description]),
+          pullRequest: pullRequestOn([...comments.map((c) => c.body).reverse(), descriptionText(issue2.description, issue2.descriptionFormat)]),
           comments: comments.length,
           lastComment: last && {
             id: last.id,
@@ -20572,7 +21127,14 @@ Pass an address to say which.`
         return {
           kind: "issue",
           ...issueSummary(issue2, directory, state.vocab.issue),
-          description: issue2.description,
+          /*
+            A block document from Ship's editor is printed as text, one chunk
+            per block, because that is what `edit-issue --description` takes
+            back — and it keeps every block whose chunk comes back unchanged
+            (AGE-8). `descriptionFormat` says which it was.
+          */
+          description: descriptionText(issue2.description, issue2.descriptionFormat),
+          descriptionFormat: formatName(issue2.descriptionFormat),
           createdAt: new Date(issue2.createdAt * 1e3).toISOString(),
           folder: issue2.folder,
           /*
@@ -20785,13 +21347,13 @@ Pass an address to say which.`
         }
         const applied = [];
         for (const edit of edits) {
-          const result = await setField(context2, state, { addr: issue2.addr, author: issue2.author, folder }, edit.field, edit.value, edit.note);
+          const result = await setField(context2, state, { addr: issue2.addr, author: issue2.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat);
           if (!result.ok) {
             throw new BadRequest(
               `The relay refused ${edit.field} on ${issue2.ref ?? issue2.addr}: ${result.reason ?? "no reason given"}. Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`
             );
           }
-          applied.push({ field: edit.field, from: edit.from, to: edit.value, eventId: result.eventId });
+          applied.push(appliedEdit(edit, result.eventId));
         }
         const moved = applied.find((entry) => entry.field === "project" && entry.to);
         const destination = moved && state.projects.find((candidate) => candidate.addr === moved.to);
@@ -20822,13 +21384,13 @@ Pass an address to say which.`
         }
         const applied = [];
         for (const edit of edits) {
-          const result = await setField(context2, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note);
+          const result = await setField(context2, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat);
           if (!result.ok) {
             throw new BadRequest(
               `The relay refused ${edit.field} on \u201C${project.title}\u201D: ${result.reason ?? "no reason given"}. Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`
             );
           }
-          applied.push({ field: edit.field, from: edit.from, to: edit.value, eventId: result.eventId });
+          applied.push(appliedEdit(edit, result.eventId));
         }
         return { changed: { title: project.title, addr: project.addr, folder }, applied };
       }
