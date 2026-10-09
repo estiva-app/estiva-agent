@@ -15,6 +15,7 @@
  */
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
+import { describe, descriptionText, formatName } from '../descriptions'
 import { mentionedKeys, withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
@@ -126,6 +127,7 @@ const DEFAULT_ACTIVITY = 50
 const BLURB = 200
 
 function projectSummary(project: Project, directory: Directory, vocab: Vocabulary) {
+  const text = descriptionText(project.description, project.descriptionFormat)
   return {
     ref: project.addr,
     short: short(project.id),
@@ -149,9 +151,8 @@ function projectSummary(project: Project, directory: Directory, vocab: Vocabular
       truncated are both visibly different from a value, which is the property
       that was missing.
     */
-    description:
-      project.description.length > BLURB ? `${project.description.slice(0, BLURB)}…` : project.description,
-    descriptionTruncated: project.description.length > BLURB || undefined,
+    description: text.length > BLURB ? `${text.slice(0, BLURB)}…` : text,
+    descriptionTruncated: text.length > BLURB || undefined,
     issues: undefined as number | undefined,
   }
 }
@@ -318,10 +319,48 @@ export interface FieldEdit {
   value: string
   /** The human note that makes the activity feed readable. */
   note: string
+  /** The content model `value` is in, when it is not marker text — tagged on the change (§13.4). */
+  contentFormat?: string
+  /** What was asked for, when `value` is the block document made from it. */
+  text?: string
+  /** For a block document: what happened to its blocks. */
+  blocks?: { kept: number; edited: number; added: number; removed: string[] }
 }
 
 /** The project planner's original name for the shape above. */
 export type ProjectEdit = FieldEdit
+
+/**
+ * A new description, given as text (AGE-8). One saved from Ship's editor is a
+ * block document whose blocks comments anchor to (§13.6), so the text is
+ * applied to it — every block it does not change keeps its id — and the change
+ * is tagged `estiva-blocks-1`. Marker text is written as it comes.
+ * `lib/agent/descriptions.ts` has the matching rule.
+ */
+function descriptionEdit(subject: Pick<Project, 'description' | 'descriptionFormat'>, text: string): FieldEdit {
+  const { value, contentFormat, blocks } = describe(subject.description, subject.descriptionFormat, text)
+  return {
+    field: 'description',
+    from: descriptionText(subject.description, subject.descriptionFormat),
+    value,
+    note: 'Description',
+    ...(contentFormat ? { contentFormat, text, blocks } : {}),
+  }
+}
+
+/** One landed edit as a write reports it: the text asked for, and for a block document what became of its blocks. */
+function appliedEdit(edit: FieldEdit, eventId?: string) {
+  return {
+    field: edit.field,
+    from: edit.from,
+    to: edit.text ?? edit.value,
+    eventId,
+    ...(edit.contentFormat ? { format: edit.contentFormat, blocks: edit.blocks } : {}),
+    ...(edit.blocks?.removed.length
+      ? { note: `${edit.blocks.removed.length} block(s) are no longer in the description; a comment anchored to one now shows as detached (§13.6).` }
+      : {}),
+  }
+}
 
 /**
  * What an `edit-project` call is asking to change, validated.
@@ -346,9 +385,7 @@ export function projectEdits(project: Project, args: ParsedArgs, self: string, v
   }
 
   const description = flagValue(args, 'description')
-  if (description !== undefined) {
-    edits.push({ field: 'description', from: project.description, value: description, note: 'Description' })
-  }
+  if (description !== undefined) edits.push(descriptionEdit(project, description))
 
   const status = flagValue(args, 'status')
   if (status !== undefined) {
@@ -494,9 +531,7 @@ export function issueEdits(issue: Issue, args: ParsedArgs, projects: Project[]):
   }
 
   const description = flagValue(args, 'description')
-  if (description !== undefined) {
-    edits.push({ field: 'description', from: issue.description, value: description, note: 'Description' })
-  }
+  if (description !== undefined) edits.push(descriptionEdit(issue, description))
 
   const project = flagValue(args, 'project')
   if (project !== undefined) {
@@ -773,6 +808,8 @@ async function act(
     reason?: string
     /** The manifest to act with, when the target is not one of its objects (a creation on a Folder record). */
     manifest?: ResolvedManifest
+    /** The value's content model, when it is not marker text — only one the action declares is accepted. */
+    contentFormat?: string
   } = {},
 ): Promise<PublishOutcome[]> {
   const resolved = extra.manifest ?? workspace.manifestFor(target.addr)
@@ -790,6 +827,7 @@ async function act(
     newId: extra.newId,
     folderHasState: extra.folderHasState,
     listedIn: extra.listedIn,
+    contentFormat: extra.contentFormat,
     pubkey: context.signer.pubkey,
     createdAtMs: Date.now(),
   })
@@ -885,6 +923,7 @@ async function setField(
   field: string,
   value: string,
   note: string,
+  contentFormat?: string,
 ): Promise<PublishOutcome> {
   const resolved = workspace.manifestFor(target.addr)
   const kind = target.addr.split(':')[0]
@@ -894,7 +933,7 @@ async function setField(
       (Array.isArray(candidate.appliesTo) ? candidate.appliesTo.includes(kind) : candidate.appliesTo === kind),
   )
   if (!action) throw new BadRequest(`Ship's manifest declares no action that sets ${field} on this object.`)
-  const [outcome] = await act(context, workspace, target, action.id, value, [KIND_CHANGE], { note })
+  const [outcome] = await act(context, workspace, target, action.id, value, [KIND_CHANGE], { note, contentFormat })
   return outcome
 }
 
@@ -1155,7 +1194,8 @@ async function showProject(context: AgentContext, state: Workspace, project: Pro
     lead: who(directory, project.lead),
     author: who(directory, project.author),
     archived: archiveSummary(directory, project.archive),
-    description: project.description,
+    description: descriptionText(project.description, project.descriptionFormat),
+    descriptionFormat: formatName(project.descriptionFormat),
     createdAt: new Date(project.createdAt * 1000).toISOString(),
     folder: project.contentFolder,
     issues: issues.map((issue) => issueSummary(issue, directory, state.vocab.issue)),
@@ -1521,7 +1561,7 @@ export const shipApp: AgentApp = {
           title: issue.title,
           status: issue.status,
           assignee: who(directory, issue.assignee),
-          pullRequest: pullRequestOn([...comments.map((c) => c.body).reverse(), issue.description]),
+          pullRequest: pullRequestOn([...comments.map((c) => c.body).reverse(), descriptionText(issue.description, issue.descriptionFormat)]),
           comments: comments.length,
           lastComment: last && {
             id: last.id,
@@ -1582,7 +1622,14 @@ export const shipApp: AgentApp = {
         return {
           kind: 'issue' as const,
           ...issueSummary(issue, directory, state.vocab.issue),
-          description: issue.description,
+          /*
+            A block document from Ship's editor is printed as text, one chunk
+            per block, because that is what `edit-issue --description` takes
+            back — and it keeps every block whose chunk comes back unchanged
+            (AGE-8). `descriptionFormat` says which it was.
+          */
+          description: descriptionText(issue.description, issue.descriptionFormat),
+          descriptionFormat: formatName(issue.descriptionFormat),
           createdAt: new Date(issue.createdAt * 1000).toISOString(),
           folder: issue.folder,
           /*
@@ -1884,16 +1931,16 @@ export const shipApp: AgentApp = {
           )
         }
 
-        const applied: { field: string; from: string; to: string; eventId?: string }[] = []
+        const applied: ReturnType<typeof appliedEdit>[] = []
         for (const edit of edits) {
-          const result = await setField(context, state, { addr: issue.addr, author: issue.author, folder }, edit.field, edit.value, edit.note)
+          const result = await setField(context, state, { addr: issue.addr, author: issue.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat)
           if (!result.ok) {
             throw new BadRequest(
               `The relay refused ${edit.field} on ${issue.ref ?? issue.addr}: ${result.reason ?? 'no reason given'}. ` +
                 `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
             )
           }
-          applied.push({ field: edit.field, from: edit.from, to: edit.value, eventId: result.eventId })
+          applied.push(appliedEdit(edit, result.eventId))
         }
 
         /*
@@ -1969,16 +2016,16 @@ export const shipApp: AgentApp = {
           answer names the ones that landed rather than reporting the whole call
           as failed and leaving a person guessing about half of it.
         */
-        const applied: { field: string; from: string; to: string; eventId?: string }[] = []
+        const applied: ReturnType<typeof appliedEdit>[] = []
         for (const edit of edits) {
-          const result = await setField(context, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note)
+          const result = await setField(context, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat)
           if (!result.ok) {
             throw new BadRequest(
               `The relay refused ${edit.field} on “${project.title}”: ${result.reason ?? 'no reason given'}. ` +
                 `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
             )
           }
-          applied.push({ field: edit.field, from: edit.from, to: edit.value, eventId: result.eventId })
+          applied.push(appliedEdit(edit, result.eventId))
         }
 
         return { changed: { title: project.title, addr: project.addr, folder }, applied }

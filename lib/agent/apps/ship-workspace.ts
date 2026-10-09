@@ -31,7 +31,7 @@ import {
   type ResolvedManifest,
 } from '@estiva-app/interop'
 import { byOrder, decorationsOf, trustedTs, type EditFold } from '@estiva-app/conversation'
-import type { SignedEvent } from '@estiva-app/protocol'
+import type { ContentFormat, SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../cli'
 
 /** The kinds Ship's objects are — what `ship` lists. Everything else is the manifest's. */
@@ -59,6 +59,8 @@ export interface Project {
   createdAt: number
   title: string
   description: string
+  /** The model `description` is written in (§13.4): a block document from Ship's editor, or marker text. */
+  descriptionFormat?: ContentFormat
   /** The raw vocabulary value, as `set-project-status` takes it. */
   status: string
   lead?: string
@@ -79,6 +81,8 @@ export interface Issue {
   createdAt: number
   title: string
   description: string
+  /** The model `description` is written in (§13.4): a block document from Ship's editor, or marker text. */
+  descriptionFormat?: ContentFormat
   status: string
   assignee?: string
   /** Ship's display key — absent until Ship numbers an issue somebody else filed. */
@@ -267,6 +271,7 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
       createdAt: root.created_at,
       title: object.slots.title?.value ?? '',
       description: object.slots.body?.value ?? '',
+      descriptionFormat: object.slots.body?.format,
     }
     if (object.kind === KIND.PROJECT) {
       projects.push({
