@@ -52,6 +52,7 @@ import { buildBareFile, KIND, type SignedEvent } from '@estiva-app/protocol'
 import { decorationsOf, type EditFold } from '@estiva-app/conversation'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
+import { withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveOne } from '../resolve'
 
@@ -315,6 +316,10 @@ async function comment(
   body: string,
   replyTo?: { id: string; kind: number; author: string },
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
+  // Interop tags every `nostr:npub…` in a comment's body (0.53), and these verbs
+  // take no `--mention` yet, so a body that names anybody is refused here as
+  // `ship comment` refuses one `--mention` did not name.
+  withMentions(body, [])
   const query = relayQuery(context)
   const pointer = pointerOf(topic.address)
   const resolved = await resolveManifest(pointer, query)

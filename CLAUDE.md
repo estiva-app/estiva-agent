@@ -77,6 +77,17 @@ npx tsx scripts/agent.ts ship create-issue --project "Peek: Feedback" --title ".
 npx tsx scripts/agent.ts ship edit-project "Cross-app read state" --status completed
 ```
 
+`ship comment <ref> --body "…" --mention miky` asks somebody (8e8d4b68): the
+comment opens with their `nostr:npub…` and interop tags them in `p`, so it
+reaches them as a mention in Peek and Ship (SPEC §13.1, §11.8). `--mention`
+takes one or more, comma-separated, each a hex key, an npub, or a handle on
+the workspace's domain (`miky`, `katerina`, `qa-2`), looked up by NIP-05 —
+never a display name, for the reason `assign` refuses one — and each must be a
+relay member. A body that names anybody `--mention` does not is refused:
+interop tags every npub in the body, so one copied from workspace text would
+notify a person nobody asked to reach. A question is a plain mention, never
+urgent (Miky, 2026-10-09).
+
 `ship archive <ref> --resolution "…"` archives one project, issue or Folder the
 way Ship does (FOL-46): a `kind:1851` `archived` change, the resolution as its
 note, shown first when the file is opened; `--unarchive` brings it back.
