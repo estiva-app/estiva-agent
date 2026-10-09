@@ -187,7 +187,13 @@ const cellText = (cell: Block): string =>
   (childBlocks(cell) ?? []).map((child) => (childBlocks(child) ? cellText(child) : inlineTextOf(child))).join(' ').replace(/\s+/g, ' ').trim()
 
 /** What one block reads as, in the text the agent is shown. */
-const blockText = (block: Block) => (spellable(block) ? protocolText(block) : standIn(block))
+const blockText = (block: Block) => {
+  let text = printed.get(block)
+  if (text === undefined) printed.set(block, (text = spellable(block) ? protocolText(block) : standIn(block)))
+  return text
+}
+/** `spellable` re-parses a block, and one block is printed several times per edit — and per project in `ship projects`. */
+const printed = new WeakMap<Block, string>()
 
 /**
  * A description as the text the agent reads and sends back. A block document
@@ -206,14 +212,49 @@ export function descriptionText(value: string, format: ContentFormat | undefined
 export const formatName = (format: ContentFormat | undefined) =>
   format === 'blocks' ? BLOCK_DOCUMENT_FORMAT : format === 'unknown' ? 'unknown' : 'marker'
 
-/** Where `chunk` stands as whole blocks in `text`, at or after `from`: a blank line (or the edge) on each side. */
-function findChunk(text: string, chunk: string, from: number): number {
-  for (let at = text.indexOf(chunk, from); at >= 0; at = text.indexOf(chunk, at + 1)) {
+/**
+ * Every place `chunk` stands as whole blocks in `text`: a blank line (or the
+ * edge) on each side, and not inside a code fence, whose blank lines are not
+ * block boundaries.
+ */
+function chunkPositions(text: string, chunk: string): number[] {
+  const positions: number[] = []
+  for (let at = text.indexOf(chunk); at >= 0; at = text.indexOf(chunk, at + 1)) {
     const before = text.slice(0, at)
     const after = text.slice(at + chunk.length)
-    if ((before.trim() === '' || before.endsWith('\n\n')) && (after.trim() === '' || after.startsWith('\n\n'))) return at
+    const fenced = (before.match(/^```/gm)?.length ?? 0) % 2 === 1
+    if (!fenced && (before.trim() === '' || before.endsWith('\n\n')) && (after.trim() === '' || after.startsWith('\n\n'))) positions.push(at)
   }
-  return -1
+  return positions
+}
+
+/**
+ * Which old blocks come back unchanged, and where: the longest chain of
+ * matches in order on both sides. First-occurrence matching is not enough —
+ * delete one of two identical paragraphs and the earlier block would match the
+ * later copy, and every block in between would lose its id.
+ */
+function unchangedBlocks(text: string, chunks: string[]): { i: number; at: number; end: number }[] {
+  const matches = chunks
+    .flatMap((chunk, i) => (chunk.trim() ? chunkPositions(text, chunk).map((at) => ({ i, at, end: at + chunk.length })) : []))
+    .sort((a, b) => a.at - b.at || a.i - b.i)
+  const length = matches.map(() => 1)
+  const previous = matches.map(() => -1)
+  matches.forEach((match, c) => {
+    for (let d = 0; d < c; d++) {
+      if (matches[d].i < match.i && matches[d].end <= match.at && length[d] + 1 > length[c]) {
+        length[c] = length[d] + 1
+        previous[c] = d
+      }
+    }
+  })
+  let last = -1
+  length.forEach((n, c) => {
+    if (last < 0 || n > length[last]) last = c
+  })
+  const chain: { i: number; at: number; end: number }[] = []
+  for (let c = last; c >= 0; c = previous[c]) chain.unshift(matches[c])
+  return chain
 }
 
 export interface BlockEdit {
@@ -240,19 +281,13 @@ export function editBlockDocument(previous: string, text: string): BlockEdit {
   type Piece = { keep: Block } | { text: string; replaces: Block[] }
   const pieces: Piece[] = []
   let cursor = 0
-  let pending: Block[] = []
-  before.forEach((block, i) => {
-    const chunk = chunks[i]
-    const at = chunk.trim() ? findChunk(text, chunk, cursor) : -1
-    if (at < 0) {
-      pending.push(block)
-      return
-    }
-    pieces.push({ text: text.slice(cursor, at), replaces: pending }, { keep: block })
-    pending = []
-    cursor = at + chunk.length
-  })
-  pieces.push({ text: text.slice(cursor), replaces: pending })
+  let next = 0
+  for (const { i, at, end } of unchangedBlocks(text, chunks)) {
+    pieces.push({ text: text.slice(cursor, at), replaces: before.slice(next, i) }, { keep: before[i] })
+    cursor = end
+    next = i + 1
+  }
+  pieces.push({ text: text.slice(cursor), replaces: before.slice(next) })
 
   const out: Block[] = []
   let kept = 0
@@ -275,9 +310,9 @@ export function editBlockDocument(previous: string, text: string): BlockEdit {
     const fixed = replaces.find((block) => !spellable(block))
     if (fixed) {
       throw new BadRequest(
-        `The new description changes the text around a ${fixed.type} block (${JSON.stringify(blockText(fixed).slice(0, 60))}) that text cannot carry, ` +
-          'so writing it would replace that block with plain text. Leave its lines exactly as `show` printed them, ' +
-          'with a blank line on each side, or change that block in the app. Nothing was published.',
+        `The new description changes the text around a ${fixed.type} block (${JSON.stringify(blockText(fixed).slice(0, 60))}), ` +
+          'and text cannot carry that block: writing it would replace it with plain text. The block is matched only when its ' +
+          'lines are exactly as `show` printed them with a blank line on each side; its content can be changed only in Ship. Nothing was published.',
       )
     }
     const ids = new Set(replaces.map((block) => block.id))

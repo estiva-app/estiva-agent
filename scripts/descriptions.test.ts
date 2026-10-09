@@ -9,6 +9,8 @@ import { buildActionEvents } from '@estiva-app/interop'
 import { resolveBlockAnchor, type Block } from '@estiva-app/protocol'
 import { BadRequest } from '../lib/agent/cli'
 import { describe, descriptionText, editBlockDocument } from '../lib/agent/descriptions'
+import { issueEdits, projectEdits } from '../lib/agent/apps/ship'
+import type { Issue, Project } from '../lib/agent/apps/ship-workspace'
 
 let failures = 0
 function check(label: string, condition: boolean, detail = '') {
@@ -98,6 +100,40 @@ check('text sent back unchanged is the same document', editBlockDocument(value, 
 {
   const edit = editBlockDocument(value, shown.replace('\n\n[attachment: x.png]', ''))
   check('deleting an attachment’s line removes it and says so', edit.removed.join() === 'a1' && !byId(edit.value, 'a1'))
+}
+
+// Two identical blocks: deleting the first must not take the ids of everything up to the second.
+{
+  const twins = JSON.stringify({
+    type: 'doc',
+    content: [
+      { type: 'paragraph', id: 'd1', content: [text('TBD')] },
+      { type: 'paragraph', id: 'd2', content: [text('Context that stays.')] },
+      { type: 'paragraph', id: 'd3', content: [text('TBD')] },
+    ],
+  })
+  const edit = editBlockDocument(twins, 'Context that stays.\n\nTBD')
+  check('deleting one of two identical blocks keeps the blocks between them', edit.removed.join() === 'd1' && edit.kept === 2, JSON.stringify({ ...edit, value: undefined }))
+}
+
+// A code fence holding a block's text is not that block coming back.
+{
+  const edit = editBlockDocument(value, shown.replace('Related: RIC-7.', '```\nexample\n\nRelated: RIC-7.\n```\n\nRelated: RIC-7.'))
+  const last = blocksOf(edit.value).at(-1)
+  check('a block’s text inside a new code fence does not split the fence', blocksOf(edit.value).some((b) => b.type === 'codeBlock' && JSON.stringify(b).includes('example\\n\\nRelated')) && last?.id === 'p3', JSON.stringify(blocksOf(edit.value).slice(-2)))
+}
+
+// issueEdits / projectEdits carry the format to the write.
+{
+  const subject = { description: value, descriptionFormat: 'blocks' as const }
+  const issue = { ...subject, addr: '30851:x:y', id: 'y', author: 'x', createdAt: 0, title: 't', status: 'todo', folder: 'f', archived: false } as Issue
+  const [edit] = issueEdits(issue, { positional: [], flags: { description: `${shown}\n\nMore.` } }, [])
+  check('edit-issue writes a block description as estiva-blocks-1', edit.contentFormat === 'estiva-blocks-1' && edit.text === `${shown}\n\nMore.` && edit.blocks?.added === 1)
+  const project = { ...subject, addr: '30850:x:p', id: 'p', author: 'x', createdAt: 0, title: 'p', status: 'planned', archived: false, contentFolder: 'f' } as Project
+  const [projectEdit] = projectEdits(project, { positional: [], flags: { description: shown } }, 'x', { values: [] } as never)
+  check('edit-project does too', projectEdit.contentFormat === 'estiva-blocks-1' && projectEdit.blocks?.kept === document.content.length)
+  const [plain] = issueEdits({ ...issue, description: 'old', descriptionFormat: 'marker' }, { positional: [], flags: { description: 'new' } }, [])
+  check('a marker description stays untagged', plain.contentFormat === undefined && plain.value === 'new')
 }
 
 refuses('editing a table’s text is refused rather than flattened', () => editBlockDocument(value, shown.replace('| Who | When |', '| Who | When | Why |')), 'text cannot carry')

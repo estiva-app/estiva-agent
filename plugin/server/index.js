@@ -17835,7 +17835,12 @@ function standIn(block) {
   return text2.trim() ? text2 : `[${block.type}: ${block.id}]`;
 }
 var cellText = (cell) => (childBlocks(cell) ?? []).map((child) => childBlocks(child) ? cellText(child) : inlineTextOf(child)).join(" ").replace(/\s+/g, " ").trim();
-var blockText = (block) => spellable(block) ? protocolText(block) : standIn(block);
+var blockText = (block) => {
+  let text2 = printed.get(block);
+  if (text2 === void 0) printed.set(block, text2 = spellable(block) ? protocolText(block) : standIn(block));
+  return text2;
+};
+var printed = /* @__PURE__ */ new WeakMap();
 function descriptionText(value, format) {
   if (format !== "blocks") return value;
   try {
@@ -17845,32 +17850,48 @@ function descriptionText(value, format) {
   }
 }
 var formatName = (format) => format === "blocks" ? BLOCK_DOCUMENT_FORMAT : format === "unknown" ? "unknown" : "marker";
-function findChunk(text2, chunk, from) {
-  for (let at = text2.indexOf(chunk, from); at >= 0; at = text2.indexOf(chunk, at + 1)) {
+function chunkPositions(text2, chunk) {
+  const positions = [];
+  for (let at = text2.indexOf(chunk); at >= 0; at = text2.indexOf(chunk, at + 1)) {
     const before = text2.slice(0, at);
     const after = text2.slice(at + chunk.length);
-    if ((before.trim() === "" || before.endsWith("\n\n")) && (after.trim() === "" || after.startsWith("\n\n"))) return at;
+    const fenced = (before.match(/^```/gm)?.length ?? 0) % 2 === 1;
+    if (!fenced && (before.trim() === "" || before.endsWith("\n\n")) && (after.trim() === "" || after.startsWith("\n\n"))) positions.push(at);
   }
-  return -1;
+  return positions;
+}
+function unchangedBlocks(text2, chunks) {
+  const matches = chunks.flatMap((chunk, i) => chunk.trim() ? chunkPositions(text2, chunk).map((at) => ({ i, at, end: at + chunk.length })) : []).sort((a, b) => a.at - b.at || a.i - b.i);
+  const length = matches.map(() => 1);
+  const previous = matches.map(() => -1);
+  matches.forEach((match, c) => {
+    for (let d = 0; d < c; d++) {
+      if (matches[d].i < match.i && matches[d].end <= match.at && length[d] + 1 > length[c]) {
+        length[c] = length[d] + 1;
+        previous[c] = d;
+      }
+    }
+  });
+  let last = -1;
+  length.forEach((n, c) => {
+    if (last < 0 || n > length[last]) last = c;
+  });
+  const chain = [];
+  for (let c = last; c >= 0; c = previous[c]) chain.unshift(matches[c]);
+  return chain;
 }
 function editBlockDocument(previous, text2) {
   const before = parseBlockDocument(previous).content;
   const chunks = before.map(blockText);
   const pieces = [];
   let cursor = 0;
-  let pending2 = [];
-  before.forEach((block, i) => {
-    const chunk = chunks[i];
-    const at = chunk.trim() ? findChunk(text2, chunk, cursor) : -1;
-    if (at < 0) {
-      pending2.push(block);
-      return;
-    }
-    pieces.push({ text: text2.slice(cursor, at), replaces: pending2 }, { keep: block });
-    pending2 = [];
-    cursor = at + chunk.length;
-  });
-  pieces.push({ text: text2.slice(cursor), replaces: pending2 });
+  let next = 0;
+  for (const { i, at, end } of unchangedBlocks(text2, chunks)) {
+    pieces.push({ text: text2.slice(cursor, at), replaces: before.slice(next, i) }, { keep: before[i] });
+    cursor = end;
+    next = i + 1;
+  }
+  pieces.push({ text: text2.slice(cursor), replaces: before.slice(next) });
   const out = [];
   let kept = 0;
   let edited2 = 0;
@@ -17891,7 +17912,7 @@ function editBlockDocument(previous, text2) {
     const fixed = replaces.find((block) => !spellable(block));
     if (fixed) {
       throw new BadRequest(
-        `The new description changes the text around a ${fixed.type} block (${JSON.stringify(blockText(fixed).slice(0, 60))}) that text cannot carry, so writing it would replace that block with plain text. Leave its lines exactly as \`show\` printed them, with a blank line on each side, or change that block in the app. Nothing was published.`
+        `The new description changes the text around a ${fixed.type} block (${JSON.stringify(blockText(fixed).slice(0, 60))}), and text cannot carry that block: writing it would replace it with plain text. The block is matched only when its lines are exactly as \`show\` printed them with a blank line on each side; its content can be changed only in Ship. Nothing was published.`
       );
     }
     const ids = new Set(replaces.map((block) => block.id));
