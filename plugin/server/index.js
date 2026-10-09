@@ -19510,7 +19510,12 @@ async function loadWorkspace(context2) {
     }];
   });
   const statusAt = /* @__PURE__ */ new Map();
-  for (const change of activity) if (change.field === "status") statusAt.set(change.target, change.ts ?? change.createdAt * 1e3);
+  const current = new Map(issues.map((issue2) => [issue2.addr, issue2.status]));
+  for (const change of activity) {
+    if (change.field !== "status" || change.value !== current.get(change.target)) continue;
+    const trusted = change.ts !== void 0 && Math.floor(change.ts / 1e3) === change.createdAt;
+    statusAt.set(change.target, trusted ? change.ts : change.createdAt * 1e3);
+  }
   for (const issue2 of issues) issue2.statusChangedAt = statusAt.get(issue2.addr);
   return {
     projects,
@@ -20014,6 +20019,11 @@ async function timelineFor(context2, state, addr2, extraPubkeys) {
     }))
   };
 }
+async function loadWithFolders(context2) {
+  const [state, folders] = await Promise.all([loadWorkspace(context2), listFolders(relayQuery(context2))]);
+  cascadeArchives(state, folders);
+  return { state, folders };
+}
 var FOLDER_BY = {
   noun: "Folder",
   exact: (folder) => [folder.id, folder.channel, folder.name],
@@ -20028,10 +20038,8 @@ function archivable(state, folders, reference, projectsOnly) {
     { kind: "project", result: resolveMaybe(state.projects, reference, PROJECT_BY) },
     ...projectsOnly ? [] : [{
       kind: "Folder",
-      result: (() => {
-        const exact = folders.filter((folder) => folder.id === reference || folder.channel === reference);
-        return exact.length === 1 ? { found: exact[0] } : resolveMaybe(folders.filter((folder) => folder.hasState), reference, FOLDER_BY);
-      })()
+      // Only Folders with state: a record channel is nobody's Folder, and often shares its record's uuid.
+      result: resolveMaybe(folders.filter((folder) => folder.hasState), reference, FOLDER_BY)
     }]
   ];
   const found = attempts.flatMap(({ kind, result }) => "found" in result ? [{ kind, file: result.found }] : []);
@@ -20052,14 +20060,15 @@ async function archiveFile(context2, args2, command2) {
   const resolution = args2.flags.resolution;
   if (resolution === true) throw new BadRequest("--resolution takes the text to show, in quotes.");
   if (!archived && resolution !== void 0) throw new BadRequest("--resolution goes with an archive; bringing a file back takes none.");
-  const state = await loadWorkspace(context2);
-  const folders = await listFolders(relayQuery(context2));
-  cascadeArchives(state, folders);
+  const { state, folders } = await loadWithFolders(context2);
   const target = archivable(state, folders, reference, command2 === "archive-project");
   const name = target.kind === "Folder" ? target.file.name ?? target.file.id : target.file.title;
   const addr2 = target.kind === "Folder" ? target.file.channel : target.file.addr;
   const own = target.kind === "Folder" ? target.file.archived && !target.file.archived.with : target.file.ownArchive;
-  const inherited = target.kind === "Folder" ? void 0 : target.file.archive?.with;
+  const parent = target.kind === "Folder" ? void 0 : target.file.archive?.with;
+  const parentProject = parent ? state.projects.find((project) => project.addr === parent) : void 0;
+  const parentFolder = parent ? folders.find((folder) => folder.channel === parent) : void 0;
+  const inherited = parentProject ? `the project \u201C${parentProject.title}\u201D` : parentFolder ? `the Folder \u201C${parentFolder.name ?? parentFolder.id}\u201D` : parent;
   const unchanged = { kind: target.kind, title: name, addr: addr2 };
   if (archived && own) {
     return { unchanged, note: `That ${target.kind} is already archived. Pass --unarchive to bring it back.` };
@@ -20201,8 +20210,7 @@ var shipApp = {
         return [...result.projects.map((project) => projectRow(project, vocab)), ...result.hidden.note ? [result.hidden.note] : []];
       },
       async run(context2, args2) {
-        const state = await loadWorkspace(context2);
-        cascadeArchives(state, await listFolders(relayQuery(context2)));
+        const { state } = await loadWithFolders(context2);
         const directory = await directoryFor(context2, state.projects.flatMap((p) => [p.lead, p.archive?.by]));
         const archived = state.projects.filter((project) => project.archived);
         const wanted = args2.flags.archived ? state.projects : archivedRemoved(state.projects);
@@ -20252,8 +20260,7 @@ var shipApp = {
         ];
       },
       async run(context2, args2) {
-        const state = await loadWorkspace(context2);
-        cascadeArchives(state, await listFolders(relayQuery(context2)));
+        const { state } = await loadWithFolders(context2);
         const wantedProject = flagValue(args2, "project");
         const wantedStatus = flagValue(args2, "status")?.toLowerCase();
         const wantedStatuses = wantedStatus ? statusesFor(wantedStatus, state.vocab.issue) : null;
@@ -20402,7 +20409,7 @@ var shipApp = {
       async run(context2, args2) {
         const reference = args2.positional[0];
         if (!reference) throw new BadRequest("show needs a reference \u2014 try `ship issues` first.");
-        const state = await loadWorkspace(context2);
+        const { state } = await loadWithFolders(context2);
         const asIssue = resolveMaybe(state.issues, reference, ISSUE_BY);
         const asProject = resolveMaybe(state.projects, reference, PROJECT_BY);
         if ("found" in asIssue && "found" in asProject) {

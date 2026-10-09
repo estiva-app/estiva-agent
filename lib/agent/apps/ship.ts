@@ -967,6 +967,16 @@ async function timelineFor(
  * filed for, and a truncated one would not let anybody check a description
  * before replacing it.
  */
+/**
+ * The workspace with the Folder half of the archive cascade applied — the
+ * Folder listing read beside the workspace scan, not after it.
+ */
+async function loadWithFolders(context: AgentContext) {
+  const [state, folders] = await Promise.all([loadWorkspace(context), listFolders(relayQuery(context))])
+  cascadeArchives(state, folders)
+  return { state, folders }
+}
+
 const FOLDER_BY = {
   noun: 'Folder',
   exact: (folder: FolderSummary) => [folder.id, folder.channel, folder.name],
@@ -985,8 +995,8 @@ type Archivable =
  * Which file an `archive` reference names, across the three kinds a person can
  * archive in Ship — asked of each, then decided, for the reason `show` gives:
  * a reference naming two kinds is a question, not whichever was tried first.
- * A Folder is matched among the ones with state (what Ship and Peek draw), or
- * by its exact id or channel address.
+ * A Folder is matched among the ones with state (what Ship and Peek draw), by
+ * name, id or channel address.
  */
 export function archivable(state: Pick<Workspace, 'issues' | 'projects'>, folders: FolderSummary[], reference: string, projectsOnly: boolean): Archivable {
   const attempts = [
@@ -996,10 +1006,8 @@ export function archivable(state: Pick<Workspace, 'issues' | 'projects'>, folder
       ? []
       : [{
           kind: 'Folder' as const,
-          result: (() => {
-            const exact = folders.filter((folder) => folder.id === reference || folder.channel === reference)
-            return exact.length === 1 ? { found: exact[0] } : resolveMaybe(folders.filter((folder) => folder.hasState), reference, FOLDER_BY)
-          })(),
+          // Only Folders with state: a record channel is nobody's Folder, and often shares its record's uuid.
+          result: resolveMaybe(folders.filter((folder) => folder.hasState), reference, FOLDER_BY),
         }]),
   ]
   const found = attempts.flatMap(({ kind, result }) => ('found' in result ? [{ kind, file: result.found } as Archivable] : []))
@@ -1036,15 +1044,21 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
   if (resolution === true) throw new BadRequest('--resolution takes the text to show, in quotes.')
   if (!archived && resolution !== undefined) throw new BadRequest('--resolution goes with an archive; bringing a file back takes none.')
 
-  const state = await loadWorkspace(context)
-  const folders = await listFolders(relayQuery(context))
-  cascadeArchives(state, folders)
+  const { state, folders } = await loadWithFolders(context)
   const target = archivable(state, folders, reference, command === 'archive-project')
 
   const name = target.kind === 'Folder' ? target.file.name ?? target.file.id : target.file.title
   const addr = target.kind === 'Folder' ? target.file.channel : target.file.addr
   const own = target.kind === 'Folder' ? target.file.archived && !target.file.archived.with : target.file.ownArchive
-  const inherited = target.kind === 'Folder' ? undefined : target.file.archive?.with
+  const parent = target.kind === 'Folder' ? undefined : target.file.archive?.with
+  // The parent by the name a person knows it by: its project's title, or its Folder's name.
+  const parentProject = parent ? state.projects.find((project) => project.addr === parent) : undefined
+  const parentFolder = parent ? folders.find((folder) => folder.channel === parent) : undefined
+  const inherited = parentProject
+    ? `the project “${parentProject.title}”`
+    : parentFolder
+      ? `the Folder “${parentFolder.name ?? parentFolder.id}”`
+      : parent
   const unchanged = { kind: target.kind, title: name, addr }
 
   /*
@@ -1258,9 +1272,8 @@ export const shipApp: AgentApp = {
         return [...result.projects.map((project) => projectRow(project, vocab)), ...(result.hidden.note ? [result.hidden.note] : [])]
       },
       async run(context, args) {
-        const state = await loadWorkspace(context)
         // A project in an archived Folder is hidden with it, as Ship hides it.
-        cascadeArchives(state, await listFolders(relayQuery(context)))
+        const { state } = await loadWithFolders(context)
         const directory = await directoryFor(context, state.projects.flatMap((p) => [p.lead, p.archive?.by]))
 
         const archived = state.projects.filter((project) => project.archived)
@@ -1317,9 +1330,8 @@ export const shipApp: AgentApp = {
         ]
       },
       async run(context, args) {
-        const state = await loadWorkspace(context)
         // An issue of a project in an archived Folder is hidden with both, as Ship hides it.
-        cascadeArchives(state, await listFolders(relayQuery(context)))
+        const { state } = await loadWithFolders(context)
         const wantedProject = flagValue(args, 'project')
         const wantedStatus = flagValue(args, 'status')?.toLowerCase()
 
@@ -1516,7 +1528,8 @@ export const shipApp: AgentApp = {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('show needs a reference — try `ship issues` first.')
 
-        const state = await loadWorkspace(context)
+        // With the Folders, so `archived` agrees with what the listings hide.
+        const { state } = await loadWithFolders(context)
 
         /*
           Asked of both kinds, then decided — rather than issues first with

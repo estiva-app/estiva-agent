@@ -309,9 +309,20 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
     }]
   })
 
-  // In the fold's order, so the last status change to an issue is the one that won.
+  /*
+    When each issue reached the status it is in: the last change, in the fold's
+    order, that set the value the fold settled on — so a later change the fold
+    did not apply cannot move it. `ts` only when SPEC §6.2 trusts it (inside
+    the event's own second); a back-dated `ts` would otherwise make an issue
+    closed today read as closed weeks ago, and `/sweep` archives by this date.
+  */
   const statusAt = new Map<string, number>()
-  for (const change of activity) if (change.field === 'status') statusAt.set(change.target, change.ts ?? change.createdAt * 1000)
+  const current = new Map(issues.map((issue) => [issue.addr, issue.status]))
+  for (const change of activity) {
+    if (change.field !== 'status' || change.value !== current.get(change.target)) continue
+    const trusted = change.ts !== undefined && Math.floor(change.ts / 1000) === change.createdAt
+    statusAt.set(change.target, trusted ? change.ts! : change.createdAt * 1000)
+  }
   for (const issue of issues) issue.statusChangedAt = statusAt.get(issue.addr)
 
   return {
