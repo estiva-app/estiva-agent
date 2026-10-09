@@ -17426,6 +17426,25 @@ function planUnlistFile(pubkey, createdAtMs, args2) {
     return [];
   return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "remove", addresses: [args2.address] })];
 }
+function planArchiveFolder(pubkey, createdAtMs, args2) {
+  return [
+    {
+      pubkey,
+      created_at: Math.floor(createdAtMs / 1e3),
+      kind: 1851,
+      // `buildActionEvent`'s order for a change, so the two writers of the one
+      // shape produce the same tags.
+      tags: [
+        ["a", args2.channel],
+        ["field", "archived"],
+        ["value", args2.archived ? "true" : ""],
+        ["h", args2.folder],
+        ["ts", String(createdAtMs)]
+      ],
+      content: args2.archived ? args2.resolution ?? "" : ""
+    }
+  ];
+}
 function listedBeneath(listing, file) {
   const byRef = new Map(listing.map((candidate) => [candidate.ref, candidate]));
   const cycles = /* @__PURE__ */ new Map();
@@ -19357,6 +19376,25 @@ var tagValue3 = (event, name) => event.tags.find((tag) => tag[0] === name)?.[1];
 function relayQuery(context2) {
   return (filters) => context2.relay.queryAll(filters);
 }
+function cascadeArchives(workspace, folders = []) {
+  for (const project of workspace.projects) {
+    let archive = project.ownArchive;
+    if (!archive) {
+      const listing = folders.filter((folder) => folder.addresses?.includes(project.addr));
+      const placed = listing.length ? listing : folders.filter((folder) => folder.id === project.contentFolder);
+      const archivedFolder = placed.length && placed.every((folder) => folder.archived && folder.archived.with !== project.addr) ? placed[0] : void 0;
+      if (archivedFolder?.archived) archive = { ...archivedFolder.archived, with: archivedFolder.channel ?? archivedFolder.id };
+    }
+    project.archive = archive;
+    project.archived = Boolean(archive);
+  }
+  const byAddr = new Map(workspace.projects.map((project) => [project.addr, project]));
+  for (const issue2 of workspace.issues) {
+    const project = issue2.projectAddr ? byAddr.get(issue2.projectAddr) : void 0;
+    issue2.archive = issue2.ownArchive ?? (project?.archive ? { ...project.archive, with: project.addr } : void 0);
+    issue2.archived = Boolean(issue2.archive);
+  }
+}
 var pointerOf = (address) => {
   const [kind, pubkey, ...rest] = address.split(":");
   return { kind: Number(kind), pubkey, identifier: rest.join(":"), relays: [] };
@@ -19438,6 +19476,7 @@ async function loadWorkspace(context2) {
         status: rawStatus(object3, vocabOf(root)),
         lead: metaValue(object3, "lead"),
         archived: Boolean(object3.archived),
+        ownArchive: object3.archived,
         contentFolder: folderOf(root) ?? ""
       });
     } else {
@@ -19447,10 +19486,13 @@ async function loadWorkspace(context2) {
         assignee: metaValue(object3, "assignee"),
         ref: metaValue(object3, "ref"),
         projectAddr: object3.parentRef || void 0,
-        folder: tagValue3(root, "h") ?? ""
+        folder: tagValue3(root, "h") ?? "",
+        archived: Boolean(object3.archived),
+        ownArchive: object3.archived
       });
     }
   }
+  cascadeArchives({ projects, issues });
   const activity = [...changes].sort(byOrder).flatMap((event) => {
     const field = tagValue3(event, "field");
     const value = tagValue3(event, "value");
@@ -19467,6 +19509,14 @@ async function loadWorkspace(context2) {
       note: event.content
     }];
   });
+  const statusAt = /* @__PURE__ */ new Map();
+  const current = new Map(issues.map((issue2) => [issue2.addr, issue2.status]));
+  for (const change of activity) {
+    if (change.field !== "status" || change.value !== current.get(change.target)) continue;
+    const trusted = change.ts !== void 0 && Math.floor(change.ts / 1e3) === change.createdAt;
+    statusAt.set(change.target, trusted ? change.ts : change.createdAt * 1e3);
+  }
+  for (const issue2 of issues) issue2.statusChangedAt = statusAt.get(issue2.addr);
   return {
     projects,
     issues,
@@ -19546,7 +19596,7 @@ function issueRow(issue2, vocab) {
     issue2.ref.padEnd(8),
     statusValue(vocab, issue2.status).padEnd(12),
     issue2.short,
-    clip(issue2.title, ROW_TITLE)
+    clip(issue2.title, ROW_TITLE) + (issue2.archived ? " (archived)" : "")
   ].join(" ");
 }
 function projectRow(project, vocab) {
@@ -19567,7 +19617,7 @@ function projectSummary(project, directory, vocab) {
     title: project.title,
     status: status(vocab, project.status),
     lead: who(directory, project.lead),
-    archived: project.archived || void 0,
+    archived: archiveSummary(directory, project.archive),
     folder: project.contentFolder,
     /*
           Present even when empty, and that is the point of including it at all.
@@ -19603,7 +19653,19 @@ function issueSummary(issue2, directory, vocab) {
     status: status(vocab, issue2.status),
     assignee: who(directory, issue2.assignee),
     author: who(directory, issue2.author),
-    project: issue2.projectAddr
+    project: issue2.projectAddr,
+    archived: archiveSummary(directory, issue2.archive),
+    // When it reached the status it is in, so `/sweep` can find what closed weeks ago without a `show` each.
+    statusChangedAt: issue2.statusChangedAt !== void 0 ? new Date(issue2.statusChangedAt).toISOString() : void 0
+  };
+}
+function archiveSummary(directory, archive) {
+  if (!archive) return void 0;
+  return {
+    by: who(directory, archive.by),
+    at: new Date(archive.at * 1e3).toISOString(),
+    resolution: archive.resolution,
+    with: archive.with
   };
 }
 async function directoryFor(context2, pubkeys) {
@@ -19957,11 +20019,118 @@ async function timelineFor(context2, state, addr2, extraPubkeys) {
     }))
   };
 }
+async function loadWithFolders(context2) {
+  const [state, folders] = await Promise.all([loadWorkspace(context2), listFolders(relayQuery(context2))]);
+  cascadeArchives(state, folders);
+  return { state, folders };
+}
+var FOLDER_BY = {
+  noun: "Folder",
+  exact: (folder) => [folder.id, folder.channel, folder.name],
+  prefix: (folder) => [folder.id],
+  text: (folder) => folder.name ?? "",
+  label: (folder) => `${short(folder.id)} \u2014 ${folder.name ?? "Untitled Folder"}`,
+  hint: "Pass a Folder name or part of one, or the first 8 characters of its id."
+};
+function archivable(state, folders, reference, projectsOnly) {
+  const attempts = [
+    ...projectsOnly ? [] : [{ kind: "issue", result: resolveMaybe(state.issues, reference, ISSUE_BY) }],
+    { kind: "project", result: resolveMaybe(state.projects, reference, PROJECT_BY) },
+    ...projectsOnly ? [] : [{
+      kind: "Folder",
+      // Only Folders with state: a record channel is nobody's Folder, and often shares its record's uuid.
+      result: resolveMaybe(folders.filter((folder) => folder.hasState), reference, FOLDER_BY)
+    }]
+  ];
+  const found = attempts.flatMap(({ kind, result }) => "found" in result ? [{ kind, file: result.found }] : []);
+  if (found.length > 1) {
+    throw new BadRequest(
+      `"${reference}" names more than one file:
+` + found.map(({ kind, file }) => `  ${kind.padEnd(7)} ${"title" in file ? file.title : file.name ?? file.id}`).join("\n") + "\nPass an address or a short id to say which."
+    );
+  }
+  const ambiguity = attempts.find(({ result }) => "ambiguous" in result)?.result;
+  if (found.length === 1) {
+    const file = found[0].file;
+    const exact = "addr" in file ? [file.addr, file.id] : [file.id, file.channel];
+    if (!ambiguity || exact.includes(reference.trim())) return found[0];
+  }
+  if (ambiguity) throw new BadRequest(ambiguity.ambiguous);
+  throw new BadRequest(`No ${projectsOnly ? "project" : "issue, project or Folder"} matches "${reference}".`);
+}
+async function archiveFile(context2, args2, command2) {
+  const reference = args2.positional[0];
+  if (!reference) throw new BadRequest(`${command2} needs a reference \u2014 a project, an issue or a Folder.`);
+  const archived = !args2.flags.unarchive;
+  const resolution = args2.flags.resolution;
+  if (resolution === true) throw new BadRequest("--resolution takes the text to show, in quotes.");
+  if (!archived && resolution !== void 0) throw new BadRequest("--resolution goes with an archive; bringing a file back takes none.");
+  const { state, folders } = await loadWithFolders(context2);
+  const target = archivable(state, folders, reference, command2 === "archive-project");
+  const name = target.kind === "Folder" ? target.file.name ?? target.file.id : target.file.title;
+  const addr2 = target.kind === "Folder" ? target.file.channel : target.file.addr;
+  const own = target.kind === "Folder" ? target.file.archived && !target.file.archived.with : target.file.ownArchive;
+  const parent = target.kind === "Folder" ? void 0 : target.file.archive?.with;
+  const parentProject = parent ? state.projects.find((project) => project.addr === parent) : void 0;
+  const parentFolder = parent ? folders.find((folder) => folder.channel === parent) : void 0;
+  const inherited = parentProject ? `the project \u201C${parentProject.title}\u201D` : parentFolder ? `the Folder \u201C${parentFolder.name ?? parentFolder.id}\u201D` : parent;
+  const unchanged = { kind: target.kind, title: name, addr: addr2 };
+  if (archived && own) {
+    return { unchanged, note: `That ${target.kind} is already archived. Pass --unarchive to bring it back.` };
+  }
+  if (!archived && !own) {
+    return {
+      unchanged,
+      note: inherited ? `That ${target.kind} is not archived itself; it is hidden with ${inherited}, and is listed again only when that is unarchived. Nothing was published.` : `That ${target.kind} is not archived, so there is nothing to bring back.`
+    };
+  }
+  let result;
+  let hides;
+  if (target.kind === "Folder") {
+    const folder = target.file;
+    if (!folder.channel) throw new BadRequest(`The Folder \u201C${name}\u201D has no channel address on the relay, so there is nothing to set archived on.`);
+    if (folder.admins && !folder.admins.includes(context2.signer.pubkey)) {
+      throw new BadRequest(`Only the owners and admins of \u201C${name}\u201D can archive it \u2014 readers ignore an archive from anybody else, and this identity is neither. Nothing was published.`);
+    }
+    const [change] = planArchiveFolder(context2.signer.pubkey, Date.now(), {
+      folder: folder.id,
+      channel: folder.channel,
+      archived,
+      ...typeof resolution === "string" ? { resolution } : {}
+    });
+    result = await publishUnsigned(context2, change);
+    const projects = state.projects.filter((project) => folder.addresses?.includes(project.addr)).length;
+    hides = `the Folder, and what it alone lists (it lists ${projects} project(s))`;
+  } else {
+    const folder = target.kind === "project" ? target.file.contentFolder : target.file.folder;
+    if (!folder) throw new BadRequest(`\u201C${name}\u201D names no Folder, so a change to it has nowhere to be published.`);
+    const action = target.kind === "project" ? "archive-project" : "archive-issue";
+    [result] = await act(context2, state, { addr: target.file.addr, author: target.file.author, folder }, action, archived ? "true" : "", [KIND_CHANGE], {
+      note: typeof resolution === "string" ? resolution : ""
+    });
+    if (target.kind === "project") {
+      const project = target.file;
+      const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
+      hides = `the project and its ${issues} issue(s)`;
+    } else {
+      hides = "the issue; its project stays where it is";
+    }
+  }
+  published(result, `${archived ? "archiving" : "unarchiving"} \u201C${name}\u201D`);
+  return {
+    changed: unchanged,
+    archived,
+    resolution: typeof resolution === "string" ? resolution : void 0,
+    eventId: result.eventId,
+    note: archived ? `Hidden from Ship's lists and from \`ship issues\` / \`ship projects\` unless --archived: ${hides}. A link still opens it, with the resolution first. Reverse with --unarchive; nothing is deleted.` : "Back in the lists, with what was hidden with it."
+  };
+}
 async function showProject(context2, state, project) {
   const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr);
   const { directory, history, conversation } = await timelineFor(context2, state, project.addr, [
     project.author,
     project.lead,
+    project.archive?.by,
     ...issues.map((issue2) => issue2.assignee),
     ...issues.map((issue2) => issue2.author)
   ]);
@@ -19972,7 +20141,7 @@ async function showProject(context2, state, project) {
     status: status(state.vocab.project, project.status),
     lead: who(directory, project.lead),
     author: who(directory, project.author),
-    archived: project.archived || void 0,
+    archived: archiveSummary(directory, project.archive),
     description: project.description,
     createdAt: new Date(project.createdAt * 1e3).toISOString(),
     folder: project.contentFolder,
@@ -20046,8 +20215,8 @@ var shipApp = {
         return [...result.projects.map((project) => projectRow(project, vocab)), ...result.hidden.note ? [result.hidden.note] : []];
       },
       async run(context2, args2) {
-        const state = await loadWorkspace(context2);
-        const directory = await directoryFor(context2, state.projects.map((p) => p.lead));
+        const { state } = await loadWithFolders(context2);
+        const directory = await directoryFor(context2, state.projects.flatMap((p) => [p.lead, p.archive?.by]));
         const archived = state.projects.filter((project) => project.archived);
         const wanted = args2.flags.archived ? state.projects : archivedRemoved(state.projects);
         return {
@@ -20085,17 +20254,18 @@ var shipApp = {
     {
       name: "issues",
       summary: "issues, newest first",
-      usage: "issues [--project <ref>] [--status <value>] [--json]",
+      usage: "issues [--project <ref>] [--status <value>] [--archived] [--json]",
       lines(result) {
         const vocab = result[VOCAB] ?? noVocab;
         return [
           ...result.issues.map((issue2) => issueRow(issue2, vocab)),
           `${result.issues.length} listed`,
+          ...result.hidden.note ? [result.hidden.note] : [],
           ...result.coverage.note ? [result.coverage.note] : []
         ];
       },
       async run(context2, args2) {
-        const state = await loadWorkspace(context2);
+        const { state } = await loadWithFolders(context2);
         const wantedProject = flagValue(args2, "project");
         const wantedStatus = flagValue(args2, "status")?.toLowerCase();
         const wantedStatuses = wantedStatus ? statusesFor(wantedStatus, state.vocab.issue) : null;
@@ -20109,13 +20279,20 @@ var shipApp = {
             (issue2) => wantedStatuses.includes(issue2.status)
           );
         }
+        const archived = issues.filter((issue2) => issue2.archived).length;
+        if (!args2.flags.archived) issues = issues.filter((issue2) => !issue2.archived);
         const directory = await directoryFor(
           context2,
-          issues.flatMap((issue2) => [issue2.assignee, issue2.author])
+          issues.flatMap((issue2) => [issue2.assignee, issue2.author, issue2.archive?.by])
         );
         return {
           [VOCAB]: state.vocab.issue,
           issues: issues.slice().sort((a, b) => b.createdAt - a.createdAt).map((issue2) => issueSummary(issue2, directory, state.vocab.issue)),
+          // The same honesty `projects` owes (AGE-7): a shorter list is not a smaller workspace.
+          hidden: {
+            archived: args2.flags.archived ? 0 : archived,
+            note: !args2.flags.archived && archived > 0 ? `${archived} archived issue(s) are not listed \u2014 pass --archived to include them.` : void 0
+          },
           /*
             Reported against the whole workspace rather than the filtered slice,
             deliberately. An unreachable issue has no project and no status this
@@ -20237,7 +20414,7 @@ var shipApp = {
       async run(context2, args2) {
         const reference = args2.positional[0];
         if (!reference) throw new BadRequest("show needs a reference \u2014 try `ship issues` first.");
-        const state = await loadWorkspace(context2);
+        const { state } = await loadWithFolders(context2);
         const asIssue = resolveMaybe(state.issues, reference, ISSUE_BY);
         const asProject = resolveMaybe(state.projects, reference, PROJECT_BY);
         if ("found" in asIssue && "found" in asProject) {
@@ -20257,7 +20434,8 @@ Pass an address to say which.`
         const issue2 = asIssue.found;
         const { directory, history, conversation } = await timelineFor(context2, state, issue2.addr, [
           issue2.author,
-          issue2.assignee
+          issue2.assignee,
+          issue2.archive?.by
         ]);
         return {
           kind: "issue",
@@ -20582,59 +20760,19 @@ Pass an address to say which.`
       }
     },
     {
+      name: "archive",
+      signs: [KIND_CHANGE],
+      summary: "archive a project, an issue or a Folder with a resolution, or bring it back",
+      usage: "archive <ref> [--resolution <text>] [--unarchive]",
+      run: (context2, args2) => archiveFile(context2, args2, "archive")
+    },
+    {
+      // The name it had before any file could be archived; kept so existing prompts and skills still work.
       name: "archive-project",
       signs: [KIND_CHANGE],
-      summary: "hide a project from the lists, or bring it back",
-      usage: "archive-project <ref> [--unarchive]",
-      async run(context2, args2) {
-        const reference = args2.positional[0];
-        if (!reference) throw new BadRequest("archive-project needs a project reference.");
-        const state = await loadWorkspace(context2);
-        const project = findProject(state.projects, reference);
-        const archived = !args2.flags.unarchive;
-        const folder = project.contentFolder;
-        if (!folder) {
-          throw new BadRequest(
-            `\u201C${project.title}\u201D names no Folder for its record, so a change to it has nowhere to be published.`
-          );
-        }
-        if (archived && project.archived) {
-          return {
-            unchanged: { title: project.title, addr: project.addr },
-            note: "That project is already archived. Pass --unarchive to bring it back."
-          };
-        }
-        if (!archived && !project.archived) {
-          return {
-            unchanged: { title: project.title, addr: project.addr },
-            note: "That project is not archived, so there is nothing to bring back."
-          };
-        }
-        const [result] = await act(context2, state, { addr: project.addr, author: project.author, folder }, "archive-project", archived ? "true" : "", [KIND_CHANGE]);
-        published(result, `${archived ? "archiving" : "unarchiving"} \u201C${project.title}\u201D`);
-        const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
-        return {
-          changed: { title: project.title, addr: project.addr, folder },
-          archived,
-          eventId: result.eventId,
-          /*
-                      Exactly what archiving does, because the obvious guess is wrong and
-                      it is wrong in the direction that matters.
-          
-                      Archiving hides the project from `ship projects`. It does **not**
-                      hide the project's issues: `ship issues` lists `state.issues` with
-                      no archived filter at all, so all of them keep appearing in the
-                      default listing, attributed to a project that listing no longer
-                      shows. Measured on production — 12 issues of an archived project,
-                      all still listed.
-          
-                      So this is not a way to tidy issues away, and saying so here is
-                      cheaper than somebody archiving a project for that purpose and only
-                      later noticing it did nothing.
-                    */
-          note: archived ? `Hidden from \`ship projects\` unless --archived. Its ${issues} issue(s) are NOT hidden \u2014 \`ship issues\` has no archived filter and keeps listing them. Reverse with --unarchive; nothing is deleted.` : "Back in the default project listing."
-        };
-      }
+      summary: "archive a project with a resolution, or bring it back \u2014 `archive` for any file",
+      usage: "archive-project <ref> [--resolution <text>] [--unarchive]",
+      run: (context2, args2) => archiveFile(context2, args2, "archive-project")
     },
     /*
           The two irreversible commands, and the only ones that ask twice.
@@ -21184,6 +21322,7 @@ var TOOL_COMMANDS = {
   ship_assign: { app: shipApp, command: "assign" },
   ship_edit_issue: { app: shipApp, command: "edit-issue" },
   ship_edit_project: { app: shipApp, command: "edit-project" },
+  ship_archive: { app: shipApp, command: "archive" },
   ship_archive_project: { app: shipApp, command: "archive-project" },
   ship_delete_issue: { app: shipApp, command: "delete-issue" },
   ship_delete_project: { app: shipApp, command: "delete-project" },
@@ -21224,6 +21363,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             enum: ["open", "todo", "in_progress", "done", "cancelled"],
             description: 'Filter by status. Use "open" for work that is not finished \u2014 it covers both todo and in_progress, and is almost always what a question about open or outstanding issues means. The individual values are for when someone asks for one specifically. Omit for all statuses.'
+          },
+          archived: {
+            type: "boolean",
+            description: "Optional. Include archived issues \u2014 archived themselves or with their project. Hidden by default, and a line says how many."
           }
         },
         additionalProperties: false
@@ -21377,14 +21520,41 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: "ship_archive",
+      description: "Archive one Estiva Ship file \u2014 a project, an issue or a Folder \u2014 with a resolution summary, or bring it back with `unarchive`. Reversible: it is a change event, not a deletion, and nothing is removed. Archiving hides it from Ship's lists and from the listings here; a link still opens it, and the resolution is the first thing shown. A project's issues are hidden with it, and a Folder's projects with it, when that Folder is the only one listing them. Prefer it to the delete tools: it is reversible, and it keeps a record of who did it and why. " + WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: {
+            type: "string",
+            description: "An issue's short id or ref, a project or Folder name or part of one, or an address. Refuses if it matches more than one file."
+          },
+          resolution: {
+            type: "string",
+            description: "Optional. What happened to it, in a sentence or two \u2014 shown first when somebody opens it. Not with `unarchive`."
+          },
+          unarchive: {
+            type: "boolean",
+            description: "Optional. Bring an archived file back into the lists instead."
+          }
+        },
+        required: ["ref"],
+        additionalProperties: false
+      }
+    },
+    {
       name: "ship_archive_project",
-      description: "Hide one Estiva Ship project from the project list, or bring it back with `unarchive`. Reversible: it is a change event, not a deletion, and nothing is removed. Prefer it to `ship_delete_project`: it is reversible, and it keeps a record of who did it. It hides the project only. The project's issues keep appearing in the issue listing, which has no archived filter \u2014 archiving is not a way to tidy issues away. " + WRITE_NOTE,
+      description: "Archive one Estiva Ship project, and its issues with it, with a resolution summary \u2014 or bring it back with `unarchive`. `ship_archive` does the same for any file; this name is kept for prompts that use it. " + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
           ref: {
             type: "string",
             description: "Project name, part of one, or its address. Refuses if it matches more than one."
+          },
+          resolution: {
+            type: "string",
+            description: "Optional. What happened to it, shown first when somebody opens it. Not with `unarchive`."
           },
           unarchive: {
             type: "boolean",
@@ -21624,7 +21794,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "estiva_ping":
         return text({ at: (/* @__PURE__ */ new Date()).toISOString(), ...await connectionStatus(shipApp, { client: callingClient() }) });
       case "ship_list_issues":
-        return dispatch(command("issues"), args(flagsFrom(input, ["project", "status"])));
+        return dispatch(
+          command("issues"),
+          args({ ...flagsFrom(input, ["project", "status"]), ...input.archived === true ? { archived: true } : {} })
+        );
       case "ship_activity":
         return dispatch(command("activity"), args(flagsFrom(input, ["since", "project", "by", "limit"])));
       case "ship_get_issue": {
@@ -21654,10 +21827,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         return dispatch(command("edit-issue"), args(flags, [str(input.ref)]));
       }
+      case "ship_archive":
       case "ship_archive_project":
         return dispatch(
-          command("archive-project"),
-          args(input.unarchive === true ? { unarchive: true } : {}, [str(input.ref)])
+          command(request.params.name === "ship_archive" ? "archive" : "archive-project"),
+          args(
+            { ...flagsFrom(input, ["resolution"]), ...input.unarchive === true ? { unarchive: true } : {} },
+            [str(input.ref)]
+          )
         );
       case "ship_delete_issue":
       case "ship_delete_project": {

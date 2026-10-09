@@ -106,6 +106,7 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   ship_assign: { app: shipApp, command: 'assign' },
   ship_edit_issue: { app: shipApp, command: 'edit-issue' },
   ship_edit_project: { app: shipApp, command: 'edit-project' },
+  ship_archive: { app: shipApp, command: 'archive' },
   ship_archive_project: { app: shipApp, command: 'archive-project' },
   ship_delete_issue: { app: shipApp, command: 'delete-issue' },
   ship_delete_project: { app: shipApp, command: 'delete-project' },
@@ -168,6 +169,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             enum: ['open', 'todo', 'in_progress', 'done', 'cancelled'],
             description:
               'Filter by status. Use "open" for work that is not finished — it covers both todo and in_progress, and is almost always what a question about open or outstanding issues means. The individual values are for when someone asks for one specifically. Omit for all statuses.',
+          },
+          archived: {
+            type: 'boolean',
+            description: 'Optional. Include archived issues — archived themselves or with their project. Hidden by default, and a line says how many.',
           },
         },
         additionalProperties: false,
@@ -352,11 +357,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'ship_archive',
+      description:
+        'Archive one Estiva Ship file — a project, an issue or a Folder — with a resolution summary, or bring it back with `unarchive`. Reversible: it is a change event, not a deletion, and nothing is removed. ' +
+        'Archiving hides it from Ship\'s lists and from the listings here; a link still opens it, and the resolution is the first thing shown. A project\'s issues are hidden with it, and a Folder\'s projects with it, when that Folder is the only one listing them. ' +
+        'Prefer it to the delete tools: it is reversible, and it keeps a record of who did it and why. ' +
+        WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          ref: {
+            type: 'string',
+            description: 'An issue\'s short id or ref, a project or Folder name or part of one, or an address. Refuses if it matches more than one file.',
+          },
+          resolution: {
+            type: 'string',
+            description: 'Optional. What happened to it, in a sentence or two — shown first when somebody opens it. Not with `unarchive`.',
+          },
+          unarchive: {
+            type: 'boolean',
+            description: 'Optional. Bring an archived file back into the lists instead.',
+          },
+        },
+        required: ['ref'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'ship_archive_project',
       description:
-        'Hide one Estiva Ship project from the project list, or bring it back with `unarchive`. Reversible: it is a change event, not a deletion, and nothing is removed. ' +
-        'Prefer it to `ship_delete_project`: it is reversible, and it keeps a record of who did it. ' +
-        'It hides the project only. The project\'s issues keep appearing in the issue listing, which has no archived filter — archiving is not a way to tidy issues away. ' +
+        'Archive one Estiva Ship project, and its issues with it, with a resolution summary — or bring it back with `unarchive`. `ship_archive` does the same for any file; this name is kept for prompts that use it. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
@@ -364,6 +394,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           ref: {
             type: 'string',
             description: 'Project name, part of one, or its address. Refuses if it matches more than one.',
+          },
+          resolution: {
+            type: 'string',
+            description: 'Optional. What happened to it, shown first when somebody opens it. Not with `unarchive`.',
           },
           unarchive: {
             type: 'boolean',
@@ -670,7 +704,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text({ at: new Date().toISOString(), ...(await connectionStatus(shipApp, { client: callingClient() })) })
 
       case 'ship_list_issues':
-        return dispatch(command('issues'), args(flagsFrom(input, ['project', 'status'])))
+        return dispatch(
+          command('issues'),
+          args({ ...flagsFrom(input, ['project', 'status']), ...(input.archived === true ? { archived: true as const } : {}) }),
+        )
 
       case 'ship_activity':
         return dispatch(command('activity'), args(flagsFrom(input, ['since', 'project', 'by', 'limit'])))
@@ -712,10 +749,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return dispatch(command('edit-issue'), args(flags, [str(input.ref)]))
       }
 
+      case 'ship_archive':
       case 'ship_archive_project':
         return dispatch(
-          command('archive-project'),
-          args(input.unarchive === true ? { unarchive: true } : {}, [str(input.ref)]),
+          command(request.params.name === 'ship_archive' ? 'archive' : 'archive-project'),
+          args(
+            { ...flagsFrom(input, ['resolution']), ...(input.unarchive === true ? { unarchive: true as const } : {}) },
+            [str(input.ref)],
+          ),
         )
 
       case 'ship_delete_issue':

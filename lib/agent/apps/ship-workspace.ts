@@ -23,6 +23,8 @@ import {
   projectEvents,
   resolveManifest,
   threadsOf,
+  type Archive,
+  type FolderSummary,
   type ForeignObject,
   type ProjectionCache,
   type QueryFn,
@@ -60,7 +62,12 @@ export interface Project {
   /** The raw vocabulary value, as `set-project-status` takes it. */
   status: string
   lead?: string
+  /** Archived itself or with its Folder — what the listings hide. */
   archived: boolean
+  /** The archive in force: its own, or its Folder's with `with` naming the Folder. */
+  archive?: Archive
+  /** Its own archive only — what `archive --unarchive` can undo here. */
+  ownArchive?: Archive
   /** The Folder the record names (`buzz-channel`, else `h`) — where changes to it are published. */
   contentFolder: string
 }
@@ -80,6 +87,46 @@ export interface Issue {
   projectAddr?: string
   /** The issue's own `h`: where its changes and its conversation are published. */
   folder: string
+  /** Archived itself or with its project — what `ship issues` hides. */
+  archived: boolean
+  /** The archive in force: its own, or its project's with `with` naming the project. */
+  archive?: Archive
+  /** Its own archive only — what `archive --unarchive` can undo here. */
+  ownArchive?: Archive
+  /** When the status change that won was made, epoch ms — absent if it never changed. */
+  statusChangedAt?: number
+}
+
+/**
+ * FOL-46's cascade, read and never written: an issue is archived with its
+ * project, and a project with its Folder when every Folder that lists it is
+ * archived — placed as Ship's sidebar places it, by the states that list it,
+ * else by the Folder its record names. Ship's `archivesOf` reads the same.
+ *
+ * `folders` is `listFolders`' whole answer, archived ones included. Without
+ * it only the project→issue half applies, which is what a read that never
+ * listed Folders can honestly say.
+ */
+export function cascadeArchives(workspace: Pick<Workspace, 'projects' | 'issues'>, folders: readonly FolderSummary[] = []): void {
+  for (const project of workspace.projects) {
+    let archive = project.ownArchive
+    if (!archive) {
+      const listing = folders.filter((folder) => folder.addresses?.includes(project.addr))
+      const placed = listing.length ? listing : folders.filter((folder) => folder.id === project.contentFolder)
+      // A record channel is archived "with" its own record; that is the project's own archive, already read.
+      const archivedFolder =
+        placed.length && placed.every((folder) => folder.archived && folder.archived.with !== project.addr) ? placed[0] : undefined
+      if (archivedFolder?.archived) archive = { ...archivedFolder.archived, with: archivedFolder.channel ?? archivedFolder.id }
+    }
+    project.archive = archive
+    project.archived = Boolean(archive)
+  }
+  const byAddr = new Map(workspace.projects.map((project) => [project.addr, project]))
+  for (const issue of workspace.issues) {
+    const project = issue.projectAddr ? byAddr.get(issue.projectAddr) : undefined
+    issue.archive = issue.ownArchive ?? (project?.archive ? { ...project.archive, with: project.addr } : undefined)
+    issue.archived = Boolean(issue.archive)
+  }
 }
 
 /** One `kind:1851`, as written — the change stream is the activity feed. */
@@ -227,6 +274,7 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
         status: rawStatus(object, vocabOf(root)),
         lead: metaValue(object, 'lead'),
         archived: Boolean(object.archived),
+        ownArchive: object.archived,
         contentFolder: folderOf(root) ?? '',
       })
     } else {
@@ -237,9 +285,12 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
         ref: metaValue(object, 'ref'),
         projectAddr: object.parentRef || undefined,
         folder: tagValue(root, 'h') ?? '',
+        archived: Boolean(object.archived),
+        ownArchive: object.archived,
       })
     }
   }
+  cascadeArchives({ projects, issues })
 
   const activity = [...changes].sort(byOrder).flatMap((event): Change[] => {
     const field = tagValue(event, 'field')
@@ -257,6 +308,22 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
       note: event.content,
     }]
   })
+
+  /*
+    When each issue reached the status it is in: the last change, in the fold's
+    order, that set the value the fold settled on — so a later change the fold
+    did not apply cannot move it. `ts` only when SPEC §6.2 trusts it (inside
+    the event's own second); a back-dated `ts` would otherwise make an issue
+    closed today read as closed weeks ago, and `/sweep` archives by this date.
+  */
+  const statusAt = new Map<string, number>()
+  const current = new Map(issues.map((issue) => [issue.addr, issue.status]))
+  for (const change of activity) {
+    if (change.field !== 'status' || change.value !== current.get(change.target)) continue
+    const trusted = change.ts !== undefined && Math.floor(change.ts / 1000) === change.createdAt
+    statusAt.set(change.target, trusted ? change.ts! : change.createdAt * 1000)
+  }
+  for (const issue of issues) issue.statusChangedAt = statusAt.get(issue.addr)
 
   return {
     projects,

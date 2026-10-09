@@ -712,11 +712,14 @@ export async function run(apps: AgentApp[], argv: string[]): Promise<never> {
       ...args,
       positional: args.positional.slice(2),
     })
-    if (command.lines && !args.flags.json) {
-      console.log(command.lines(result).join('\n'))
-    } else {
-      console.log(JSON.stringify(result, null, 2))
-    }
+    const output = command.lines && !args.flags.json ? command.lines(result).join('\n') : JSON.stringify(result, null, 2)
+    /*
+      Exit once stdout has taken all of it. Into a pipe, a write past 64 KB is
+      still queued when `process.exit` runs, and the rest is dropped — a
+      whole-workspace `issues --json` reached the reading process cut off
+      mid-string, which a reader parses as an error or, worse, as less.
+    */
+    await new Promise<void>((resolve) => process.stdout.write(`${output}\n`, () => resolve()))
     process.exit(0)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

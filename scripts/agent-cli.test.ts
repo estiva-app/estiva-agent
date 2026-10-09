@@ -17,10 +17,10 @@ import { resolveMaybe } from '../lib/agent/resolve'
 import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../lib/agent/cli'
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
-import { archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, moveFile, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
+import { archivable, archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, moveFile, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
-import type { Issue, Project, Vocabulary } from '../lib/agent/apps/ship-workspace'
-import { buildActionEvent, buildActionEvents, topLevelFolders } from '@estiva-app/interop'
+import { cascadeArchives, type Issue, type Project, type Vocabulary } from '../lib/agent/apps/ship-workspace'
+import { buildActionEvent, buildActionEvents, topLevelFolders, type FolderSummary } from '@estiva-app/interop'
 import { findTopic, replyToOf, type Topic } from '../lib/agent/apps/peek'
 import { edited, findMessage } from '../lib/agent/conversation'
 import { KIND_EDIT, foldEdits } from '@estiva-app/conversation'
@@ -76,6 +76,7 @@ const issue = (over: Partial<Issue>): Issue => ({
   description: '',
   folder: 'f',
   status: 'todo',
+  archived: false,
   ...over,
 })
 
@@ -202,7 +203,7 @@ for (const app of [shipApp, peekApp]) {
 
 console.log('\n— listing rows —')
 
-const row = issueRow({ ref: 'FOL-19', short: '42d82497', addr: 'x', title: 'A ?file= URL does not open the file it names when the Folder is a team Folder and the file is old', status: 'In Progress', assignee: undefined, author: 'A', project: undefined }, ISSUE_VOCAB)
+const row = issueRow({ ref: 'FOL-19', short: '42d82497', addr: 'x', title: 'A ?file= URL does not open the file it names when the Folder is a team Folder and the file is old', status: 'In Progress', assignee: undefined, author: 'A', project: undefined, archived: undefined, statusChangedAt: undefined }, ISSUE_VOCAB)
 check('an issue row is ref, status value, short id, clipped title', row.startsWith('FOL-19   in_progress  42d82497 A ?file= URL') && row.endsWith('…'), row)
 check('and under 100 chars', row.length < 100, String(row.length))
 const prow = projectRow({ ref: 'x', short: '2385fd92', title: 'Make Agent more token efficient', status: 'Planned', lead: 'Miky', archived: true, folder: 'f', issues: 2 } as never, PROJECT_VOCAB)
@@ -1078,6 +1079,60 @@ console.log('— resolving across two kinds —')
   check('the fallback is reported', runtimeSource('checkout') === 'checkout')
   check('an unknown value is dropped', runtimeSource('production') === undefined)
   check('an unset variable is dropped', runtimeSource(undefined) === undefined)
+}
+
+console.log('\n— archives: own, with the project, with the Folder (e2898086) —')
+{
+  const own = { by: 'abc', at: 1, resolution: 'Shipped.' }
+  const project = (addr: string, over: Partial<Project> = {}): Project => ({
+    addr, id: addr.split(':')[2], author: 'abc', createdAt: 0, title: `Project ${addr.split(':')[2]}`, description: '',
+    status: 'planned', archived: false, contentFolder: 'record', ...over,
+  })
+  const folder = (id: string, addresses: string[], archived?: boolean) => ({
+    id, name: `Folder ${id}`, hasState: true, channel: `39000:relay:${id}`, addresses,
+    ...(archived ? { archived: { by: 'def', at: 2, resolution: 'Wound down.' } } : {}),
+  })
+  const state = {
+    projects: [project('30850:abc:p1', { ownArchive: own }), project('30850:abc:p2'), project('30850:abc:p3')],
+    issues: [
+      issue({ addr: '30851:abc:i1', id: 'i1', projectAddr: '30850:abc:p1' }),
+      issue({ addr: '30851:abc:i2', id: 'i2', projectAddr: '30850:abc:p2' }),
+      issue({ addr: '30851:abc:i3', id: 'i3', projectAddr: '30850:abc:p3', ownArchive: { by: 'abc', at: 3 } }),
+      issue({ addr: '30851:abc:i4', id: 'i4', projectAddr: '30850:abc:p3' }),
+    ],
+  }
+  cascadeArchives(state, [folder('a', ['30850:abc:p2'], true), folder('b', ['30850:abc:p3'], true), folder('c', ['30850:abc:p3'])])
+  const [p1, p2, p3] = state.projects
+  const [i1, i2, i3, i4] = state.issues
+  check('a project archived itself keeps its resolution', p1.archived && p1.archive?.resolution === 'Shipped.' && !p1.archive.with)
+  check('an issue is archived with its project, naming it', i1.archived && i1.archive?.with === p1.addr && i1.archive.resolution === 'Shipped.')
+  check('a project is archived with its only Folder', p2.archived && p2.archive?.with === '39000:relay:a')
+  check('and its issues with it', i2.archived && i2.archive?.with === p2.addr)
+  check('a project another live Folder lists stays visible', !p3.archived)
+  check('an issue archived itself stays archived', i3.archived && !i3.archive?.with)
+  check('its sibling does not', !i4.archived)
+
+  cascadeArchives(state)
+  check('a read with no Folders drops only the Folder half', !state.projects[1].archived && state.issues[0].archived)
+
+  console.log('\n— archive: which file a reference names —')
+  const folders = [folder('f0000001', []), { ...folder('f0000002', []), name: 'Project p2' }] as FolderSummary[]
+  check('an issue by short id', archivable(state, folders, 'i1', false).kind === 'issue')
+  check('a Folder by name', archivable(state, folders, 'Folder f0000001', false).kind === 'Folder')
+  check('a Folder by its channel address', archivable(state, folders, '39000:relay:f0000001', false).kind === 'Folder')
+  refuses('a name that is a project and a Folder is refused', () => archivable(state, folders, 'Project p2', false), 'more than one file')
+  check('archive-project looks only at projects', archivable(state, folders, 'Project p2', true).kind === 'project')
+  // A project titled like two issues: the project alone matching must not win while the issues are ambiguous.
+  const crowded = {
+    projects: [project('30850:abc:onb', { title: 'Onboarding' })],
+    issues: [
+      issue({ addr: '30851:abc:o1', id: 'o1', title: 'Onboarding checklist' }),
+      issue({ addr: '30851:abc:o2', id: 'o2', title: 'Onboarding checklist v2' }),
+    ],
+  }
+  refuses('a project match does not win over ambiguous issues', () => archivable(crowded, [], 'Onboarding', false), 'matches 2 issues')
+  check('an exact project address still does', archivable(crowded, [], '30850:abc:onb', false).kind === 'project')
+  refuses('nothing matching is refused', () => archivable(state, folders, 'zzzz-nothing', false), 'No issue, project or Folder')
 }
 
 console.log(failures === 0 ? '\nAll agent CLI checks passed.' : `\n${failures} failed.`)
