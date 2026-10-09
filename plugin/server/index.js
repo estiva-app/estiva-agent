@@ -16033,6 +16033,25 @@ var NADDR_RE = /nostr:(naddr1[023456789acdefghjklmnpqrstuvwxyz]+)/gi;
 function findNaddrs(text2) {
   return [...text2.matchAll(NADDR_RE)].map((m) => m[1]);
 }
+function encodeNpub(pubkey) {
+  const bytes = hexToBytes(pubkey);
+  if (bytes.length !== 32)
+    throw new Error(`pubkey must be 32 bytes, got ${bytes.length}`);
+  return bech32Encode("npub", convertBits(bytes, 8, 5, true));
+}
+function decodeNpub(encoded) {
+  const { hrp, data } = bech32Decode(encoded.replace(/^nostr:/i, "").toLowerCase());
+  if (hrp !== "npub")
+    throw new Error(`expected an npub, got ${hrp}`);
+  const bytes = convertBits(data, 5, 8, false);
+  if (bytes.length !== 32)
+    throw new Error(`npub must decode to 32 bytes, got ${bytes.length}`);
+  return bytesToHex(Uint8Array.from(bytes));
+}
+var NOSTR_URI_RE = /nostr:((?:npub|naddr|note|nevent)1[023456789acdefghjklmnpqrstuvwxyz]+)/gi;
+function findNostrUris(text2) {
+  return [...(text2 ?? "").matchAll(NOSTR_URI_RE)].map((m) => `nostr:${m[1].toLowerCase()}`);
+}
 
 // node_modules/@estiva-app/protocol/dist/blocks.js
 var BlockDocumentError = class extends Error {
@@ -17376,173 +17395,6 @@ function findMessage(messages, reference) {
   });
 }
 
-// lib/agent/profiles.ts
-function parseProfile2(event) {
-  if (event.kind !== 0) return null;
-  let meta2;
-  try {
-    const parsed = JSON.parse(event.content);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    meta2 = parsed;
-  } catch {
-    return null;
-  }
-  const text2 = (key) => {
-    const value = meta2[key];
-    return typeof value === "string" && value.trim() ? value.trim() : void 0;
-  };
-  return { pubkey: event.pubkey, name: text2("display_name") ?? text2("name"), nip05: text2("nip05") };
-}
-function directoryFrom(events) {
-  const newest = /* @__PURE__ */ new Map();
-  for (const event of events) {
-    const profile = parseProfile2(event);
-    if (!profile) continue;
-    const held = newest.get(event.pubkey)?.event;
-    if (!held || event.created_at > held.created_at || event.created_at === held.created_at && event.id < held.id) {
-      newest.set(event.pubkey, { event, profile });
-    }
-  }
-  return new Map([...newest].map(([pubkey, { profile }]) => [pubkey, profile]));
-}
-async function profilesOf(query, pubkeys) {
-  const wanted = [...new Set(pubkeys.filter((key) => Boolean(key) && /^[0-9a-f]{64}$/i.test(key)))];
-  if (wanted.length === 0) return /* @__PURE__ */ new Map();
-  const events = [];
-  for (let i = 0; i < wanted.length; i += 500) {
-    events.push(...await query([{ kinds: [0], authors: wanted.slice(i, i + 500) }]));
-  }
-  return directoryFrom(events);
-}
-
-// node_modules/@estiva-app/interop/dist/folders.js
-function planPlaceFile(pubkey, createdAtMs, args2) {
-  if (!args2.hasState)
-    return [];
-  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", addresses: [args2.address] })];
-}
-function planUnlistFile(pubkey, createdAtMs, args2) {
-  if (!args2.hasState)
-    return [];
-  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "remove", addresses: [args2.address] })];
-}
-function planArchiveFolder(pubkey, createdAtMs, args2) {
-  return [
-    {
-      pubkey,
-      created_at: Math.floor(createdAtMs / 1e3),
-      kind: 1851,
-      // `buildActionEvent`'s order for a change, so the two writers of the one
-      // shape produce the same tags.
-      tags: [
-        ["a", args2.channel],
-        ["field", "archived"],
-        ["value", args2.archived ? "true" : ""],
-        ["h", args2.folder],
-        ["ts", String(createdAtMs)]
-      ],
-      content: args2.archived ? args2.resolution ?? "" : ""
-    }
-  ];
-}
-function listedBeneath(listing, file) {
-  const byRef = new Map(listing.map((candidate) => [candidate.ref, candidate]));
-  const cycles = /* @__PURE__ */ new Map();
-  const onCycle = (ref) => {
-    let found = cycles.get(ref);
-    if (found !== void 0)
-      return found;
-    found = false;
-    const seen = /* @__PURE__ */ new Set();
-    for (let at = byRef.get(ref)?.parentRef; at && !seen.has(at); at = byRef.get(at)?.parentRef) {
-      if (at === ref) {
-        found = true;
-        break;
-      }
-      seen.add(at);
-    }
-    cycles.set(ref, found);
-    return found;
-  };
-  const isBeneath = (candidate) => {
-    if (onCycle(candidate.ref))
-      return false;
-    const seen = /* @__PURE__ */ new Set();
-    for (let at = candidate.parentRef; at && !seen.has(at); at = byRef.get(at)?.parentRef) {
-      if (at === file.ref)
-        return true;
-      if (onCycle(at))
-        return false;
-      seen.add(at);
-    }
-    return false;
-  };
-  return listing.filter((candidate) => candidate.ref !== file.ref && isBeneath(candidate));
-}
-function planMoveFile(pubkey, createdAtMs, args2) {
-  if (args2.from.id === args2.to.id)
-    return { ok: true, events: [], moved: [] };
-  if (!args2.from.hasState)
-    return { ok: false, reason: "source-has-no-state" };
-  if (!args2.to.hasState)
-    return { ok: false, reason: "target-has-no-state" };
-  const { file, listing } = args2;
-  const listed = listing?.find((candidate) => candidate.ref === file.ref || !!file.address && candidate.address === file.address);
-  const set = listing ? [...listed ? [listed] : [], ...listedBeneath(listing, listed ?? file)] : [file];
-  const moving = set.filter((candidate) => candidate.address);
-  if (args2.to.private && moving.some((candidate) => candidate.folder !== args2.to.id))
-    return { ok: false, reason: "target-is-private" };
-  const moved = [...new Set(moving.map((candidate) => candidate.address))];
-  if (!moved.length)
-    return { ok: true, events: [], moved };
-  return {
-    ok: true,
-    events: [
-      buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "add", addresses: moved }),
-      buildFolderCommand(pubkey, createdAtMs, { folder: args2.from.id, op: "remove", addresses: moved })
-    ],
-    moved
-  };
-}
-function planMoveFromFolders(pubkey, createdAtMs, args2) {
-  const { file, to } = args2;
-  const sources = args2.from.filter((folder) => folder.id !== to.id);
-  if (sources.length === 0 && args2.from.length > 0)
-    return { ok: true, removes: [], moved: [] };
-  const removes = [];
-  const moved = /* @__PURE__ */ new Set();
-  for (const from of sources) {
-    const listing = args2.listings.get(from.id) ?? null;
-    const unresolved = !!listing && !!file.address && !!from.addresses?.includes(file.address) && !listing.some((candidate) => candidate.address === file.address);
-    const plan = planMoveFile(pubkey, createdAtMs, {
-      file,
-      from,
-      to,
-      // By its address, so the walk finds what the listing draws beneath it.
-      listing: unresolved ? [{ ...file, ref: file.address }, ...listing] : listing
-    });
-    if (!plan.ok)
-      return plan;
-    for (const address of plan.moved)
-      moved.add(address);
-    const remove = plan.events[1];
-    if (remove)
-      removes.push({ folder: from.id, event: remove });
-  }
-  if (!to.hasState)
-    return { ok: false, reason: "target-has-no-state" };
-  if (moved.size === 0) {
-    if (to.private && file.folder !== to.id)
-      return { ok: false, reason: "target-is-private" };
-    if (!file.address)
-      return { ok: true, removes: [], moved: [] };
-    const [add] = planPlaceFile(pubkey, createdAtMs, { folder: to.id, address: file.address, hasState: true });
-    return { ok: true, add, removes: [], moved: [file.address] };
-  }
-  const addresses = [...moved];
-  return { ok: true, add: buildFolderCommand(pubkey, createdAtMs, { folder: to.id, op: "add", addresses }), removes, moved: addresses };
-}
-
 // node_modules/@estiva-app/conversation/dist/kinds.js
 var KIND_MESSAGE = KIND.STREAM_MESSAGE;
 var KIND_COMMENT = KIND.COMMENT;
@@ -17609,6 +17461,22 @@ function isCommentOn(event, address, declaredKinds = [KIND_COMMENT]) {
   if (!declaredKinds.includes(event.kind))
     return false;
   return event.tags.some((t) => t[0] === "a" && t[1] === address) && !namedInBody(event.content).has(address);
+}
+var MAX_MENTIONED_PEOPLE = 50;
+function peopleNamedInBody(body) {
+  const pubkeys = /* @__PURE__ */ new Set();
+  for (const uri of findNostrUris(body)) {
+    if (!/^nostr:npub1/i.test(uri))
+      continue;
+    try {
+      pubkeys.add(decodeNpub(uri));
+    } catch {
+    }
+  }
+  return pubkeys;
+}
+function mentionTagsFor(body) {
+  return [...peopleNamedInBody(body)].slice(0, MAX_MENTIONED_PEOPLE).map((p) => ["p", p]);
 }
 
 // node_modules/@estiva-app/conversation/dist/edits.js
@@ -17800,6 +17668,228 @@ async function decorationsOf(targets, query) {
   return { byId, reactionTargetsOmitted: omitted, reactionEventsCut, editEventsCut };
 }
 
+// lib/agent/mentions.ts
+var HEX_KEY = /^[0-9a-f]{64}$/i;
+var HANDLE = /^[a-z0-9._-]+$/i;
+var nip05Lookup = async (domain, name) => {
+  const response = await fetch(`https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`);
+  if (!response.ok) throw new Error(`${domain} answered ${response.status} for the handle "${name}".`);
+  const body = await response.json();
+  const key = body.names?.[name];
+  return typeof key === "string" && HEX_KEY.test(key) ? key.toLowerCase() : void 0;
+};
+async function mentionedKeys(value, workspace) {
+  const names = value.split(",").map((name) => name.trim()).filter(Boolean);
+  if (names.length === 0) throw new BadRequest("--mention needs a key, an npub, or a handle.");
+  const domain = new URL(workspace.relayUrl).host;
+  const lookup = workspace.lookup ?? nip05Lookup;
+  const keys = [];
+  for (const name of names) {
+    const key = await keyOf(name, domain, lookup);
+    if (!keys.includes(key)) keys.push(key);
+  }
+  const members = await workspace.members();
+  const outsider = keys.find((key) => members.length > 0 && !members.includes(key));
+  if (outsider) throw new BadRequest(`${names[keys.indexOf(outsider)]} is not a member of this workspace. Nothing was published.`);
+  return keys;
+}
+async function keyOf(name, domain, lookup) {
+  if (HEX_KEY.test(name)) return name.toLowerCase();
+  if (/^(nostr:)?npub1/i.test(name)) {
+    try {
+      return decodeNpub(name.replace(/^nostr:/i, ""));
+    } catch {
+      throw new BadRequest(`${name} is not a valid npub.`);
+    }
+  }
+  const [local, at] = name.toLowerCase().split("@");
+  if (at !== void 0 && at !== domain) {
+    throw new BadRequest(`A handle is looked up only on this workspace's domain, ${domain}; ${name} is not on it. Pass the key instead.`);
+  }
+  if (!HANDLE.test(local)) {
+    throw new BadRequest(`${name} is not a key, an npub, or a handle. A display name is never matched, because anyone can set one.`);
+  }
+  const key = await lookup(domain, local);
+  if (!key) throw new BadRequest(`No one has the handle ${local}@${domain}. Nothing was published.`);
+  return key;
+}
+function withMentions(body, keys) {
+  const named = new Set(mentionTagsFor(body).map((tag) => tag[1]));
+  const unasked = [...named].find((key) => !keys.includes(key));
+  if (unasked) {
+    throw new BadRequest(`The body mentions nostr:${encodeNpub(unasked)}, whom --mention does not name. Add them to --mention, or take the mention out. Nothing was published.`);
+  }
+  const missing = keys.filter((key) => !named.has(key)).map((key) => `nostr:${encodeNpub(key)}`);
+  return missing.length === 0 ? body : `${missing.join(" ")} ${body}`;
+}
+
+// lib/agent/profiles.ts
+function parseProfile2(event) {
+  if (event.kind !== 0) return null;
+  let meta2;
+  try {
+    const parsed = JSON.parse(event.content);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    meta2 = parsed;
+  } catch {
+    return null;
+  }
+  const text2 = (key) => {
+    const value = meta2[key];
+    return typeof value === "string" && value.trim() ? value.trim() : void 0;
+  };
+  return { pubkey: event.pubkey, name: text2("display_name") ?? text2("name"), nip05: text2("nip05") };
+}
+function directoryFrom(events) {
+  const newest = /* @__PURE__ */ new Map();
+  for (const event of events) {
+    const profile = parseProfile2(event);
+    if (!profile) continue;
+    const held = newest.get(event.pubkey)?.event;
+    if (!held || event.created_at > held.created_at || event.created_at === held.created_at && event.id < held.id) {
+      newest.set(event.pubkey, { event, profile });
+    }
+  }
+  return new Map([...newest].map(([pubkey, { profile }]) => [pubkey, profile]));
+}
+async function profilesOf(query, pubkeys) {
+  const wanted = [...new Set(pubkeys.filter((key) => Boolean(key) && /^[0-9a-f]{64}$/i.test(key)))];
+  if (wanted.length === 0) return /* @__PURE__ */ new Map();
+  const events = [];
+  for (let i = 0; i < wanted.length; i += 500) {
+    events.push(...await query([{ kinds: [0], authors: wanted.slice(i, i + 500) }]));
+  }
+  return directoryFrom(events);
+}
+
+// node_modules/@estiva-app/interop/dist/folders.js
+function planPlaceFile(pubkey, createdAtMs, args2) {
+  if (!args2.hasState)
+    return [];
+  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "add", addresses: [args2.address] })];
+}
+function planUnlistFile(pubkey, createdAtMs, args2) {
+  if (!args2.hasState)
+    return [];
+  return [buildFolderCommand(pubkey, createdAtMs, { folder: args2.folder, op: "remove", addresses: [args2.address] })];
+}
+function planArchiveFolder(pubkey, createdAtMs, args2) {
+  return [
+    {
+      pubkey,
+      created_at: Math.floor(createdAtMs / 1e3),
+      kind: 1851,
+      // `buildActionEvent`'s order for a change, so the two writers of the one
+      // shape produce the same tags.
+      tags: [
+        ["a", args2.channel],
+        ["field", "archived"],
+        ["value", args2.archived ? "true" : ""],
+        ["h", args2.folder],
+        ["ts", String(createdAtMs)]
+      ],
+      content: args2.archived ? args2.resolution ?? "" : ""
+    }
+  ];
+}
+function listedBeneath(listing, file) {
+  const byRef = new Map(listing.map((candidate) => [candidate.ref, candidate]));
+  const cycles = /* @__PURE__ */ new Map();
+  const onCycle = (ref) => {
+    let found = cycles.get(ref);
+    if (found !== void 0)
+      return found;
+    found = false;
+    const seen = /* @__PURE__ */ new Set();
+    for (let at = byRef.get(ref)?.parentRef; at && !seen.has(at); at = byRef.get(at)?.parentRef) {
+      if (at === ref) {
+        found = true;
+        break;
+      }
+      seen.add(at);
+    }
+    cycles.set(ref, found);
+    return found;
+  };
+  const isBeneath = (candidate) => {
+    if (onCycle(candidate.ref))
+      return false;
+    const seen = /* @__PURE__ */ new Set();
+    for (let at = candidate.parentRef; at && !seen.has(at); at = byRef.get(at)?.parentRef) {
+      if (at === file.ref)
+        return true;
+      if (onCycle(at))
+        return false;
+      seen.add(at);
+    }
+    return false;
+  };
+  return listing.filter((candidate) => candidate.ref !== file.ref && isBeneath(candidate));
+}
+function planMoveFile(pubkey, createdAtMs, args2) {
+  if (args2.from.id === args2.to.id)
+    return { ok: true, events: [], moved: [] };
+  if (!args2.from.hasState)
+    return { ok: false, reason: "source-has-no-state" };
+  if (!args2.to.hasState)
+    return { ok: false, reason: "target-has-no-state" };
+  const { file, listing } = args2;
+  const listed = listing?.find((candidate) => candidate.ref === file.ref || !!file.address && candidate.address === file.address);
+  const set = listing ? [...listed ? [listed] : [], ...listedBeneath(listing, listed ?? file)] : [file];
+  const moving = set.filter((candidate) => candidate.address);
+  if (args2.to.private && moving.some((candidate) => candidate.folder !== args2.to.id))
+    return { ok: false, reason: "target-is-private" };
+  const moved = [...new Set(moving.map((candidate) => candidate.address))];
+  if (!moved.length)
+    return { ok: true, events: [], moved };
+  return {
+    ok: true,
+    events: [
+      buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "add", addresses: moved }),
+      buildFolderCommand(pubkey, createdAtMs, { folder: args2.from.id, op: "remove", addresses: moved })
+    ],
+    moved
+  };
+}
+function planMoveFromFolders(pubkey, createdAtMs, args2) {
+  const { file, to } = args2;
+  const sources = args2.from.filter((folder) => folder.id !== to.id);
+  if (sources.length === 0 && args2.from.length > 0)
+    return { ok: true, removes: [], moved: [] };
+  const removes = [];
+  const moved = /* @__PURE__ */ new Set();
+  for (const from of sources) {
+    const listing = args2.listings.get(from.id) ?? null;
+    const unresolved = !!listing && !!file.address && !!from.addresses?.includes(file.address) && !listing.some((candidate) => candidate.address === file.address);
+    const plan = planMoveFile(pubkey, createdAtMs, {
+      file,
+      from,
+      to,
+      // By its address, so the walk finds what the listing draws beneath it.
+      listing: unresolved ? [{ ...file, ref: file.address }, ...listing] : listing
+    });
+    if (!plan.ok)
+      return plan;
+    for (const address of plan.moved)
+      moved.add(address);
+    const remove = plan.events[1];
+    if (remove)
+      removes.push({ folder: from.id, event: remove });
+  }
+  if (!to.hasState)
+    return { ok: false, reason: "target-has-no-state" };
+  if (moved.size === 0) {
+    if (to.private && file.folder !== to.id)
+      return { ok: false, reason: "target-is-private" };
+    if (!file.address)
+      return { ok: true, removes: [], moved: [] };
+    const [add] = planPlaceFile(pubkey, createdAtMs, { folder: to.id, address: file.address, hasState: true });
+    return { ok: true, add, removes: [], moved: [file.address] };
+  }
+  const addresses = [...moved];
+  return { ok: true, add: buildFolderCommand(pubkey, createdAtMs, { folder: to.id, op: "add", addresses }), removes, moved: addresses };
+}
+
 // node_modules/@estiva-app/interop/dist/projection.js
 var PROFILE_HIT_TTL_MS = 10 * 6e4;
 function peopleViaRelay(query) {
@@ -17847,7 +17937,7 @@ function rootOf(event) {
   const lower = event.tags.find((t) => t[0] === "e" && t[1])?.[1];
   return lower ?? event.id;
 }
-async function conversationsOf(files, query, cache) {
+async function conversationsOf(files, query, cache, options = {}) {
   const addressed = files.flatMap((file) => {
     if (!file.address)
       return [];
@@ -17891,17 +17981,49 @@ async function conversationsOf(files, query, cache) {
   const conversations = {};
   for (const a of asked)
     conversations[a.ref] = [];
+  const filters = asked.flatMap((a) => options.replies ? [a.filter, { kinds: [KIND_COMMENT2], "#A": [a.address], limit: CONVERSATION_LIMIT }] : [a.filter]);
+  const commentedFile = (event) => event.tags.filter((t) => t[0] === "a" && t[1] && refOf2.has(t[1]) && isCommentOn(event, t[1], kindsOf.get(t[1]))).map((t) => refOf2.get(t[1])).find((found) => found !== void 0);
+  const replies = [];
   const seen = /* @__PURE__ */ new Set();
-  for (let start = 0; start < asked.length; start += MAX_FILTERS_PER_QUERY) {
-    const events = await query(asked.slice(start, start + MAX_FILTERS_PER_QUERY).map((a) => a.filter));
+  for (let start = 0; start < filters.length; start += MAX_FILTERS_PER_QUERY) {
+    const events = await query(filters.slice(start, start + MAX_FILTERS_PER_QUERY));
     for (const event of events) {
       if (seen.has(event.id))
         continue;
       seen.add(event.id);
-      const ref = event.tags.filter((t) => t[0] === "a" && t[1] && refOf2.has(t[1]) && isCommentOn(event, t[1], kindsOf.get(t[1]))).map((t) => refOf2.get(t[1])).find((found) => found !== void 0);
+      if (options.replies && isReply(event)) {
+        replies.push(event);
+        continue;
+      }
+      const ref = commentedFile(event);
       if (ref !== void 0) {
         conversations[ref].push({ id: event.id, at: event.created_at, by: event.pubkey, root: rootOf(event) });
       }
+    }
+  }
+  if (replies.length > 0) {
+    const fileOfRoot = /* @__PURE__ */ new Map();
+    for (const [ref, messages] of Object.entries(conversations)) {
+      for (const m of messages)
+        if (m.root === m.id)
+          fileOfRoot.set(m.id, ref);
+    }
+    const addressOf = new Map(asked.map((a) => [a.ref, a.address]));
+    const inList = replies.filter((event) => anchorsOf(event).some((address) => refOf2.has(address)));
+    const missing = [...new Set(inList.map(rootOf).filter((root) => !fileOfRoot.has(root)))].slice(0, CONVERSATION_LIMIT);
+    if (missing.length > 0) {
+      for (const root of await query([{ ids: missing, limit: missing.length }])) {
+        const ref = commentedFile(root);
+        if (ref !== void 0 && !fileOfRoot.has(root.id))
+          fileOfRoot.set(root.id, ref);
+      }
+    }
+    for (const event of inList) {
+      const root = rootOf(event);
+      const ref = fileOfRoot.get(root);
+      if (ref === void 0 || !anchorsOf(event).includes(addressOf.get(ref)))
+        continue;
+      conversations[ref].push({ id: event.id, at: event.created_at, by: event.pubkey, root });
     }
   }
   for (const messages of Object.values(conversations))
@@ -18960,6 +19082,15 @@ function buildOneActionEvent(args2) {
   tags.push(...files);
   if (namesPerson && value !== "")
     tags.push(["p", value]);
+  if (!declared.emits.field && declared.id === "comment") {
+    for (const [, person] of mentionTagsFor(value)) {
+      const ps = tags.filter((t) => t[0] === "p");
+      if (ps.length >= MAX_MENTIONED_PEOPLE)
+        break;
+      if (!ps.some((t) => t[1] === person))
+        tags.push(["p", person]);
+    }
+  }
   const moved = declared.emits.field ? movedByOf(manifest, kind) : void 0;
   const parentAddress = moved?.parentKind === void 0 ? /^\d+:[0-9a-f]{64}:/ : new RegExp(`^${moved.parentKind}:[0-9a-f]{64}:`);
   if (moved?.field === declared.emits.field && typeof value === "string" && parentAddress.test(value)) {
@@ -20502,18 +20633,22 @@ Pass an address to say which.`
       name: "comment",
       signs: [KIND_COMMENT],
       summary: "add a comment to one issue",
-      usage: 'comment <ref> --body "..."',
+      usage: 'comment <ref> --body "..." [--mention <key|npub|handle>[,\u2026]]',
       async run(context2, args2) {
         const reference = args2.positional[0];
         if (!reference) throw new BadRequest("comment needs an issue reference.");
-        const body = flagValue(args2, "body");
-        if (!body) throw new BadRequest("comment needs --body.");
+        const text2 = flagValue(args2, "body");
+        if (!text2) throw new BadRequest("comment needs --body.");
+        const mention = flagValue(args2, "mention");
+        const mentioned = mention === void 0 ? [] : await mentionedKeys(mention, { relayUrl: context2.relayUrl, members: () => relayMembers(context2) });
+        const body = withMentions(text2, mentioned);
         const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
         const [result] = await act(context2, state, issueTarget(issue2), "comment", body, [KIND_COMMENT]);
         published(result, `a comment on ${issue2.ref ?? issue2.addr}`);
         return {
           state: await stateAfter(context2, state, issue2, { comment: body, commentId: result.eventId }),
-          eventId: result.eventId
+          eventId: result.eventId,
+          ...mentioned.length > 0 && { mentioned }
         };
       }
     },
@@ -21443,7 +21578,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: {
           ref: { type: "string", description: "Display ref, address, or a distinctive fragment of the title." },
-          body: { type: "string", description: "The comment text." }
+          body: { type: "string", description: "The comment text." },
+          mention: {
+            type: "string",
+            description: 'Who the comment asks, so it reaches them as a mention in Peek and Ship: one or more, comma-separated, each a hex key, an npub, or a workspace handle such as "miky". Never a display name. The comment opens with each mention its body does not already contain.'
+          }
         },
         required: ["ref", "body"],
         additionalProperties: false
@@ -21809,7 +21948,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "ship_people":
         return dispatch(command("people"), args(input.named === true ? { named: true } : {}));
       case "ship_comment":
-        return dispatch(command("comment"), args(flagsFrom(input, ["body"]), [str(input.ref)]));
+        return dispatch(command("comment"), args(flagsFrom(input, ["body", "mention"]), [str(input.ref)]));
       case "ship_edit_comment":
         return dispatch(
           command("edit-comment"),

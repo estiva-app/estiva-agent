@@ -103,6 +103,10 @@ refuses('a value flag with nothing after it is refused', () =>
 
 check('an absent flag is undefined, not an error', flagValue(parseArgs(['ship']), 'status') === undefined)
 
+// The second used to replace the first: `--mention a --mention b` mentioned only b.
+refuses('a flag given twice is refused, not overwritten', () => parseArgs(['ship', 'comment', 'x', '--mention', 'a', '--mention', 'b']), 'given twice')
+check('comment takes --mention', acceptedFlags(shipApp.commands.find((c) => c.name === 'comment')!).includes('mention'))
+
 console.log('\n— resolving a reference —')
 
 const issues = [

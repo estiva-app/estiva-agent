@@ -267,6 +267,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           ref: { type: 'string', description: 'Display ref, address, or a distinctive fragment of the title.' },
           body: { type: 'string', description: 'The comment text.' },
+          mention: {
+            type: 'string',
+            description:
+              'Who the comment asks, so it reaches them as a mention in Peek and Ship: one or more, comma-separated, each a hex key, an npub, or a workspace handle such as "miky". Never a display name. The comment opens with each mention its body does not already contain.',
+          },
         },
         required: ['ref', 'body'],
         additionalProperties: false,
@@ -724,7 +729,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return dispatch(command('people'), args(input.named === true ? { named: true } : {}))
 
       case 'ship_comment':
-        return dispatch(command('comment'), args(flagsFrom(input, ['body']), [str(input.ref)]))
+        return dispatch(command('comment'), args(flagsFrom(input, ['body', 'mention']), [str(input.ref)]))
 
       case 'ship_edit_comment':
         return dispatch(

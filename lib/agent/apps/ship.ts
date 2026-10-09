@@ -15,6 +15,7 @@
  */
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
+import { mentionedKeys, withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
 import {
@@ -1654,18 +1655,23 @@ export const shipApp: AgentApp = {
       name: 'comment',
       signs: [KIND_COMMENT],
       summary: 'add a comment to one issue',
-      usage: 'comment <ref> --body "..."',
+      usage: 'comment <ref> --body "..." [--mention <key|npub|handle>[,…]]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('comment needs an issue reference.')
-        const body = flagValue(args, 'body')
-        if (!body) throw new BadRequest('comment needs --body.')
+        const text = flagValue(args, 'body')
+        if (!text) throw new BadRequest('comment needs --body.')
+        // Resolved before anything else is read, so a wrong name costs no workspace scan.
+        const mention = flagValue(args, 'mention')
+        const mentioned = mention === undefined ? [] : await mentionedKeys(mention, { relayUrl: context.relayUrl, members: () => relayMembers(context) })
+        const body = withMentions(text, mentioned)
 
         const { state, issue } = await resolveIssueFor(context, reference)
         /*
           Ship's declared `comment` action: a NIP-22 comment on the issue's
           address, in the issue's own Folder, so it lands where Ship and Peek
-          both show the conversation.
+          both show the conversation. Each `nostr:npub…` in the body earns its
+          `p` in interop, which is what makes it a mention in Peek (§11.8).
         */
         const [result] = await act(context, state, issueTarget(issue), 'comment', body, [KIND_COMMENT])
         published(result, `a comment on ${issue.ref ?? issue.addr}`)
@@ -1674,6 +1680,7 @@ export const shipApp: AgentApp = {
         return {
           state: await stateAfter(context, state, issue, { comment: body, commentId: result.eventId }),
           eventId: result.eventId,
+          ...(mentioned.length > 0 && { mentioned }),
         }
       },
     },

@@ -142,6 +142,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
       continue
     }
     const key = arg.slice(2)
+    // The second would silently replace the first: `--mention a --mention b`
+    // mentioned only b. A list is one value, comma-separated where a flag takes one.
+    if (key in flags) throw new BadRequest(`--${key} was given twice. Pass it once.`)
     const next = argv[i + 1]
     // A following token that is itself a flag means this one is a boolean —
     // `--archived --project x` must not read as `archived: '--project'`.
@@ -655,7 +658,13 @@ export async function connectionStatus(
  * text is the app's rendering of the same result; nothing is computed twice.
  */
 export async function run(apps: AgentApp[], argv: string[]): Promise<never> {
-  const args = parseArgs(argv)
+  let args: ParsedArgs
+  try {
+    args = parseArgs(argv)
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  }
   const [appName, commandName] = args.positional
 
   // `ship issues --help` is a question about one command, and the answer is
