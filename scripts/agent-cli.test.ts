@@ -1122,6 +1122,16 @@ console.log('\nâ€” archives: own, with the project, with the Folder (e2898086) â
   check('a Folder by its channel address', archivable(state, folders, '39000:relay:f0000001', false).kind === 'Folder')
   refuses('a name that is a project and a Folder is refused', () => archivable(state, folders, 'Project p2', false), 'more than one file')
   check('archive-project looks only at projects', archivable(state, folders, 'Project p2', true).kind === 'project')
+  // A project titled like two issues: the project alone matching must not win while the issues are ambiguous.
+  const crowded = {
+    projects: [project('30850:abc:onb', { title: 'Onboarding' })],
+    issues: [
+      issue({ addr: '30851:abc:o1', id: 'o1', title: 'Onboarding checklist' }),
+      issue({ addr: '30851:abc:o2', id: 'o2', title: 'Onboarding checklist v2' }),
+    ],
+  }
+  refuses('a project match does not win over ambiguous issues', () => archivable(crowded, [], 'Onboarding', false), 'matches 2 issues')
+  check('an exact project address still does', archivable(crowded, [], '30850:abc:onb', false).kind === 'project')
   refuses('nothing matching is refused', () => archivable(state, folders, 'zzzz-nothing', false), 'No issue, project or Folder')
 }
 

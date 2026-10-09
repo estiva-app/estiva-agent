@@ -20049,8 +20049,13 @@ function archivable(state, folders, reference, projectsOnly) {
 ` + found.map(({ kind, file }) => `  ${kind.padEnd(7)} ${"title" in file ? file.title : file.name ?? file.id}`).join("\n") + "\nPass an address or a short id to say which."
     );
   }
-  if (found.length === 1) return found[0];
-  for (const { result } of attempts) if ("ambiguous" in result) throw new BadRequest(result.ambiguous);
+  const ambiguity = attempts.find(({ result }) => "ambiguous" in result)?.result;
+  if (found.length === 1) {
+    const file = found[0].file;
+    const exact = "addr" in file ? [file.addr, file.id] : [file.id, file.channel];
+    if (!ambiguity || exact.includes(reference.trim())) return found[0];
+  }
+  if (ambiguity) throw new BadRequest(ambiguity.ambiguous);
   throw new BadRequest(`No ${projectsOnly ? "project" : "issue, project or Folder"} matches "${reference}".`);
 }
 async function archiveFile(context2, args2, command2) {
@@ -20076,7 +20081,7 @@ async function archiveFile(context2, args2, command2) {
   if (!archived && !own) {
     return {
       unchanged,
-      note: inherited ? `That ${target.kind} is not archived itself; it is hidden with ${inherited}. Unarchive that instead.` : `That ${target.kind} is not archived, so there is nothing to bring back.`
+      note: inherited ? `That ${target.kind} is not archived itself; it is hidden with ${inherited}, and is listed again only when that is unarchived. Nothing was published.` : `That ${target.kind} is not archived, so there is nothing to bring back.`
     };
   }
   let result;

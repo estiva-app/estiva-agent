@@ -1018,8 +1018,19 @@ export function archivable(state: Pick<Workspace, 'issues' | 'projects'>, folder
         '\nPass an address or a short id to say which.',
     )
   }
-  if (found.length === 1) return found[0]
-  for (const { result } of attempts) if ('ambiguous' in result) throw new BadRequest(result.ambiguous)
+  /*
+    One kind found while another is ambiguous is still a question: this is a
+    write, and a second issue filed with a similar title must not turn a
+    reference that meant an issue into one that archives a whole project. Only
+    an exact address or id overrides it, because that cannot mean anything else.
+  */
+  const ambiguity = attempts.find(({ result }) => 'ambiguous' in result)?.result as { ambiguous: string } | undefined
+  if (found.length === 1) {
+    const file = found[0].file
+    const exact = 'addr' in file ? [file.addr, file.id] : [file.id, file.channel]
+    if (!ambiguity || exact.includes(reference.trim())) return found[0]
+  }
+  if (ambiguity) throw new BadRequest(ambiguity.ambiguous)
   throw new BadRequest(`No ${projectsOnly ? 'project' : 'issue, project or Folder'} matches "${reference}".`)
 }
 
@@ -1073,7 +1084,7 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
     return {
       unchanged,
       note: inherited
-        ? `That ${target.kind} is not archived itself; it is hidden with ${inherited}. Unarchive that instead.`
+        ? `That ${target.kind} is not archived itself; it is hidden with ${inherited}, and is listed again only when that is unarchived. Nothing was published.`
         : `That ${target.kind} is not archived, so there is nothing to bring back.`,
     }
   }
