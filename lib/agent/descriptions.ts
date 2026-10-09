@@ -111,9 +111,12 @@ function reparse(text: string, previous: Block[]): Block[] {
 function carryChildIds(before: Block[], after: Block[] | undefined): Block[] | undefined {
   if (!after) return undefined
   const used = new Set<number>()
+  // By key, not by comparing every pair: a list of thousands of items is anybody's to publish (§12.3).
+  const waiting = new Map<string, number[]>()
+  before.forEach((candidate, j) => waiting.set(screenKey(candidate), [...(waiting.get(screenKey(candidate)) ?? []), j]))
   const unchanged: (number | undefined)[] = after.map((child) => {
-    const i = before.findIndex((candidate, j) => !used.has(j) && readsTheSame(candidate, child))
-    if (i < 0) return undefined
+    const i = waiting.get(screenKey(child))?.shift()
+    if (i === undefined) return undefined
     used.add(i)
     return i
   })
@@ -128,7 +131,8 @@ function carryChildIds(before: Block[], after: Block[] | undefined): Block[] | u
 }
 
 /** Same type and the same thing on screen, whatever the ids. */
-const readsTheSame = (a: Block, b: Block) => a.type === b.type && canonical(visible({ ...a, id: '' })) === canonical(visible({ ...b, id: '' }))
+const readsTheSame = (a: Block, b: Block) => screenKey(a) === screenKey(b)
+const screenKey = (block: Block) => canonical(visible({ ...block, id: '' }))
 
 /**
  * Whether text can carry this block: printing it and reading it back gives the
@@ -217,13 +221,17 @@ export const formatName = (format: ContentFormat | undefined) =>
  * edge) on each side, and not inside a code fence, whose blank lines are not
  * block boundaries.
  */
-function chunkPositions(text: string, chunk: string): number[] {
+function chunkPositions(text: string, chunk: string, fences: number[]): number[] {
+  const lead = text.length - text.trimStart().length
+  const tail = text.trimEnd().length
   const positions: number[] = []
   for (let at = text.indexOf(chunk); at >= 0; at = text.indexOf(chunk, at + 1)) {
-    const before = text.slice(0, at)
-    const after = text.slice(at + chunk.length)
-    const fenced = (before.match(/^```/gm)?.length ?? 0) % 2 === 1
-    if (!fenced && (before.trim() === '' || before.endsWith('\n\n')) && (after.trim() === '' || after.startsWith('\n\n'))) positions.push(at)
+    const end = at + chunk.length
+    const opensBlock = at <= lead || (text[at - 1] === '\n' && text[at - 2] === '\n')
+    const closesBlock = end >= tail || (text[end] === '\n' && text[end + 1] === '\n')
+    const fenced = fences.filter((fence) => fence < at).length % 2 === 1
+    if (opensBlock && closesBlock && !fenced) positions.push(at)
+    if (positions.length > MAX_MATCHES) break
   }
   return positions
 }
@@ -234,10 +242,24 @@ function chunkPositions(text: string, chunk: string): number[] {
  * delete one of two identical paragraphs and the earlier block would match the
  * later copy, and every block in between would lose its id.
  */
+const MAX_MATCHES = 4000
+
 function unchangedBlocks(text: string, chunks: string[]): { i: number; at: number; end: number }[] {
-  const matches = chunks
-    .flatMap((chunk, i) => (chunk.trim() ? chunkPositions(text, chunk).map((at) => ({ i, at, end: at + chunk.length })) : []))
-    .sort((a, b) => a.at - b.at || a.i - b.i)
+  const fences = [...text.matchAll(/^```/gm)].map((fence) => fence.index)
+  /*
+    The chain is quadratic in matches, and a document of many identical blocks
+    has matches in the square of its size. Real descriptions have a few dozen;
+    past the cap, refuse rather than stall.
+  */
+  const matches: { i: number; at: number; end: number }[] = []
+  chunks.forEach((chunk, i) => {
+    if (!chunk.trim()) return
+    for (const at of chunkPositions(text, chunk, fences)) matches.push({ i, at, end: at + chunk.length })
+    if (matches.length > MAX_MATCHES) {
+      throw new BadRequest('This description repeats the same block too often for its blocks to be matched safely. Nothing was published.')
+    }
+  })
+  matches.sort((a, b) => a.at - b.at || a.i - b.i)
   const length = matches.map(() => 1)
   const previous = matches.map(() => -1)
   matches.forEach((match, c) => {

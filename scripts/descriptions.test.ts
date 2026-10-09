@@ -136,6 +136,22 @@ check('text sent back unchanged is the same document', editBlockDocument(value, 
   check('a marker description stays untagged', plain.contentFormat === undefined && plain.value === 'new')
 }
 
+// A crafted document is anybody's to publish: printing or editing one must not stall the agent.
+{
+  const items = Array.from({ length: 2000 }, (_, i) => ({ type: 'listItem', id: `x${i}`, extra: true, content: [text(`item ${i}`)] }))
+  const list = JSON.stringify({ type: 'doc', content: [{ type: 'bulletList', id: 'big', content: items }] })
+  let started = Date.now()
+  descriptionText(list, 'blocks')
+  const printing = Date.now() - started
+  check('a 2000-item list prints in well under a second', printing < 1000, `${printing} ms`)
+
+  const same = JSON.stringify({ type: 'doc', content: Array.from({ length: 2000 }, (_, i) => ({ type: 'paragraph', id: `s${i}`, content: [text('same')] })) })
+  started = Date.now()
+  refuses('2000 identical blocks are refused, not matched for minutes', () => editBlockDocument(same, `${descriptionText(same, 'blocks')}\n\nMore.`), 'repeats the same block')
+  const matching = Date.now() - started
+  check('…and refused quickly', matching < 3000, `${matching} ms`)
+}
+
 refuses('editing a table’s text is refused rather than flattened', () => editBlockDocument(value, shown.replace('| Who | When |', '| Who | When | Why |')), 'text cannot carry')
 
 // describe(): marker stays marker, blocks get the tag, an unknown format is refused.

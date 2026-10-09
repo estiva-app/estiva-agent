@@ -17782,9 +17782,11 @@ function reparse(text2, previous) {
 function carryChildIds(before, after) {
   if (!after) return void 0;
   const used = /* @__PURE__ */ new Set();
+  const waiting = /* @__PURE__ */ new Map();
+  before.forEach((candidate, j) => waiting.set(screenKey(candidate), [...waiting.get(screenKey(candidate)) ?? [], j]));
   const unchanged = after.map((child) => {
-    const i = before.findIndex((candidate, j) => !used.has(j) && readsTheSame(candidate, child));
-    if (i < 0) return void 0;
+    const i = waiting.get(screenKey(child))?.shift();
+    if (i === void 0) return void 0;
     used.add(i);
     return i;
   });
@@ -17797,7 +17799,8 @@ function carryChildIds(before, after) {
     return { ...shape, ...child.content !== void 0 ? { content: child.content } : {} };
   });
 }
-var readsTheSame = (a, b) => a.type === b.type && canonical(visible({ ...a, id: "" })) === canonical(visible({ ...b, id: "" }));
+var readsTheSame = (a, b) => screenKey(a) === screenKey(b);
+var screenKey = (block) => canonical(visible({ ...block, id: "" }));
 function spellable(block) {
   const text2 = protocolText(block);
   if (!text2.trim()) return false;
@@ -17850,18 +17853,32 @@ function descriptionText(value, format) {
   }
 }
 var formatName = (format) => format === "blocks" ? BLOCK_DOCUMENT_FORMAT : format === "unknown" ? "unknown" : "marker";
-function chunkPositions(text2, chunk) {
+function chunkPositions(text2, chunk, fences) {
+  const lead = text2.length - text2.trimStart().length;
+  const tail = text2.trimEnd().length;
   const positions = [];
   for (let at = text2.indexOf(chunk); at >= 0; at = text2.indexOf(chunk, at + 1)) {
-    const before = text2.slice(0, at);
-    const after = text2.slice(at + chunk.length);
-    const fenced = (before.match(/^```/gm)?.length ?? 0) % 2 === 1;
-    if (!fenced && (before.trim() === "" || before.endsWith("\n\n")) && (after.trim() === "" || after.startsWith("\n\n"))) positions.push(at);
+    const end = at + chunk.length;
+    const opensBlock = at <= lead || text2[at - 1] === "\n" && text2[at - 2] === "\n";
+    const closesBlock = end >= tail || text2[end] === "\n" && text2[end + 1] === "\n";
+    const fenced = fences.filter((fence) => fence < at).length % 2 === 1;
+    if (opensBlock && closesBlock && !fenced) positions.push(at);
+    if (positions.length > MAX_MATCHES) break;
   }
   return positions;
 }
+var MAX_MATCHES = 4e3;
 function unchangedBlocks(text2, chunks) {
-  const matches = chunks.flatMap((chunk, i) => chunk.trim() ? chunkPositions(text2, chunk).map((at) => ({ i, at, end: at + chunk.length })) : []).sort((a, b) => a.at - b.at || a.i - b.i);
+  const fences = [...text2.matchAll(/^```/gm)].map((fence) => fence.index);
+  const matches = [];
+  chunks.forEach((chunk, i) => {
+    if (!chunk.trim()) return;
+    for (const at of chunkPositions(text2, chunk, fences)) matches.push({ i, at, end: at + chunk.length });
+    if (matches.length > MAX_MATCHES) {
+      throw new BadRequest("This description repeats the same block too often for its blocks to be matched safely. Nothing was published.");
+    }
+  });
+  matches.sort((a, b) => a.at - b.at || a.i - b.i);
   const length = matches.map(() => 1);
   const previous = matches.map(() => -1);
   matches.forEach((match, c) => {
