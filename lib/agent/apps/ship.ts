@@ -19,6 +19,7 @@ import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
 import {
   KIND,
+  cascadeArchives,
   conversationsFor,
   loadWorkspace,
   relayQuery,
@@ -36,9 +37,11 @@ import {
   buildActionEvents,
   createProjectionCache,
   listFolders,
+  planArchiveFolder,
   planMoveFromFolders,
   resolveFolderContents,
   topLevelFolders,
+  type Archive,
   type FolderRef,
   type FolderSummary,
   type MovableFile,
@@ -101,7 +104,7 @@ export function issueRow(issue: ReturnType<typeof issueSummary>, vocab: Vocabula
     issue.ref.padEnd(8),
     statusValue(vocab, issue.status).padEnd(12),
     issue.short,
-    clip(issue.title, ROW_TITLE),
+    clip(issue.title, ROW_TITLE) + (issue.archived ? ' (archived)' : ''),
   ].join(' ')
 }
 
@@ -128,7 +131,7 @@ function projectSummary(project: Project, directory: Directory, vocab: Vocabular
     title: project.title,
     status: status(vocab, project.status),
     lead: who(directory, project.lead),
-    archived: project.archived || undefined,
+    archived: archiveSummary(directory, project.archive),
     folder: project.contentFolder,
     /*
       Present even when empty, and that is the point of including it at all.
@@ -174,6 +177,20 @@ function issueSummary(issue: Issue, directory: Directory, vocab: Vocabulary) {
     assignee: who(directory, issue.assignee),
     author: who(directory, issue.author),
     project: issue.projectAddr,
+    archived: archiveSummary(directory, issue.archive),
+    // When it reached the status it is in, so `/sweep` can find what closed weeks ago without a `show` each.
+    statusChangedAt: issue.statusChangedAt !== undefined ? new Date(issue.statusChangedAt).toISOString() : undefined,
+  }
+}
+
+/** An archive as printed: who, when, the resolution, and the parent it came with. */
+function archiveSummary(directory: Directory, archive: Archive | undefined) {
+  if (!archive) return undefined
+  return {
+    by: who(directory, archive.by),
+    at: new Date(archive.at * 1000).toISOString(),
+    resolution: archive.resolution,
+    with: archive.with,
   }
 }
 
@@ -950,11 +967,156 @@ async function timelineFor(
  * filed for, and a truncated one would not let anybody check a description
  * before replacing it.
  */
+const FOLDER_BY = {
+  noun: 'Folder',
+  exact: (folder: FolderSummary) => [folder.id, folder.channel, folder.name],
+  prefix: (folder: FolderSummary) => [folder.id],
+  text: (folder: FolderSummary) => folder.name ?? '',
+  label: (folder: FolderSummary) => `${short(folder.id)} — ${folder.name ?? 'Untitled Folder'}`,
+  hint: 'Pass a Folder name or part of one, or the first 8 characters of its id.',
+}
+
+type Archivable =
+  | { kind: 'issue'; file: Issue }
+  | { kind: 'project'; file: Project }
+  | { kind: 'Folder'; file: FolderSummary }
+
+/**
+ * Which file an `archive` reference names, across the three kinds a person can
+ * archive in Ship — asked of each, then decided, for the reason `show` gives:
+ * a reference naming two kinds is a question, not whichever was tried first.
+ * A Folder is matched among the ones with state (what Ship and Peek draw), or
+ * by its exact id or channel address.
+ */
+export function archivable(state: Pick<Workspace, 'issues' | 'projects'>, folders: FolderSummary[], reference: string, projectsOnly: boolean): Archivable {
+  const attempts = [
+    ...(projectsOnly ? [] : [{ kind: 'issue' as const, result: resolveMaybe(state.issues, reference, ISSUE_BY) }]),
+    { kind: 'project' as const, result: resolveMaybe(state.projects, reference, PROJECT_BY) },
+    ...(projectsOnly
+      ? []
+      : [{
+          kind: 'Folder' as const,
+          result: (() => {
+            const exact = folders.filter((folder) => folder.id === reference || folder.channel === reference)
+            return exact.length === 1 ? { found: exact[0] } : resolveMaybe(folders.filter((folder) => folder.hasState), reference, FOLDER_BY)
+          })(),
+        }]),
+  ]
+  const found = attempts.flatMap(({ kind, result }) => ('found' in result ? [{ kind, file: result.found } as Archivable] : []))
+  if (found.length > 1) {
+    throw new BadRequest(
+      `"${reference}" names more than one file:\n` +
+        found.map(({ kind, file }) => `  ${kind.padEnd(7)} ${'title' in file ? file.title : file.name ?? file.id}`).join('\n') +
+        '\nPass an address or a short id to say which.',
+    )
+  }
+  if (found.length === 1) return found[0]
+  for (const { result } of attempts) if ('ambiguous' in result) throw new BadRequest(result.ambiguous)
+  throw new BadRequest(`No ${projectsOnly ? 'project' : 'issue, project or Folder'} matches "${reference}".`)
+}
+
+/**
+ * Archive one file, or bring it back — FOL-46, written as Ship writes it: a
+ * `kind:1851` setting `archived` on the file's address, the resolution as the
+ * change's note, which Ship shows first when the file is opened. A project or
+ * an issue goes through its manifest's action; a Folder through interop's
+ * `planArchiveFolder`, into its own `h`.
+ *
+ * Nothing is written to what is beneath it. An issue is archived with its
+ * project, and a project with its Folder, when they are read (`cascadeArchives`)
+ * — so unarchiving the parent restores exactly what was there.
+ *
+ * One file per call, like every write here (`docs/untrusted-content.md`).
+ */
+async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'archive' | 'archive-project') {
+  const reference = args.positional[0]
+  if (!reference) throw new BadRequest(`${command} needs a reference — a project, an issue or a Folder.`)
+  const archived = !args.flags.unarchive
+  const resolution = args.flags.resolution
+  if (resolution === true) throw new BadRequest('--resolution takes the text to show, in quotes.')
+  if (!archived && resolution !== undefined) throw new BadRequest('--resolution goes with an archive; bringing a file back takes none.')
+
+  const state = await loadWorkspace(context)
+  const folders = await listFolders(relayQuery(context))
+  cascadeArchives(state, folders)
+  const target = archivable(state, folders, reference, command === 'archive-project')
+
+  const name = target.kind === 'Folder' ? target.file.name ?? target.file.id : target.file.title
+  const addr = target.kind === 'Folder' ? target.file.channel : target.file.addr
+  const own = target.kind === 'Folder' ? target.file.archived && !target.file.archived.with : target.file.ownArchive
+  const inherited = target.kind === 'Folder' ? undefined : target.file.archive?.with
+  const unchanged = { kind: target.kind, title: name, addr }
+
+  /*
+    Said rather than silently done. The reverse is what somebody needs the
+    moment they realise they archived the wrong file, and the listings hide
+    the result, so the file they look for has just gone from where they look.
+  */
+  if (archived && own) {
+    return { unchanged, note: `That ${target.kind} is already archived. Pass --unarchive to bring it back.` }
+  }
+  if (!archived && !own) {
+    return {
+      unchanged,
+      note: inherited
+        ? `That ${target.kind} is not archived itself; it is hidden with ${inherited}. Unarchive that instead.`
+        : `That ${target.kind} is not archived, so there is nothing to bring back.`,
+    }
+  }
+
+  let result: PublishOutcome
+  let hides: string
+  if (target.kind === 'Folder') {
+    const folder = target.file
+    if (!folder.channel) throw new BadRequest(`The Folder “${name}” has no channel address on the relay, so there is nothing to set archived on.`)
+    // The relay accepts this from any member; readers count it only from an owner or admin (SPEC §3.2), so from anybody else it would be accepted and ignored.
+    if (folder.admins && !folder.admins.includes(context.signer.pubkey)) {
+      throw new BadRequest(`Only the owners and admins of “${name}” can archive it — readers ignore an archive from anybody else, and this identity is neither. Nothing was published.`)
+    }
+    const [change] = planArchiveFolder(context.signer.pubkey, Date.now(), {
+      folder: folder.id,
+      channel: folder.channel,
+      archived,
+      ...(typeof resolution === 'string' ? { resolution } : {}),
+    })
+    result = await publishUnsigned(context, change)
+    const projects = state.projects.filter((project) => folder.addresses?.includes(project.addr)).length
+    hides = `the Folder, and what it alone lists (it lists ${projects} project(s))`
+  } else {
+    // The record's own Folder, for the reason `edit-project` gives: a change published elsewhere is accepted and then unseen.
+    const folder = target.kind === 'project' ? target.file.contentFolder : target.file.folder
+    if (!folder) throw new BadRequest(`“${name}” names no Folder, so a change to it has nowhere to be published.`)
+    const action = target.kind === 'project' ? 'archive-project' : 'archive-issue'
+    ;[result] = await act(context, state, { addr: target.file.addr, author: target.file.author, folder }, action, archived ? 'true' : '', [KIND_CHANGE], {
+      note: typeof resolution === 'string' ? resolution : '',
+    })
+    if (target.kind === 'project') {
+      const project = target.file
+      const issues = state.issues.filter((issue) => issue.projectAddr === project.addr).length
+      hides = `the project and its ${issues} issue(s)`
+    } else {
+      hides = 'the issue; its project stays where it is'
+    }
+  }
+  published(result, `${archived ? 'archiving' : 'unarchiving'} “${name}”`)
+
+  return {
+    changed: unchanged,
+    archived,
+    resolution: typeof resolution === 'string' ? resolution : undefined,
+    eventId: result.eventId,
+    note: archived
+      ? `Hidden from Ship's lists and from \`ship issues\` / \`ship projects\` unless --archived: ${hides}. A link still opens it, with the resolution first. Reverse with --unarchive; nothing is deleted.`
+      : 'Back in the lists, with what was hidden with it.',
+  }
+}
+
 async function showProject(context: AgentContext, state: Workspace, project: Project) {
   const issues = state.issues.filter((issue) => issue.projectAddr === project.addr)
   const { directory, history, conversation } = await timelineFor(context, state, project.addr, [
     project.author,
     project.lead,
+    project.archive?.by,
     ...issues.map((issue) => issue.assignee),
     ...issues.map((issue) => issue.author),
   ])
@@ -966,7 +1128,7 @@ async function showProject(context: AgentContext, state: Workspace, project: Pro
     status: status(state.vocab.project, project.status),
     lead: who(directory, project.lead),
     author: who(directory, project.author),
-    archived: project.archived || undefined,
+    archived: archiveSummary(directory, project.archive),
     description: project.description,
     createdAt: new Date(project.createdAt * 1000).toISOString(),
     folder: project.contentFolder,
@@ -1097,7 +1259,9 @@ export const shipApp: AgentApp = {
       },
       async run(context, args) {
         const state = await loadWorkspace(context)
-        const directory = await directoryFor(context, state.projects.map((p) => p.lead))
+        // A project in an archived Folder is hidden with it, as Ship hides it.
+        cascadeArchives(state, await listFolders(relayQuery(context)))
+        const directory = await directoryFor(context, state.projects.flatMap((p) => [p.lead, p.archive?.by]))
 
         const archived = state.projects.filter((project) => project.archived)
         const wanted = args.flags.archived ? state.projects : archivedRemoved(state.projects)
@@ -1140,17 +1304,22 @@ export const shipApp: AgentApp = {
     {
       name: 'issues',
       summary: 'issues, newest first',
-      usage: 'issues [--project <ref>] [--status <value>] [--json]',
-      lines(result: { issues: Parameters<typeof issueRow>[0][]; coverage: { unreachable: number; note?: string } } & WithVocab) {
+      usage: 'issues [--project <ref>] [--status <value>] [--archived] [--json]',
+      lines(
+        result: { issues: Parameters<typeof issueRow>[0][]; hidden: { note?: string }; coverage: { unreachable: number; note?: string } } & WithVocab,
+      ) {
         const vocab = result[VOCAB] ?? noVocab
         return [
           ...result.issues.map((issue) => issueRow(issue, vocab)),
           `${result.issues.length} listed`,
+          ...(result.hidden.note ? [result.hidden.note] : []),
           ...(result.coverage.note ? [result.coverage.note] : []),
         ]
       },
       async run(context, args) {
         const state = await loadWorkspace(context)
+        // An issue of a project in an archived Folder is hidden with both, as Ship hides it.
+        cascadeArchives(state, await listFolders(relayQuery(context)))
         const wantedProject = flagValue(args, 'project')
         const wantedStatus = flagValue(args, 'status')?.toLowerCase()
 
@@ -1166,10 +1335,13 @@ export const shipApp: AgentApp = {
             wantedStatuses.includes(issue.status),
           )
         }
+        // After the other filters, so the count says how many of *these* were left out.
+        const archived = issues.filter((issue) => issue.archived).length
+        if (!args.flags.archived) issues = issues.filter((issue) => !issue.archived)
 
         const directory = await directoryFor(
           context,
-          issues.flatMap((issue) => [issue.assignee, issue.author]),
+          issues.flatMap((issue) => [issue.assignee, issue.author, issue.archive?.by]),
         )
 
         return {
@@ -1178,6 +1350,14 @@ export const shipApp: AgentApp = {
             .slice()
             .sort((a, b) => b.createdAt - a.createdAt)
             .map((issue) => issueSummary(issue, directory, state.vocab.issue)),
+          // The same honesty `projects` owes (AGE-7): a shorter list is not a smaller workspace.
+          hidden: {
+            archived: args.flags.archived ? 0 : archived,
+            note:
+              !args.flags.archived && archived > 0
+                ? `${archived} archived issue(s) are not listed — pass --archived to include them.`
+                : undefined,
+          },
           /*
             Reported against the whole workspace rather than the filtered slice,
             deliberately. An unreachable issue has no project and no status this
@@ -1371,6 +1551,7 @@ export const shipApp: AgentApp = {
         const { directory, history, conversation } = await timelineFor(context, state, issue.addr, [
           issue.author,
           issue.assignee,
+          issue.archive?.by,
         ])
 
         return {
@@ -1849,80 +2030,19 @@ export const shipApp: AgentApp = {
       },
     },
     {
+      name: 'archive',
+      signs: [KIND_CHANGE],
+      summary: 'archive a project, an issue or a Folder with a resolution, or bring it back',
+      usage: 'archive <ref> [--resolution <text>] [--unarchive]',
+      run: (context, args) => archiveFile(context, args, 'archive'),
+    },
+    {
+      // The name it had before any file could be archived; kept so existing prompts and skills still work.
       name: 'archive-project',
       signs: [KIND_CHANGE],
-      summary: 'hide a project from the lists, or bring it back',
-      usage: 'archive-project <ref> [--unarchive]',
-      async run(context, args) {
-        const reference = args.positional[0]
-        if (!reference) throw new BadRequest('archive-project needs a project reference.')
-
-        const state = await loadWorkspace(context)
-        const project = findProject(state.projects, reference)
-        const archived = !args.flags.unarchive
-
-        /*
-          The record's Folder, for the reason `edit-project` gives at length:
-          publishing against another Folder is *accepted* by the relay and
-          then invisible to anything reading the record's own Folder. An archive
-          that half of the readers cannot see is worse than no archive.
-        */
-        const folder = project.contentFolder
-        if (!folder) {
-          throw new BadRequest(
-            `“${project.title}” names no Folder for its record, so a change to it has nowhere to be published.`,
-          )
-        }
-
-        /*
-          Said rather than silently done. Archiving is reversible and this
-          command reports how, because the reverse is the thing somebody needs
-          at the moment they realise they archived the wrong one — and
-          `ship projects` hides the result, so the project they are looking for
-          has just disappeared from the listing they would check.
-        */
-        if (archived && project.archived) {
-          return {
-            unchanged: { title: project.title, addr: project.addr },
-            note: 'That project is already archived. Pass --unarchive to bring it back.',
-          }
-        }
-        if (!archived && !project.archived) {
-          return {
-            unchanged: { title: project.title, addr: project.addr },
-            note: 'That project is not archived, so there is nothing to bring back.',
-          }
-        }
-
-        const [result] = await act(context, state, { addr: project.addr, author: project.author, folder }, 'archive-project', archived ? 'true' : '', [KIND_CHANGE])
-        published(result, `${archived ? 'archiving' : 'unarchiving'} “${project.title}”`)
-
-        const issues = state.issues.filter((issue) => issue.projectAddr === project.addr).length
-
-        return {
-          changed: { title: project.title, addr: project.addr, folder },
-          archived,
-          eventId: result.eventId,
-          /*
-            Exactly what archiving does, because the obvious guess is wrong and
-            it is wrong in the direction that matters.
-
-            Archiving hides the project from `ship projects`. It does **not**
-            hide the project's issues: `ship issues` lists `state.issues` with
-            no archived filter at all, so all of them keep appearing in the
-            default listing, attributed to a project that listing no longer
-            shows. Measured on production — 12 issues of an archived project,
-            all still listed.
-
-            So this is not a way to tidy issues away, and saying so here is
-            cheaper than somebody archiving a project for that purpose and only
-            later noticing it did nothing.
-          */
-          note: archived
-            ? `Hidden from \`ship projects\` unless --archived. Its ${issues} issue(s) are NOT hidden — \`ship issues\` has no archived filter and keeps listing them. Reverse with --unarchive; nothing is deleted.`
-            : 'Back in the default project listing.',
-        }
-      },
+      summary: 'archive a project with a resolution, or bring it back — `archive` for any file',
+      usage: 'archive-project <ref> [--resolution <text>] [--unarchive]',
+      run: (context, args) => archiveFile(context, args, 'archive-project'),
     },
     /*
       The two irreversible commands, and the only ones that ask twice.

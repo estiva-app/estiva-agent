@@ -73,8 +73,12 @@
       "description": "Change one issue's title or description, or move it to another project"
     },
     {
+      "name": "ship_archive",
+      "description": "Archive a project, an issue or a Folder with a resolution, or bring it back"
+    },
+    {
       "name": "ship_archive_project",
-      "description": "Hide a project from the lists, or bring it back"
+      "description": "Archive a project and its issues with a resolution, or bring it back"
     },
     {
       "name": "ship_delete_issue",

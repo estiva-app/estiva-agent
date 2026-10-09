@@ -77,6 +77,15 @@ npx tsx scripts/agent.ts ship create-issue --project "Peek: Feedback" --title ".
 npx tsx scripts/agent.ts ship edit-project "Cross-app read state" --status completed
 ```
 
+`ship archive <ref> --resolution "…"` archives one project, issue or Folder the
+way Ship does (FOL-46): a `kind:1851` `archived` change, the resolution as its
+note, shown first when the file is opened; `--unarchive` brings it back.
+Nothing is written to what is beneath it — an issue is archived with its
+project, and a project with its Folder, when read. `issues` and `projects` hide
+archived files and say how many; `--archived` includes them. A Folder's
+archive counts only from its owners and admins, so it is refused for anyone
+else. `archive-project` is the older name, projects only.
+
 `edit-project` takes any of `--title`, `--description`, `--status` and `--lead`,
 and touches only the ones passed. **Project statuses are their own vocabulary** —
 `planned`, `in_progress`, `completed`, `cancelled` — not the issue ones, and an
