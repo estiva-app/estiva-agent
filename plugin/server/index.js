@@ -17672,7 +17672,7 @@ async function decorationsOf(targets, query) {
 var HEX_KEY = /^[0-9a-f]{64}$/i;
 var HANDLE = /^[a-z0-9._-]+$/i;
 var nip05Lookup = async (domain, name) => {
-  const response = await fetch(`https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`);
+  const response = await fetch(`https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(1e4) });
   if (!response.ok) throw new Error(`${domain} answered ${response.status} for the handle "${name}".`);
   const body = await response.json();
   const key = body.names?.[name];
@@ -17681,17 +17681,17 @@ var nip05Lookup = async (domain, name) => {
 async function mentionedKeys(value, workspace) {
   const names = value.split(",").map((name) => name.trim()).filter(Boolean);
   if (names.length === 0) throw new BadRequest("--mention needs a key, an npub, or a handle.");
-  const domain = new URL(workspace.relayUrl).host;
+  const domain = new URL(workspace.relayUrl).hostname;
   const lookup = workspace.lookup ?? nip05Lookup;
-  const keys = [];
+  const keys = /* @__PURE__ */ new Map();
   for (const name of names) {
     const key = await keyOf(name, domain, lookup);
-    if (!keys.includes(key)) keys.push(key);
+    if (!keys.has(key)) keys.set(key, name);
   }
   const members = await workspace.members();
-  const outsider = keys.find((key) => members.length > 0 && !members.includes(key));
-  if (outsider) throw new BadRequest(`${names[keys.indexOf(outsider)]} is not a member of this workspace. Nothing was published.`);
-  return keys;
+  const outsider = [...keys].find(([key]) => members.length > 0 && !members.includes(key));
+  if (outsider) throw new BadRequest(`${outsider[1]} is not a member of this workspace. Nothing was published.`);
+  return [...keys.keys()];
 }
 async function keyOf(name, domain, lookup) {
   if (HEX_KEY.test(name)) return name.toLowerCase();
@@ -17720,7 +17720,8 @@ function withMentions(body, keys) {
     throw new BadRequest(`The body mentions nostr:${encodeNpub(unasked)}, whom --mention does not name. Add them to --mention, or take the mention out. Nothing was published.`);
   }
   const missing = keys.filter((key) => !named.has(key)).map((key) => `nostr:${encodeNpub(key)}`);
-  return missing.length === 0 ? body : `${missing.join(" ")} ${body}`;
+  if (missing.length === 0) return body;
+  return `${missing.join(" ")}${/^(#|>|[-*+] |\d+\. |```)/.test(body) ? "\n\n" : " "}${body}`;
 }
 
 // lib/agent/profiles.ts
@@ -21191,6 +21192,7 @@ function findThread(threads, reference) {
   });
 }
 async function comment(context2, topic, body, replyTo) {
+  withMentions(body, []);
   const query = relayQuery2(context2);
   const pointer = pointerOf2(topic.address);
   const resolved = await resolveManifest(pointer, query);

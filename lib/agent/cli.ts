@@ -144,7 +144,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     const key = arg.slice(2)
     // The second would silently replace the first: `--mention a --mention b`
     // mentioned only b. A list is one value, comma-separated where a flag takes one.
-    if (key in flags) throw new BadRequest(`--${key} was given twice. Pass it once.`)
+    if (Object.hasOwn(flags, key)) throw new BadRequest(`--${key} was given twice. Pass it once.`)
     const next = argv[i + 1]
     // A following token that is itself a flag means this one is a boolean —
     // `--archived --project x` must not read as `archived: '--project'`.

@@ -54,6 +54,7 @@ await refuses('a display name is never matched', () => keys('Katerina Kelepouri'
 await refuses('an unknown handle is refused', () => keys('nobody'), 'No one has the handle')
 await refuses('a handle on another domain is refused', () => keys('miky@example.com'), "this workspace's domain")
 await refuses('a key that is not a relay member is refused', () => keys('stranger'), 'not a member')
+await refuses('the refusal quotes the outsider as named, after a duplicate', () => keys(`miky,${MIKY},stranger`), 'stranger is not a member')
 await refuses('one bad name refuses the whole list', () => keys('miky,nobody'), 'No one has the handle')
 await refuses('a malformed npub is refused', () => keys('npub1notreally'), 'not a valid npub')
 await refuses('an empty value is refused', () => keys(' , '), 'needs a key')
@@ -64,6 +65,7 @@ console.log('\n— the body —')
   check('the body opens with a mention it lacks', withMentions('Which one?', [MIKY]) === `${npub} Which one?`)
   check('a body that already names them is unchanged', withMentions(`Which one, ${npub}?`, [MIKY]) === `Which one, ${npub}?`)
   check('no mentions, no change', withMentions('Plain.', []) === 'Plain.')
+  check('a body opening with a heading keeps it on its own line', withMentions('# Q\nWhich?', [MIKY]) === `${npub}\n\n# Q\nWhich?`)
 }
 // The p is earned from the body, so an npub copied from workspace text would notify past the roster check.
 await refuses('a body naming somebody --mention does not is refused', async () => withMentions(`cc nostr:${encodeNpub(STRANGER)}`, [MIKY]), 'whom --mention does not name')

@@ -27,7 +27,8 @@ const HANDLE = /^[a-z0-9._-]+$/i
 export type HandleLookup = (domain: string, name: string) => Promise<string | undefined>
 
 export const nip05Lookup: HandleLookup = async (domain, name) => {
-  const response = await fetch(`https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`)
+  // NIP-05 is https on the bare domain; a relay URL's port (a local relay) is not the domain's.
+  const response = await fetch(`https://${domain}/.well-known/nostr.json?name=${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(10_000) })
   if (!response.ok) throw new Error(`${domain} answered ${response.status} for the handle "${name}".`)
   const body = (await response.json()) as { names?: Record<string, unknown> }
   const key = body.names?.[name]
@@ -49,20 +50,21 @@ export async function mentionedKeys(
     .filter(Boolean)
   if (names.length === 0) throw new BadRequest('--mention needs a key, an npub, or a handle.')
 
-  const domain = new URL(workspace.relayUrl).host
+  const domain = new URL(workspace.relayUrl).hostname
   const lookup = workspace.lookup ?? nip05Lookup
-  const keys: string[] = []
+  // Each key with the name it was asked by, for a refusal that quotes it.
+  const keys = new Map<string, string>()
   for (const name of names) {
     const key = await keyOf(name, domain, lookup)
-    if (!keys.includes(key)) keys.push(key)
+    if (!keys.has(key)) keys.set(key, name)
   }
 
   // An empty roster is a relay that publishes none, not a workspace of nobody:
   // the keys stand as named, as `assign` takes them.
   const members = await workspace.members()
-  const outsider = keys.find((key) => members.length > 0 && !members.includes(key))
-  if (outsider) throw new BadRequest(`${names[keys.indexOf(outsider)]} is not a member of this workspace. Nothing was published.`)
-  return keys
+  const outsider = [...keys].find(([key]) => members.length > 0 && !members.includes(key))
+  if (outsider) throw new BadRequest(`${outsider[1]} is not a member of this workspace. Nothing was published.`)
+  return [...keys.keys()]
 }
 
 async function keyOf(name: string, domain: string, lookup: HandleLookup): Promise<string> {
@@ -103,5 +105,7 @@ export function withMentions(body: string, keys: readonly string[]): string {
     throw new BadRequest(`The body mentions nostr:${encodeNpub(unasked)}, whom --mention does not name. Add them to --mention, or take the mention out. Nothing was published.`)
   }
   const missing = keys.filter((key) => !named.has(key)).map((key) => `nostr:${encodeNpub(key)}`)
-  return missing.length === 0 ? body : `${missing.join(' ')} ${body}`
+  if (missing.length === 0) return body
+  // A body that opens with block markup keeps it: the mentions get a line of their own.
+  return `${missing.join(' ')}${/^(#|>|[-*+] |\d+\. |```)/.test(body) ? '\n\n' : ' '}${body}`
 }

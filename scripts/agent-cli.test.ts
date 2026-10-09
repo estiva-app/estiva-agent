@@ -105,6 +105,7 @@ check('an absent flag is undefined, not an error', flagValue(parseArgs(['ship'])
 
 // The second used to replace the first: `--mention a --mention b` mentioned only b.
 refuses('a flag given twice is refused, not overwritten', () => parseArgs(['ship', 'comment', 'x', '--mention', 'a', '--mention', 'b']), 'given twice')
+check('a flag named like an Object member is not "given twice"', parseArgs(['ship', 'issues', '--toString', 'x']).flags['toString'] === ('x' as unknown))
 check('comment takes --mention', acceptedFlags(shipApp.commands.find((c) => c.name === 'comment')!).includes('mention'))
 
 console.log('\n— resolving a reference —')
