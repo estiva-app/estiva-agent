@@ -2239,8 +2239,8 @@ var require_resolve = __commonJS({
     }
     exports.getFullPath = getFullPath;
     function _getFullPath(resolver, p) {
-      const serialized = resolver.serialize(p);
-      return serialized.split("#")[0] + "#";
+      const serialized2 = resolver.serialize(p);
+      return serialized2.split("#")[0] + "#";
     }
     exports._getFullPath = _getFullPath;
     var TRAILING_SLASH_HASH = /#\/?$/;
@@ -16348,6 +16348,17 @@ function serializeBlockDocument(doc2) {
 function newBlockId() {
   return bytesToHex(randomBytes(6));
 }
+function listItemDepths(items) {
+  const out = [];
+  for (const item of items) {
+    const raw = item.attrs?.indent;
+    const asked = typeof raw === "number" && Number.isInteger(raw) && raw > 0 ? raw : 0;
+    const ceiling = out.length === 0 ? 0 : out[out.length - 1] + 1;
+    out.push(Math.min(asked, ceiling, MAX_LIST_DEPTH));
+  }
+  return out;
+}
+var MAX_LIST_DEPTH = 8;
 function inlineTextOf(block) {
   if (!Array.isArray(block.content))
     return "";
@@ -16414,8 +16425,7 @@ var KIND = {
   APP_DATA: 30078,
   /** NIP-FC File — see docs/buzz-compat/nips/NIP-FC.md in the Peek repo. */
   FILE: 30840,
-  /** NIP-FC Component. */
-  COMPONENT: 30841,
+  // 30841 (NIP-FC Component) is retired — never reallocate it (COM-3, KINDS.md).
   /**
    * NIP-42 relay auth — the challenge response that turns a connected socket
    * into an authenticated one (`Kind::Authentication`, PEE-5).
@@ -16587,7 +16597,7 @@ function buildEdit(pubkey, createdAtMs, args2) {
 function buildBareFile(pubkey, createdAtMs, args2) {
   assertHex64(pubkey, "pubkey");
   if (!args2.channelUuid)
-    throw new Error("a bare file must name the team channel it lives in (h)");
+    throw new Error("a bare file must name the Folder it lives in (h)");
   if (args2.parent !== void 0 && !/^\d+:[0-9a-f]{64}:/.test(args2.parent)) {
     throw new Error(`parent must be an address "<kind>:<pubkey>:<d>", got "${args2.parent}"`);
   }
@@ -17111,12 +17121,18 @@ function blockDocumentToMarkerText(doc2) {
         break;
       }
       case "bulletList":
-        for (const item of block.content ?? [])
-          lines.push(`- ${itemText(item)}`);
-        break;
       case "orderedList": {
+        const items = block.content ?? [];
+        const depths = listItemDepths(items);
         const start = typeof block.attrs?.start === "number" ? block.attrs.start : 1;
-        (block.content ?? []).forEach((item, i) => lines.push(`${start + i}. ${itemText(item)}`));
+        const next = [];
+        items.forEach((item, i) => {
+          const depth = depths[i];
+          next.length = depth + 1;
+          next[depth] ??= depth === 0 ? start : 1;
+          const marker = block.type === "bulletList" ? "-" : `${next[depth]++}.`;
+          lines.push(`${"  ".repeat(depth)}${marker} ${itemText(item)}`);
+        });
         break;
       }
       case "blockquote":
@@ -17768,7 +17784,7 @@ function trimRuns(block) {
 }
 function reparse(text2, previous) {
   const old = new Map(previous.filter((block) => block.id).map((block) => [block.id, block]));
-  return markerTextToBlockDocument(text2, doc(previous)).content.map((fresh) => {
+  return textToBlocks(text2, previous).map((fresh) => {
     const before = old.get(fresh.id);
     if (!before) return fresh;
     const children = carryChildIds(childBlocks(before) ?? [], childBlocks(fresh));
@@ -17779,6 +17795,100 @@ function reparse(text2, previous) {
     return protocolText(kept) === protocolText(updated) ? kept : updated;
   });
 }
+function textToBlocks(text2, previous) {
+  const tables = [];
+  const lines = text2.split("\n");
+  const out = [];
+  let fenced = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^ {0,3}```/.test(line)) fenced = !fenced;
+    const header = !fenced && TABLE_ROW.test(line) ? rowCells(line) : void 0;
+    if (!header || i + 1 >= lines.length || !isSeparator(lines[i + 1], header.length)) {
+      out.push(line);
+      continue;
+    }
+    const rows = [header];
+    for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) rows.push(rowCells(lines[i]));
+    i--;
+    out.push("", `${PLACEHOLDER}${tables.length}${PLACEHOLDER}`, "");
+    tables.push(rows);
+  }
+  if (!tables.length) return markerTextToBlockDocument(text2, doc(previous)).content;
+  const oldTables = previous.filter((block) => block.type === "table");
+  const used = /* @__PURE__ */ new Set();
+  const lend = (rows, n) => {
+    const printed2 = tableText(tableBlock(rows, void 0));
+    const same = oldTables.find((old2) => !used.has(old2) && printed2 !== void 0 && tableText(old2) === printed2);
+    const positional = oldTables.length === tables.length && !used.has(oldTables[n]) ? oldTables[n] : void 0;
+    const old = same ?? positional;
+    if (old) used.add(old);
+    return old;
+  };
+  return markerTextToBlockDocument(out.join("\n"), doc(previous)).content.map((block) => {
+    const n = block.type === "paragraph" ? Number(PLACEHOLDER_PARAGRAPH.exec(inlineTextOf(block))?.[1] ?? NaN) : NaN;
+    return n < tables.length ? tableBlock(tables[n], lend(tables[n], n)) : block;
+  });
+}
+var PLACEHOLDER = "\uE000";
+var PLACEHOLDER_PARAGRAPH = new RegExp(`^${PLACEHOLDER}(\\d+)${PLACEHOLDER}$`);
+var TABLE_ROW = /^ {0,3}\|/;
+function rowCells(line) {
+  const inner = line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "");
+  return inner.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|"));
+}
+function isSeparator(line, width) {
+  if (!TABLE_ROW.test(line)) return false;
+  const cells = rowCells(line);
+  return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell));
+}
+function tableBlock(rows, old) {
+  const width = rows[0].length;
+  const oldRows = old ? childBlocks(old) ?? [] : [];
+  return {
+    type: "table",
+    id: old?.id ?? newBlockId(),
+    content: rows.map((cells, r) => {
+      const oldCells = oldRows[r] ? childBlocks(oldRows[r]) ?? [] : [];
+      const type = r === 0 ? "tableHeader" : "tableCell";
+      return {
+        type: "tableRow",
+        id: oldRows[r]?.id ?? newBlockId(),
+        content: Array.from({ length: width }, (_, c) => tableCell(type, cells[c] ?? "", oldCells[c]?.type === type ? oldCells[c] : void 0))
+      };
+    })
+  };
+}
+function tableCell(type, text2, old) {
+  const [parsed, ...more] = text2 ? markerTextToBlockDocument(text2).content : [];
+  const paragraph = parsed?.type === "paragraph" && !more.length ? parsed : text2 ? { type: "paragraph", id: "", content: [{ type: "text", text: text2 }] } : { type: "paragraph", id: "" };
+  const oldParagraph = old ? childBlocks(old)?.[0] : void 0;
+  return {
+    type,
+    id: old?.id ?? newBlockId(),
+    attrs: old?.attrs ?? { colspan: 1, rowspan: 1 },
+    content: [{ ...paragraph, id: oldParagraph?.type === "paragraph" ? oldParagraph.id : newBlockId() }]
+  };
+}
+function tableText(block) {
+  const rows = (childBlocks(block) ?? []).map((row) => childBlocks(row) ?? []);
+  if (!rows.length || !rows[0].length) return void 0;
+  const lines = [];
+  for (const [r, cells] of rows.entries()) {
+    if (cells.some((cell) => cell.type !== (r === 0 ? "tableHeader" : "tableCell"))) return void 0;
+    const texts = cells.map((cell) => {
+      const children = childBlocks(cell) ?? [];
+      if (children.length > 1 || children[0] && children[0].type !== "paragraph") return void 0;
+      const line = children[0] && Array.isArray(children[0].content) ? protocolText(children[0]) : "";
+      return line.includes("\n") ? void 0 : line.replace(/\|/g, "\\|");
+    });
+    if (texts.some((t) => t === void 0)) return void 0;
+    lines.push(`| ${texts.join(" | ")} |`);
+    if (r === 0) lines.push(`| ${cells.map(() => "---").join(" | ")} |`);
+  }
+  return lines.join("\n");
+}
+var printable = (block) => block.type === "table" ? tableText(block) : protocolText(block);
 function carryChildIds(before, after) {
   if (!after) return void 0;
   const used = /* @__PURE__ */ new Set();
@@ -17802,8 +17912,8 @@ function carryChildIds(before, after) {
 var readsTheSame = (a, b) => screenKey(a) === screenKey(b);
 var screenKey = (block) => canonical(visible({ ...block, id: "" }));
 function spellable(block) {
-  const text2 = protocolText(block);
-  if (!text2.trim()) return false;
+  const text2 = printable(block);
+  if (!text2?.trim()) return false;
   const back = reparse(text2, [block]);
   return back.length === 1 && canonical(visible(back[0])) === canonical(visible(block));
 }
@@ -17840,7 +17950,7 @@ function standIn(block) {
 var cellText = (cell) => (childBlocks(cell) ?? []).map((child) => childBlocks(child) ? cellText(child) : inlineTextOf(child)).join(" ").replace(/\s+/g, " ").trim();
 var blockText = (block) => {
   let text2 = printed.get(block);
-  if (text2 === void 0) printed.set(block, text2 = spellable(block) ? protocolText(block) : standIn(block));
+  if (text2 === void 0) printed.set(block, text2 = spellable(block) ? printable(block) : standIn(block));
   return text2;
 };
 var printed = /* @__PURE__ */ new WeakMap();
@@ -17939,17 +18049,19 @@ function editBlockDocument(previous, text2) {
       else added++;
     }
   }
-  const result = doc(out);
-  const problems = validateBlockDocument(result);
-  if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join("; ")}. Nothing was published.`);
   const present = new Set(allIds(out));
   return {
-    value: serializeBlockDocument(result),
+    value: serialized(out),
     kept,
     edited: edited2,
     added,
     removed: allIds(before).filter((id) => !present.has(id))
   };
+}
+function serialized(blocks) {
+  const problems = validateBlockDocument(doc(blocks));
+  if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join("; ")}. Nothing was published.`);
+  return serializeBlockDocument(doc(blocks));
 }
 function allIds(blocks) {
   return blocks.flatMap((block) => [block.id, ...allIds(childBlocks(block) ?? [])]).filter(Boolean);
@@ -17958,7 +18070,11 @@ function describe2(previous, format, text2) {
   if (format === "unknown") {
     throw new BadRequest("This description is in a content format this version does not read, so it cannot be edited without losing it. Nothing was published.");
   }
-  if (format !== "blocks") return { value: text2 };
+  if (format !== "blocks") {
+    if (!text2.trim()) return { value: text2 };
+    const blocks2 = textToBlocks(text2, []);
+    return { value: serialized(blocks2), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks2.length, removed: [] } };
+  }
   try {
     parseBlockDocument(previous);
   } catch {
@@ -21611,8 +21727,12 @@ Pass an address to say which.`
       
               Both kinds are declared, so a credential that cannot list in a team is
               told before the record is written rather than after (PEEK-172).
+      
+              A description follows as a `describe-project` change (RIC-20): it is a
+              block document, and Ship's `add-project` declares no format for its
+              description, so the record cannot carry one.
             */
-      signs: [KIND2.PROJECT, KIND.FOLDER_COMMAND],
+      signs: [KIND2.PROJECT, KIND.FOLDER_COMMAND, KIND_CHANGE],
       summary: "start a new project in a team",
       usage: 'create-project --team <name|folder> --title "..." [--description "..."]',
       async run(context2, args2) {
@@ -21624,17 +21744,20 @@ Pass an address to say which.`
         const state = await loadWorkspace(context2);
         const id = randomUUID();
         const description = flagValue(args2, "description");
+        const body = description ? describe2("", void 0, description) : void 0;
         const [result, placed] = await act(
           context2,
           state,
           { addr: team.channel ?? `${KIND_CHANNEL_METADATA}::${team.id}`, author: "", folder: team.id },
           "add-project",
-          { name: title, ...description ? { description } : {} },
+          { name: title, ...body && !body.contentFormat ? { description: body.value } : {} },
           [KIND2.PROJECT, KIND.FOLDER_COMMAND],
           { newId: id, folderHasState: team.hasState, manifest: state.manifestFor(`${KIND2.PROJECT}:${context2.signer.pubkey}:${id}`) }
         );
         const created = { result, placed, addr: `${KIND2.PROJECT}:${context2.signer.pubkey}:${id}` };
         published(created.result, `a new project "${title}"`);
+        const described = body?.contentFormat ? await setField(context2, state, { addr: created.addr, author: context2.signer.pubkey, folder: team.id }, "description", body.value, "Description", body.contentFormat) : void 0;
+        if (described) published(described, `the description of "${title}" \u2014 the project itself was created, ${created.addr}, without one`);
         return {
           created: { title, addr: created.addr, team: { id: team.id, name: team.name } },
           eventId: created.result.eventId,
@@ -21661,14 +21784,15 @@ Pass an address to say which.`
         const listed = (await readFolders(context2)).find((folder) => folder.addresses?.includes(project.addr))?.id;
         const id = randomUUID();
         const description = flagValue(args2, "description");
+        const body = description ? describe2("", void 0, description) : void 0;
         const [result] = await act(
           context2,
           state,
           { addr: project.addr, author: project.author, folder: listed ?? project.contentFolder },
           "add-issue",
-          { title, ...description ? { description } : {} },
+          { title, ...body ? { description: body.value } : {} },
           [KIND2.ISSUE],
-          { newId: id }
+          { newId: id, contentFormat: body?.contentFormat }
         );
         const created = { result, id, addr: `${KIND2.ISSUE}:${context2.signer.pubkey}:${id}` };
         published(created.result, `a new issue in ${project.title}`);

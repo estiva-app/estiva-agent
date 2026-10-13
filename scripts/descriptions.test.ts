@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildActionEvents } from '@estiva-app/interop'
-import { resolveBlockAnchor, type Block } from '@estiva-app/protocol'
+import { markerTextToBlockDocument, resolveBlockAnchor, type Block } from '@estiva-app/protocol'
 import { BadRequest } from '../lib/agent/cli'
 import { describe, descriptionText, editBlockDocument } from '../lib/agent/descriptions'
 import { issueEdits, projectEdits } from '../lib/agent/apps/ship'
@@ -133,7 +133,7 @@ check('text sent back unchanged is the same document', editBlockDocument(value, 
   const [projectEdit] = projectEdits(project, { positional: [], flags: { description: shown } }, 'x', { values: [] } as never)
   check('edit-project does too', projectEdit.contentFormat === 'estiva-blocks-1' && projectEdit.blocks?.kept === document.content.length)
   const [plain] = issueEdits({ ...issue, description: 'old', descriptionFormat: 'marker' }, { positional: [], flags: { description: 'new' } }, [])
-  check('a marker description stays untagged', plain.contentFormat === undefined && plain.value === 'new')
+  check('a marker description becomes a block document (RIC-20)', plain.contentFormat === 'estiva-blocks-1' && plain.text === 'new' && blocksOf(plain.value)[0].type === 'paragraph')
 }
 
 // A crafted document is anybody's to publish: printing or editing one must not stall the agent.
@@ -154,8 +154,9 @@ check('text sent back unchanged is the same document', editBlockDocument(value, 
 
 refuses('editing a table’s text is refused rather than flattened', () => editBlockDocument(value, shown.replace('| Who | When |', '| Who | When | Why |')), 'text cannot carry')
 
-// describe(): marker stays marker, blocks get the tag, an unknown format is refused.
-check('a marker description is written as given, untagged', JSON.stringify(describe('old', 'marker', 'new')) === JSON.stringify({ value: 'new' }))
+// describe(): every description is written as a block document, an unknown format is refused.
+check('a marker description is rewritten as a tagged block document', describe('old', 'marker', 'new').contentFormat === 'estiva-blocks-1')
+check('an empty description stays empty, untagged', JSON.stringify(describe('old', 'marker', '')) === JSON.stringify({ value: '' }))
 check('a block description is written as a block document, tagged', describe(value, 'blocks', shown).contentFormat === 'estiva-blocks-1')
 refuses('a format this version cannot read is refused', () => describe('x', 'unknown', 'y'), 'cannot be edited')
 refuses('a body tagged blocks that does not parse is refused', () => describe('not json', 'blocks', 'y'), 'does not parse')
@@ -182,6 +183,98 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
   const tags = built[0].tags
   check('describe-issue carries content-format estiva-blocks-1', tags.some((t) => t[0] === 'content-format' && t[1] === 'estiva-blocks-1'), JSON.stringify(tags.map((t) => t[0])))
   check('…and the block document as its value', tags.find((t) => t[0] === 'value')?.[1] === next)
+}
+
+// RIC-20: a table the agent writes is a table, and every description it writes is a block document.
+{
+  const markdown = [
+    '**Who, when:** the agent.',
+    '',
+    '| Option | **Good** | Bad |',
+    '| --- | :---: | --- |',
+    '| Blocks | no wire change | a \\| pipe |',
+    '| Marker |',
+    '',
+    'After.',
+  ].join('\n')
+  const created = describe('', undefined, markdown)
+  const blocks = blocksOf(created.value)
+  const table = blocks.find((block) => block.type === 'table')
+  const rows = (table?.content ?? []) as Block[]
+  const cellsOf = (r: number) => (rows[r]?.content ?? []) as Block[]
+  const cellText = (r: number, c: number) => ((cellsOf(r)[c]?.content as Block[] | undefined)?.[0]?.content as { text: string }[] | undefined)?.map((t) => t.text).join('') ?? ''
+  check('a new description is a block document', created.contentFormat === 'estiva-blocks-1' && blocks.map((b) => b.type).join() === 'paragraph,table,paragraph', blocks.map((b) => b.type).join())
+  check('…its table has a header row, then cell rows', rows.length === 3 && cellsOf(0).every((c) => c.type === 'tableHeader') && cellsOf(1).every((c) => c.type === 'tableCell'))
+  check('…each cell shaped as Ship saves one', cellsOf(1).every((c) => JSON.stringify(c.attrs) === '{"colspan":1,"rowspan":1}' && (c.content as Block[]).length === 1 && (c.content as Block[])[0].type === 'paragraph'))
+  check('…a cell keeps its marks', JSON.stringify(cellsOf(0)[1].content).includes('"bold"'))
+  check('…an escaped pipe is a pipe', cellText(1, 2) === 'a | pipe', cellText(1, 2))
+  check('…a short row is padded with empty cells', cellsOf(2).length === 3 && (cellsOf(2)[2].content as Block[])[0].content === undefined)
+  const allHaveIds = (list: Block[]): boolean =>
+    list.every((b) => b.type === 'text' || (typeof b.id === 'string' && b.id.length > 0 && allHaveIds(Array.isArray(b.content) ? (b.content as Block[]) : [])))
+  check('…every block, row, cell and cell paragraph has an id', allHaveIds(blocks))
+
+  // The negative control: text with no table reads exactly as Ship read the same text as marker text.
+  const plain = '# Heading\n\nA paragraph with **bold** and `code`.\n\n- one\n  - nested\n- two\n\n> quoted\n\n```\n| not | a table |\n| --- | --- |\n```'
+  const strip = (v: unknown): unknown => (Array.isArray(v) ? v.map(strip) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'id').map(([k, x]) => [k, strip(x)])) : v)
+  check(
+    'text with no table is the document Ship drew from it as marker text',
+    JSON.stringify(strip(blocksOf(describe('', undefined, plain).value))) === JSON.stringify(strip(markerTextToBlockDocument(plain).content)),
+  )
+  check('…and a table inside a code fence stays code', !blocksOf(describe('', undefined, plain).value).some((b) => b.type === 'table'))
+
+  // The agent reads its table back as the text it wrote, and can edit it.
+  const back = descriptionText(created.value, 'blocks')
+  check('a written table prints back as GFM', back.includes('| Option | **Good** | Bad |\n| --- | --- | --- |\n| Blocks | no wire change | a \\| pipe |\n| Marker |  |  |'), back)
+  check('…and sent back unchanged is the same document', editBlockDocument(created.value, back).value === created.value)
+  const edit = editBlockDocument(created.value, back.replace('no wire change', 'no wire change, ever'))
+  const after = blocksOf(edit.value).find((b) => b.type === 'table')!
+  check('editing one cell keeps the table, its rows and the other cells', after.id === table!.id && edit.removed.length === 0 && JSON.stringify((after.content as Block[])[0]) === JSON.stringify(rows[0]), JSON.stringify(edit.removed))
+  check('…and changes that cell', JSON.stringify(after).includes('no wire change, ever'))
+
+  // Two tables in one changed stretch: deleting the first does not hand its ids to the second.
+  const two = describe('', undefined, '| A |\n| --- |\n| 1 |\n\n| B |\n| --- |\n| 2 |')
+  const [first, second] = blocksOf(two.value)
+  const shownTwo = descriptionText(two.value, 'blocks')
+  const dropped = editBlockDocument(two.value, shownTwo.replace('| A |\n| --- |\n| 1 |\n\n', '').replace('| 2 |', '| 2, edited |'))
+  check('deleting one table and editing the other never moves the deleted one’s ids', !byId(dropped.value, first.id) && dropped.removed.includes(first.id), JSON.stringify(dropped.removed))
+  const kept = editBlockDocument(two.value, shownTwo.replace('| A |\n| --- |\n| 1 |\n\n', 'New paragraph.\n\n'))
+  check('…and an unchanged table keeps its own', byId(kept.value, second.id)?.type === 'table')
+  const spelled = describe('', undefined, '| A |\n| --- |\n\n7')
+  check('text that spells a placeholder stays text', blocksOf(spelled.value).map((b) => b.type).join() === 'table,paragraph')
+
+  // Ship's tables: a header row with one-line cells is editable; a heading in a cell is not.
+  const header = (id: string, t: string) => ({ ...cell(id, t), type: 'tableHeader' })
+  const shipTable = { type: 'doc', content: [{ type: 'table', id: 'st', content: [
+    { type: 'tableRow', id: 'sr1', content: [header('sh1', 'Who'), header('sh2', 'When')] },
+    { type: 'tableRow', id: 'sr2', content: [cell('sc1', 'Miky'), { type: 'tableCell', id: 'sc2', attrs: { colspan: 1, rowspan: 1 }, content: [{ type: 'paragraph', id: 'sc2p' }] }] },
+  ] }] }
+  const shipValue = JSON.stringify(shipTable)
+  const shipShown = descriptionText(shipValue, 'blocks')
+  check('a Ship table with a header row prints as GFM', shipShown === '| Who | When |\n| --- | --- |\n| Miky |  |', shipShown)
+  const filled = editBlockDocument(shipValue, shipShown.replace('| Miky |  |', '| Miky | 2026-10-13 |'))
+  check('…and filling its empty cell keeps every id', JSON.stringify(filled.removed) === '[]' && ['st', 'sr1', 'sr2', 'sh1', 'sc1', 'sc2', 'sc2p'].every((id) => byId(filled.value, id)) && filled.value.includes('2026-10-13'), JSON.stringify(filled.removed))
+  const headed = JSON.stringify({ type: 'doc', content: [{ ...shipTable.content[0], content: [shipTable.content[0].content[0], { type: 'tableRow', id: 'sr3', content: [
+    { type: 'tableCell', id: 'hc', attrs: { colspan: 1, rowspan: 1 }, content: [{ type: 'heading', id: 'hh', attrs: { level: 2 }, content: [text('A heading')] }] }, cell('hc2', 'x')] }] }] })
+  refuses('a table with a heading in a cell is still refused, not flattened', () => editBlockDocument(headed, descriptionText(headed, 'blocks').replace('A heading', 'Changed')), 'text cannot carry')
+
+  // create-issue's event: Ship's add-issue takes the block document, tagged.
+  const manifest = JSON.parse(JSON.parse(readFileSync(join(import.meta.dirname, '..', 'conformance', 'ship-manifest.json'), 'utf8')).event.content)
+  const self = 'a'.repeat(64)
+  const built = buildActionEvents({
+    manifest,
+    kind: 30850,
+    address: `30850:${self}:project-1`,
+    objectAuthor: self,
+    folder: 'f'.repeat(32),
+    actionId: 'add-issue',
+    value: { title: 'A table', description: created.value },
+    newId: 'issue-1',
+    contentFormat: created.contentFormat,
+    pubkey: self,
+    createdAtMs: 1_000_000,
+  })
+  if (typeof built === 'string') throw new Error(built)
+  check('add-issue carries content-format estiva-blocks-1 and the document', built[0].kind === 30851 && built[0].tags.some((t) => t[0] === 'content-format' && t[1] === 'estiva-blocks-1') && built[0].content === created.value, JSON.stringify(built[0].tags))
 }
 
 if (failures) {
