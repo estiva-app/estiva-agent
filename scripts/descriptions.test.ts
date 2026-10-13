@@ -277,6 +277,50 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
   check('add-issue carries content-format estiva-blocks-1 and the document', built[0].kind === 30851 && built[0].tags.some((t) => t[0] === 'content-format' && t[1] === 'estiva-blocks-1') && built[0].content === created.value, JSON.stringify(built[0].tags))
 }
 
+// RIC-19: a checklist item and a callout, as Ship's editor saves them.
+{
+  const tick = (id: string, t: string, checked?: boolean) => ({ type: 'listItem', id, ...(checked === undefined ? {} : { attrs: { checked } }), content: [text(t)] })
+  const checklist = JSON.stringify({
+    type: 'doc',
+    content: [
+      { type: 'bulletList', id: 'cl', content: [tick('k1', 'tests pass', true), tick('k2', 'merged', false), tick('k3', 'verified', false)] },
+      { type: 'blockquote', id: 'q1', attrs: { tone: 'warning' }, content: [text('Blocked on the deploy.')] },
+      { type: 'paragraph', id: 'p9', content: [text('After.')] },
+    ],
+  })
+  const printed = descriptionText(checklist, 'blocks')
+  check('a checklist prints its ticks', printed.startsWith('- [x] tests pass\n- [ ] merged\n- [ ] verified'), printed)
+  check('a callout prints its tone', printed.includes('> [!WARNING]\n> Blocked on the deploy.'), printed)
+  check('text sent back unchanged keeps the checklist and the callout', editBlockDocument(checklist, printed).value === checklist)
+
+  const ticked = editBlockDocument(checklist, printed.replace('- [ ] merged', '- [x] merged'))
+  check('ticking an item in the text ticks that item, under its id', byId(ticked.value, 'k2')?.attrs?.checked === true && byId(ticked.value, 'k1')?.attrs?.checked === true && byId(ticked.value, 'k3')?.attrs?.checked === false, ticked.value)
+
+  // Reordered, and the moved item reworded: it matches nothing by text, so the item at its index lends its id — but never its tick.
+  const moved = editBlockDocument(checklist, printed.replace('- [x] tests pass\n- [ ] merged', '- [ ] merged\n- [x] all tests pass'))
+  const items = (blocksOf(moved.value)[0].content as Block[]).map((b) => [(b.content as { text: string }[])[0].text, b.attrs?.checked])
+  check('a reordered checklist keeps each tick on its own item', JSON.stringify(items) === JSON.stringify([['merged', false], ['all tests pass', true], ['verified', false]]), JSON.stringify(items))
+
+  const unticked = editBlockDocument(checklist, printed.replace('- [x] tests pass', '- tests pass'))
+  check('a box taken away in the text leaves a plain item', byId(unticked.value, 'k1')?.attrs?.checked === undefined, JSON.stringify(byId(unticked.value, 'k1')))
+
+  const toned = editBlockDocument(checklist, printed.replace('[!WARNING]', '[!NOTE]'))
+  check('a callout\'s tone changes with its text, under its id', byId(toned.value, 'q1')?.attrs?.tone === 'note', JSON.stringify(byId(toned.value, 'q1')))
+
+  const plain = editBlockDocument(checklist, printed.replace('> [!WARNING]\n', ''))
+  check('a callout line taken away in the text leaves a plain quote, under its id', byId(plain.value, 'q1')?.attrs?.tone === undefined && byId(plain.value, 'q1') !== undefined, JSON.stringify(byId(plain.value, 'q1')))
+
+  const raised = editBlockDocument(checklist, printed.replace('After.', '> [!NOTE]\n> After.'))
+  check('a callout line added in the text makes a callout', blocksOf(raised.value).at(-1)?.attrs?.tone === 'note', raised.value)
+
+  const numbered = describe('', undefined, '1. [x] one\n2. [ ] two')
+  check('a numbered list reads ticks too', (blocksOf(numbered.value)[0].content as Block[]).map((b) => b.attrs?.checked).join() === 'true,false', numbered.value)
+
+  const created = describe('', undefined, '- [ ] first\n- [x] second\n\n> [!TIP]\n> Read the logs first.')
+  const createdBlocks = blocksOf(created.value)
+  check('a new description reads a checklist and a callout from text', (createdBlocks[0].content as Block[]).map((b) => b.attrs?.checked).join() === 'false,true' && createdBlocks[1].attrs?.tone === 'tip', created.value)
+}
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)

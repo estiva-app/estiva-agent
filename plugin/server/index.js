@@ -16359,6 +16359,10 @@ function listItemDepths(items) {
   return out;
 }
 var MAX_LIST_DEPTH = 8;
+function listItemChecked(item) {
+  const raw = item.attrs?.checked;
+  return typeof raw === "boolean" ? raw : void 0;
+}
 function inlineTextOf(block) {
   if (!Array.isArray(block.content))
     return "";
@@ -17024,7 +17028,26 @@ function textOf(block) {
   return block.content.map(textOf).join("\n");
 }
 var keyOf = (block) => `${block.type}\0${textOf(block)}`;
-function blockFromSegment(seg) {
+var TASK = /^\[( |x|X)\] /;
+var ALERT = /^\[!([A-Za-z]+)\]$/;
+function itemFromText(item, description) {
+  const task = description ? TASK.exec(item) : null;
+  if (!task)
+    return { type: "listItem", id: "", content: markersToInlineNodes(item) };
+  return {
+    type: "listItem",
+    id: "",
+    attrs: { checked: task[1] !== " " },
+    content: markersToInlineNodes(item.slice(task[0].length))
+  };
+}
+function quoteFromLines(lines, description) {
+  const alert = description && lines.length > 0 ? ALERT.exec(lines[0].trim()) : null;
+  if (!alert)
+    return { type: "blockquote", id: "", content: markersToInlineNodes(lines.join("\n")) };
+  return { type: "blockquote", id: "", attrs: { tone: alert[1].toLowerCase() }, content: markersToInlineNodes(lines.slice(1).join("\n")) };
+}
+function blockFromSegment(seg, description) {
   switch (seg.type) {
     case "heading":
       return { type: "heading", id: "", attrs: { level: seg.level }, content: markersToInlineNodes(seg.text) };
@@ -17032,17 +17055,17 @@ function blockFromSegment(seg) {
       return {
         type: "bulletList",
         id: "",
-        content: seg.items.map((item) => ({ type: "listItem", id: "", content: markersToInlineNodes(item) }))
+        content: seg.items.map((item) => itemFromText(item, description))
       };
     case "numbered":
       return {
         type: "orderedList",
         id: "",
         ...seg.start ? { attrs: { start: seg.start } } : {},
-        content: seg.items.map((item) => ({ type: "listItem", id: "", content: markersToInlineNodes(item) }))
+        content: seg.items.map((item) => itemFromText(item, description))
       };
     case "quote":
-      return { type: "blockquote", id: "", content: markersToInlineNodes(seg.lines.join("\n")) };
+      return quoteFromLines(seg.lines, description);
     case "code":
       return {
         type: "codeBlock",
@@ -17055,8 +17078,8 @@ function blockFromSegment(seg) {
       return { type: "paragraph", id: "", content: markersToInlineNodes(seg.lines.join("\n")) };
   }
 }
-function markerTextToBlockDocument(text2, previous) {
-  const fresh = parseBodySegments(text2).map(blockFromSegment);
+function markerTextToBlockDocument(text2, previous, options = {}) {
+  const fresh = parseBodySegments(text2).map((seg) => blockFromSegment(seg, options.description === true));
   const old = previous?.content ?? [];
   const takenIds = /* @__PURE__ */ new Set();
   const usedOld = /* @__PURE__ */ new Set();
@@ -17110,7 +17133,8 @@ function markerTextToBlockDocument(text2, previous) {
   return { type: "doc", content: fresh.map((block, i) => fill(block, ids[i] || void 0)) };
 }
 var itemText = (item) => isInlineRun2(item.content) ? inlineNodesToMarkers(item.content) : "";
-function blockDocumentToMarkerText(doc2) {
+function blockDocumentToMarkerText(doc2, options = {}) {
+  const description = options.description === true;
   const lines = [];
   for (const block of doc2.content) {
     const inline = isInlineRun2(block.content) ? inlineNodesToMarkers(block.content) : "";
@@ -17131,14 +17155,20 @@ function blockDocumentToMarkerText(doc2) {
           next.length = depth + 1;
           next[depth] ??= depth === 0 ? start : 1;
           const marker = block.type === "bulletList" ? "-" : `${next[depth]++}.`;
-          lines.push(`${"  ".repeat(depth)}${marker} ${itemText(item)}`);
+          const checked = description ? listItemChecked(item) : void 0;
+          const task = checked === void 0 ? "" : checked ? "[x] " : "[ ] ";
+          lines.push(`${"  ".repeat(depth)}${marker} ${task}${itemText(item)}`);
         });
         break;
       }
-      case "blockquote":
+      case "blockquote": {
+        const tone = description && typeof block.attrs?.tone === "string" && /^[A-Za-z]+$/.test(block.attrs.tone) ? block.attrs.tone : "";
+        if (tone)
+          lines.push(`> [!${tone.toUpperCase()}]`);
         for (const line of inline.split("\n"))
           lines.push(`> ${line}`);
         break;
+      }
       case "codeBlock": {
         const language = typeof block.attrs?.language === "string" ? block.attrs.language : "";
         lines.push("```" + language, inline, "```");
@@ -17764,7 +17794,8 @@ function canonical(value) {
   }
   return JSON.stringify(value);
 }
-var protocolText = (block) => blockDocumentToMarkerText(doc([trimRuns(block)]));
+var protocolText = (block) => blockDocumentToMarkerText(doc([trimRuns(block)]), DESCRIPTION);
+var DESCRIPTION = { description: true };
 function trimRuns(block) {
   const children = childBlocks(block);
   if (children) return { ...block, content: children.map(trimRuns) };
@@ -17814,7 +17845,7 @@ function textToBlocks(text2, previous) {
     out.push("", `${PLACEHOLDER}${tables.length}${PLACEHOLDER}`, "");
     tables.push(rows);
   }
-  if (!tables.length) return markerTextToBlockDocument(text2, doc(previous)).content;
+  if (!tables.length) return markerTextToBlockDocument(text2, doc(previous), DESCRIPTION).content;
   const oldTables = previous.filter((block) => block.type === "table");
   const used = /* @__PURE__ */ new Set();
   const lend = (rows, n) => {
@@ -17825,7 +17856,7 @@ function textToBlocks(text2, previous) {
     if (old) used.add(old);
     return old;
   };
-  return markerTextToBlockDocument(out.join("\n"), doc(previous)).content.map((block) => {
+  return markerTextToBlockDocument(out.join("\n"), doc(previous), DESCRIPTION).content.map((block) => {
     const n = block.type === "paragraph" ? Number(PLACEHOLDER_PARAGRAPH.exec(inlineTextOf(block))?.[1] ?? NaN) : NaN;
     return n < tables.length ? tableBlock(tables[n], lend(tables[n], n)) : block;
   });
@@ -17905,8 +17936,11 @@ function carryChildIds(before, after) {
     const candidate = before[i];
     if (!candidate || used.has(i) || candidate.type !== child.type) return child;
     used.add(i);
-    const { content: _content, ...shape } = candidate;
-    return { ...shape, ...child.content !== void 0 ? { content: child.content } : {} };
+    const { content: _content, attrs, ...shape } = candidate;
+    const { checked: was, ...rest } = attrs ?? {};
+    const checked = child.attrs?.checked ?? (typeof was === "boolean" ? void 0 : was);
+    const merged = { ...rest, ...checked !== void 0 ? { checked } : {} };
+    return { ...shape, ...Object.keys(merged).length ? { attrs: merged } : {}, ...child.content !== void 0 ? { content: child.content } : {} };
   });
 }
 var readsTheSame = (a, b) => screenKey(a) === screenKey(b);
