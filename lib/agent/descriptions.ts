@@ -273,8 +273,10 @@ function carryChildIds(before: Block[], after: Block[] | undefined): Block[] | u
     if (!candidate || used.has(i) || candidate.type !== child.type) return child
     used.add(i)
     const { content: _content, attrs, ...shape } = candidate
-    const { checked: _was, ...rest } = attrs ?? {}
-    const merged = { ...rest, ...(child.attrs?.checked !== undefined ? { checked: child.attrs.checked } : {}) }
+    const { checked: was, ...rest } = attrs ?? {}
+    // A `checked` text cannot spell (not a boolean) prints as a plain item, so plain text keeps it as another app wrote it.
+    const checked = child.attrs?.checked ?? (typeof was === 'boolean' ? undefined : was)
+    const merged = { ...rest, ...(checked !== undefined ? { checked } : {}) }
     return { ...shape, ...(Object.keys(merged).length ? { attrs: merged } : {}), ...(child.content !== undefined ? { content: child.content } : {}) }
   })
 }

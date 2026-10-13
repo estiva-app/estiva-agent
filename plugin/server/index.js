@@ -17937,8 +17937,9 @@ function carryChildIds(before, after) {
     if (!candidate || used.has(i) || candidate.type !== child.type) return child;
     used.add(i);
     const { content: _content, attrs, ...shape } = candidate;
-    const { checked: _was, ...rest } = attrs ?? {};
-    const merged = { ...rest, ...child.attrs?.checked !== void 0 ? { checked: child.attrs.checked } : {} };
+    const { checked: was, ...rest } = attrs ?? {};
+    const checked = child.attrs?.checked ?? (typeof was === "boolean" ? void 0 : was);
+    const merged = { ...rest, ...checked !== void 0 ? { checked } : {} };
     return { ...shape, ...Object.keys(merged).length ? { attrs: merged } : {}, ...child.content !== void 0 ? { content: child.content } : {} };
   });
 }

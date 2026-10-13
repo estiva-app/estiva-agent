@@ -307,6 +307,15 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
   const toned = editBlockDocument(checklist, printed.replace('[!WARNING]', '[!NOTE]'))
   check('a callout\'s tone changes with its text, under its id', byId(toned.value, 'q1')?.attrs?.tone === 'note', JSON.stringify(byId(toned.value, 'q1')))
 
+  const plain = editBlockDocument(checklist, printed.replace('> [!WARNING]\n', ''))
+  check('a callout line taken away in the text leaves a plain quote, under its id', byId(plain.value, 'q1')?.attrs?.tone === undefined && byId(plain.value, 'q1') !== undefined, JSON.stringify(byId(plain.value, 'q1')))
+
+  const raised = editBlockDocument(checklist, printed.replace('After.', '> [!NOTE]\n> After.'))
+  check('a callout line added in the text makes a callout', blocksOf(raised.value).at(-1)?.attrs?.tone === 'note', raised.value)
+
+  const numbered = describe('', undefined, '1. [x] one\n2. [ ] two')
+  check('a numbered list reads ticks too', (blocksOf(numbered.value)[0].content as Block[]).map((b) => b.attrs?.checked).join() === 'true,false', numbered.value)
+
   const created = describe('', undefined, '- [ ] first\n- [x] second\n\n> [!TIP]\n> Read the logs first.')
   const createdBlocks = blocksOf(created.value)
   check('a new description reads a checklist and a callout from text', (createdBlocks[0].content as Block[]).map((b) => b.attrs?.checked).join() === 'false,true' && createdBlocks[1].attrs?.tone === 'tip', created.value)
