@@ -2239,8 +2239,8 @@ var require_resolve = __commonJS({
     }
     exports.getFullPath = getFullPath;
     function _getFullPath(resolver, p) {
-      const serialized = resolver.serialize(p);
-      return serialized.split("#")[0] + "#";
+      const serialized2 = resolver.serialize(p);
+      return serialized2.split("#")[0] + "#";
     }
     exports._getFullPath = _getFullPath;
     var TRAILING_SLASH_HASH = /#\/?$/;
@@ -17816,18 +17816,32 @@ function textToBlocks(text2, previous) {
   }
   if (!tables.length) return markerTextToBlockDocument(text2, doc(previous)).content;
   const oldTables = previous.filter((block) => block.type === "table");
+  const used = /* @__PURE__ */ new Set();
+  const lend = (rows, n) => {
+    const printed2 = tableText(tableBlock(rows, void 0));
+    const same = oldTables.find((old2) => !used.has(old2) && printed2 !== void 0 && tableText(old2) === printed2);
+    const positional = oldTables.length === tables.length && !used.has(oldTables[n]) ? oldTables[n] : void 0;
+    const old = same ?? positional;
+    if (old) used.add(old);
+    return old;
+  };
   return markerTextToBlockDocument(out.join("\n"), doc(previous)).content.map((block) => {
-    const n = block.type === "paragraph" ? new RegExp(`^${PLACEHOLDER}(\\d+)${PLACEHOLDER}$`).exec(inlineTextOf(block))?.[1] : void 0;
-    return n === void 0 ? block : tableBlock(tables[Number(n)], oldTables[Number(n)]);
+    const n = block.type === "paragraph" ? Number(PLACEHOLDER_PARAGRAPH.exec(inlineTextOf(block))?.[1] ?? NaN) : NaN;
+    return n < tables.length ? tableBlock(tables[n], lend(tables[n], n)) : block;
   });
 }
 var PLACEHOLDER = "\uE000";
+var PLACEHOLDER_PARAGRAPH = new RegExp(`^${PLACEHOLDER}(\\d+)${PLACEHOLDER}$`);
 var TABLE_ROW = /^ {0,3}\|/;
 function rowCells(line) {
   const inner = line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "");
   return inner.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|"));
 }
-var isSeparator = (line, width) => TABLE_ROW.test(line) && rowCells(line).length === width && rowCells(line).every((cell) => /^:?-+:?$/.test(cell));
+function isSeparator(line, width) {
+  if (!TABLE_ROW.test(line)) return false;
+  const cells = rowCells(line);
+  return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell));
+}
 function tableBlock(rows, old) {
   const width = rows[0].length;
   const oldRows = old ? childBlocks(old) ?? [] : [];
@@ -18035,17 +18049,19 @@ function editBlockDocument(previous, text2) {
       else added++;
     }
   }
-  const result = doc(out);
-  const problems = validateBlockDocument(result);
-  if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join("; ")}. Nothing was published.`);
   const present = new Set(allIds(out));
   return {
-    value: serializeBlockDocument(result),
+    value: serialized(out),
     kept,
     edited: edited2,
     added,
     removed: allIds(before).filter((id) => !present.has(id))
   };
+}
+function serialized(blocks) {
+  const problems = validateBlockDocument(doc(blocks));
+  if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join("; ")}. Nothing was published.`);
+  return serializeBlockDocument(doc(blocks));
 }
 function allIds(blocks) {
   return blocks.flatMap((block) => [block.id, ...allIds(childBlocks(block) ?? [])]).filter(Boolean);
@@ -18057,9 +18073,7 @@ function describe2(previous, format, text2) {
   if (format !== "blocks") {
     if (!text2.trim()) return { value: text2 };
     const blocks2 = textToBlocks(text2, []);
-    const problems = validateBlockDocument(doc(blocks2));
-    if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join("; ")}. Nothing was published.`);
-    return { value: serializeBlockDocument(doc(blocks2)), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks2.length, removed: [] } };
+    return { value: serialized(blocks2), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks2.length, removed: [] } };
   }
   try {
     parseBlockDocument(previous);

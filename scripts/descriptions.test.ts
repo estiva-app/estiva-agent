@@ -231,6 +231,17 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
   check('editing one cell keeps the table, its rows and the other cells', after.id === table!.id && edit.removed.length === 0 && JSON.stringify((after.content as Block[])[0]) === JSON.stringify(rows[0]), JSON.stringify(edit.removed))
   check('…and changes that cell', JSON.stringify(after).includes('no wire change, ever'))
 
+  // Two tables in one changed stretch: deleting the first does not hand its ids to the second.
+  const two = describe('', undefined, '| A |\n| --- |\n| 1 |\n\n| B |\n| --- |\n| 2 |')
+  const [first, second] = blocksOf(two.value)
+  const shownTwo = descriptionText(two.value, 'blocks')
+  const dropped = editBlockDocument(two.value, shownTwo.replace('| A |\n| --- |\n| 1 |\n\n', '').replace('| 2 |', '| 2, edited |'))
+  check('deleting one table and editing the other never moves the deleted one’s ids', !byId(dropped.value, first.id) && dropped.removed.includes(first.id), JSON.stringify(dropped.removed))
+  const kept = editBlockDocument(two.value, shownTwo.replace('| A |\n| --- |\n| 1 |\n\n', 'New paragraph.\n\n'))
+  check('…and an unchanged table keeps its own', byId(kept.value, second.id)?.type === 'table')
+  const spelled = describe('', undefined, '| A |\n| --- |\n\n7')
+  check('text that spells a placeholder stays text', blocksOf(spelled.value).map((b) => b.type).join() === 'table,paragraph')
+
   // Ship's tables: a header row with one-line cells is editable; a heading in a cell is not.
   const header = (id: string, t: string) => ({ ...cell(id, t), type: 'tableHeader' })
   const shipTable = { type: 'doc', content: [{ type: 'table', id: 'st', content: [

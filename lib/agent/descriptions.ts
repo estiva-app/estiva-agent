@@ -120,8 +120,10 @@ function reparse(text: string, previous: Block[]): Block[] {
  * header row, a `| --- |` row, then rows — read as a `table` block. A table is
  * a block boundary, so it stands in the marker text as a placeholder
  * paragraph of its own, and the document is parsed once: `previous` then
- * lends ids by the same index the whole text has. The n-th table takes the
- * n-th table of `previous`'s ids, row by row and cell by cell.
+ * lends ids by the same index the whole text has. A table takes the ids of a
+ * table in `previous` that prints the same; failing that, of the table at its
+ * position, but only when the text has as many tables as `previous` — else a
+ * deleted table's ids would pass to the next one.
  */
 function textToBlocks(text: string, previous: Block[]): Block[] {
   const tables: string[][][] = []
@@ -144,14 +146,25 @@ function textToBlocks(text: string, previous: Block[]): Block[] {
   }
   if (!tables.length) return markerTextToBlockDocument(text, doc(previous)).content
   const oldTables = previous.filter((block) => block.type === 'table')
+  const used = new Set<Block>()
+  const lend = (rows: string[][], n: number): Block | undefined => {
+    const printed = tableText(tableBlock(rows, undefined))
+    const same = oldTables.find((old) => !used.has(old) && printed !== undefined && tableText(old) === printed)
+    const positional = oldTables.length === tables.length && !used.has(oldTables[n]) ? oldTables[n] : undefined
+    const old = same ?? positional
+    if (old) used.add(old)
+    return old
+  }
   return markerTextToBlockDocument(out.join('\n'), doc(previous)).content.map((block) => {
-    const n = block.type === 'paragraph' ? new RegExp(`^${PLACEHOLDER}(\\d+)${PLACEHOLDER}$`).exec(inlineTextOf(block))?.[1] : undefined
-    return n === undefined ? block : tableBlock(tables[Number(n)], oldTables[Number(n)])
+    const n = block.type === 'paragraph' ? Number(PLACEHOLDER_PARAGRAPH.exec(inlineTextOf(block))?.[1] ?? NaN) : NaN
+    // Text that merely spells a placeholder is left as it was written.
+    return n < tables.length ? tableBlock(tables[n], lend(tables[n], n)) : block
   })
 }
 
 /** A private-use character, so no text a person writes is mistaken for a table's place. */
-const PLACEHOLDER = ''
+const PLACEHOLDER = '\uE000'
+const PLACEHOLDER_PARAGRAPH = new RegExp(`^${PLACEHOLDER}(\\d+)${PLACEHOLDER}$`)
 const TABLE_ROW = /^ {0,3}\|/
 
 /** A row's cells, `\|` read as a literal pipe. */
@@ -161,8 +174,11 @@ function rowCells(line: string): string[] {
 }
 
 /** GFM's delimiter row: one `---` (optionally `:`-aligned) per header cell. */
-const isSeparator = (line: string, width: number) =>
-  TABLE_ROW.test(line) && rowCells(line).length === width && rowCells(line).every((cell) => /^:?-+:?$/.test(cell))
+function isSeparator(line: string, width: number): boolean {
+  if (!TABLE_ROW.test(line)) return false
+  const cells = rowCells(line)
+  return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell))
+}
 
 function tableBlock(rows: string[][], old: Block | undefined): Block {
   const width = rows[0].length
@@ -464,17 +480,21 @@ export function editBlockDocument(previous: string, text: string): BlockEdit {
     }
   }
 
-  const result = doc(out)
-  const problems = validateBlockDocument(result)
-  if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join('; ')}. Nothing was published.`)
   const present = new Set(allIds(out))
   return {
-    value: serializeBlockDocument(result),
+    value: serialized(out),
     kept,
     edited,
     added,
     removed: allIds(before).filter((id) => !present.has(id)),
   }
+}
+
+/** The document as it goes on the wire, refused if it is not a valid one. */
+function serialized(blocks: Block[]): string {
+  const problems = validateBlockDocument(doc(blocks))
+  if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join('; ')}. Nothing was published.`)
+  return serializeBlockDocument(doc(blocks))
 }
 
 function allIds(blocks: Block[]): string[] {
@@ -499,9 +519,7 @@ export function describe(
   if (format !== 'blocks') {
     if (!text.trim()) return { value: text }
     const blocks = textToBlocks(text, [])
-    const problems = validateBlockDocument(doc(blocks))
-    if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join('; ')}. Nothing was published.`)
-    return { value: serializeBlockDocument(doc(blocks)), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks.length, removed: [] } }
+    return { value: serialized(blocks), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks.length, removed: [] } }
   }
   try {
     parseBlockDocument(previous)
