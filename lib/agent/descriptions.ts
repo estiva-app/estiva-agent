@@ -28,6 +28,9 @@
  * saves one (RIC-20). So a table Ship's editor wrote is spellable when its
  * first row is a header and each cell one line of text, and the agent can edit
  * it as text; any other table still prints as `| … |` lines and is refused.
+ * A checklist item prints as `- [ ] ` / `- [x] ` and a callout as a quote
+ * opening `> [!NOTE]` (RIC-19), so the agent reads which items are ticked and
+ * can tick one; an unchanged chunk keeps its block verbatim as before.
  *
  * **Every description the agent writes is a block document** (RIC-20, Miky
  * 2026-10-13: option 1). A new description, or an edit of a marker one, is the
@@ -76,7 +79,14 @@ function canonical(value: unknown): string {
  * which nobody sees but which prints a blank line inside the list, and a blank
  * line ends a list: read back, it would be two.
  */
-const protocolText = (block: Block) => blockDocumentToMarkerText(doc([trimRuns(block)]))
+const protocolText = (block: Block) => blockDocumentToMarkerText(doc([trimRuns(block)]), DESCRIPTION)
+
+/**
+ * A description's text spells a checklist item (`- [ ] `, `- [x] `) and a
+ * callout (a `> [!NOTE]` first line), as protocol reads them back (RIC-19,
+ * Miky 2026-10-13); a message's text does not.
+ */
+const DESCRIPTION = { description: true }
 
 function trimRuns(block: Block): Block {
   const children = childBlocks(block)
@@ -144,7 +154,7 @@ function textToBlocks(text: string, previous: Block[]): Block[] {
     out.push('', `${PLACEHOLDER}${tables.length}${PLACEHOLDER}`, '')
     tables.push(rows)
   }
-  if (!tables.length) return markerTextToBlockDocument(text, doc(previous)).content
+  if (!tables.length) return markerTextToBlockDocument(text, doc(previous), DESCRIPTION).content
   const oldTables = previous.filter((block) => block.type === 'table')
   const used = new Set<Block>()
   const lend = (rows: string[][], n: number): Block | undefined => {
@@ -155,7 +165,7 @@ function textToBlocks(text: string, previous: Block[]): Block[] {
     if (old) used.add(old)
     return old
   }
-  return markerTextToBlockDocument(out.join('\n'), doc(previous)).content.map((block) => {
+  return markerTextToBlockDocument(out.join('\n'), doc(previous), DESCRIPTION).content.map((block) => {
     const n = block.type === 'paragraph' ? Number(PLACEHOLDER_PARAGRAPH.exec(inlineTextOf(block))?.[1] ?? NaN) : NaN
     // Text that merely spells a placeholder is left as it was written.
     return n < tables.length ? tableBlock(tables[n], lend(tables[n], n)) : block
@@ -241,7 +251,9 @@ const printable = (block: Block): string | undefined => (block.type === 'table' 
 /**
  * List items keep their ids by the same rule as blocks: one that still reads
  * the same is kept whole, wherever it moved; else the item at the same index
- * keeps its id and attrs with the new text.
+ * keeps its id and attrs with the new text — except its tick, which is the
+ * text's (`- [x]`), so a tick never stays behind on an item the text moved
+ * away from (RIC-19).
  */
 function carryChildIds(before: Block[], after: Block[] | undefined): Block[] | undefined {
   if (!after) return undefined
@@ -260,8 +272,10 @@ function carryChildIds(before: Block[], after: Block[] | undefined): Block[] | u
     const candidate = before[i]
     if (!candidate || used.has(i) || candidate.type !== child.type) return child
     used.add(i)
-    const { content: _content, ...shape } = candidate
-    return { ...shape, ...(child.content !== undefined ? { content: child.content } : {}) }
+    const { content: _content, attrs, ...shape } = candidate
+    const { checked: _was, ...rest } = attrs ?? {}
+    const merged = { ...rest, ...(child.attrs?.checked !== undefined ? { checked: child.attrs.checked } : {}) }
+    return { ...shape, ...(Object.keys(merged).length ? { attrs: merged } : {}), ...(child.content !== undefined ? { content: child.content } : {}) }
   })
 }
 
