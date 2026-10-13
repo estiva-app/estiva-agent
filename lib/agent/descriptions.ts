@@ -18,10 +18,21 @@
  *    module's rule (same type and text, else same type at the same index). A
  *    re-parsed block keeps the old block's attrs and its list items' ids
  *    wherever the text still spells them — a level-3 heading prints as `#`.
- * 3. **A changed stretch that held a block marker text cannot spell is
- *    refused**, because re-parsing it would quietly turn a table into a
- *    paragraph. Deleting such a block outright — its lines gone, nothing in
- *    their place — is allowed.
+ * 3. **A changed stretch that held a block text cannot spell is refused**,
+ *    because re-parsing it would quietly turn it into a paragraph. Deleting
+ *    such a block outright — its lines gone, nothing in their place — is
+ *    allowed.
+ *
+ * Text is read as marker text plus one thing marker text has no syntax for: a
+ * GFM pipe table, which becomes a §13.3 `table` block shaped as Ship's editor
+ * saves one (RIC-20). So a table Ship's editor wrote is spellable when its
+ * first row is a header and each cell one line of text, and the agent can edit
+ * it as text; any other table still prints as `| … |` lines and is refused.
+ *
+ * **Every description the agent writes is a block document** (RIC-20, Miky
+ * 2026-10-13: option 1). A new description, or an edit of a marker one, is the
+ * text read as above and tagged `estiva-blocks-1`; marker text itself does not
+ * learn tables, so Peek messages draw exactly as before.
  *
  * Generic rather than Ship's: the block document is the protocol's, and any
  * app's prose field declaring `estiva-blocks-1` is edited the same way.
@@ -31,6 +42,7 @@ import {
   blockDocumentToMarkerText,
   inlineTextOf,
   markerTextToBlockDocument,
+  newBlockId,
   parseBlockDocument,
   serializeBlockDocument,
   validateBlockDocument,
@@ -90,7 +102,7 @@ function trimRuns(block: Block): Block {
  */
 function reparse(text: string, previous: Block[]): Block[] {
   const old = new Map(previous.filter((block) => block.id).map((block) => [block.id, block]))
-  return markerTextToBlockDocument(text, doc(previous)).content.map((fresh) => {
+  return textToBlocks(text, previous).map((fresh) => {
     const before = old.get(fresh.id)
     if (!before) return fresh
     const children = carryChildIds(childBlocks(before) ?? [], childBlocks(fresh))
@@ -102,6 +114,113 @@ function reparse(text: string, previous: Block[]): Block[] {
     return protocolText(kept) === protocolText(updated) ? kept : updated
   })
 }
+
+/**
+ * Text as blocks: protocol's marker reading, with each GFM pipe table — a
+ * header row, a `| --- |` row, then rows — read as a `table` block. A table is
+ * a block boundary, so it stands in the marker text as a placeholder
+ * paragraph of its own, and the document is parsed once: `previous` then
+ * lends ids by the same index the whole text has. The n-th table takes the
+ * n-th table of `previous`'s ids, row by row and cell by cell.
+ */
+function textToBlocks(text: string, previous: Block[]): Block[] {
+  const tables: string[][][] = []
+  const lines = text.split('\n')
+  const out: string[] = []
+  let fenced = false
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (/^ {0,3}```/.test(line)) fenced = !fenced
+    const header = !fenced && TABLE_ROW.test(line) ? rowCells(line) : undefined
+    if (!header || i + 1 >= lines.length || !isSeparator(lines[i + 1], header.length)) {
+      out.push(line)
+      continue
+    }
+    const rows = [header]
+    for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) rows.push(rowCells(lines[i]))
+    i--
+    out.push('', `${PLACEHOLDER}${tables.length}${PLACEHOLDER}`, '')
+    tables.push(rows)
+  }
+  if (!tables.length) return markerTextToBlockDocument(text, doc(previous)).content
+  const oldTables = previous.filter((block) => block.type === 'table')
+  return markerTextToBlockDocument(out.join('\n'), doc(previous)).content.map((block) => {
+    const n = block.type === 'paragraph' ? new RegExp(`^${PLACEHOLDER}(\\d+)${PLACEHOLDER}$`).exec(inlineTextOf(block))?.[1] : undefined
+    return n === undefined ? block : tableBlock(tables[Number(n)], oldTables[Number(n)])
+  })
+}
+
+/** A private-use character, so no text a person writes is mistaken for a table's place. */
+const PLACEHOLDER = ''
+const TABLE_ROW = /^ {0,3}\|/
+
+/** A row's cells, `\|` read as a literal pipe. */
+function rowCells(line: string): string[] {
+  const inner = line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '')
+  return inner.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, '|'))
+}
+
+/** GFM's delimiter row: one `---` (optionally `:`-aligned) per header cell. */
+const isSeparator = (line: string, width: number) =>
+  TABLE_ROW.test(line) && rowCells(line).length === width && rowCells(line).every((cell) => /^:?-+:?$/.test(cell))
+
+function tableBlock(rows: string[][], old: Block | undefined): Block {
+  const width = rows[0].length
+  const oldRows = old ? (childBlocks(old) ?? []) : []
+  return {
+    type: 'table',
+    id: old?.id ?? newBlockId(),
+    content: rows.map((cells, r) => {
+      const oldCells = oldRows[r] ? (childBlocks(oldRows[r]) ?? []) : []
+      const type = r === 0 ? 'tableHeader' : 'tableCell'
+      return {
+        type: 'tableRow',
+        id: oldRows[r]?.id ?? newBlockId(),
+        content: Array.from({ length: width }, (_, c) => tableCell(type, cells[c] ?? '', oldCells[c]?.type === type ? oldCells[c] : undefined)),
+      }
+    }),
+  }
+}
+
+/** A cell as Ship's editor saves one: one paragraph, the text's inline marks kept. */
+function tableCell(type: string, text: string, old: Block | undefined): Block {
+  const [parsed, ...more] = text ? markerTextToBlockDocument(text).content : []
+  const paragraph: Block =
+    parsed?.type === 'paragraph' && !more.length ? parsed : text ? { type: 'paragraph', id: '', content: [{ type: 'text', text }] } : { type: 'paragraph', id: '' }
+  const oldParagraph = old ? childBlocks(old)?.[0] : undefined
+  return {
+    type,
+    id: old?.id ?? newBlockId(),
+    attrs: old?.attrs ?? { colspan: 1, rowspan: 1 },
+    content: [{ ...paragraph, id: oldParagraph?.type === 'paragraph' ? oldParagraph.id : newBlockId() }],
+  }
+}
+
+/**
+ * A table as GFM text, for a table text can carry: a header row first, and
+ * each cell one paragraph on one line. Anything else prints as its stand-in.
+ */
+function tableText(block: Block): string | undefined {
+  const rows = (childBlocks(block) ?? []).map((row) => childBlocks(row) ?? [])
+  if (!rows.length || !rows[0].length) return undefined
+  const lines: string[] = []
+  for (const [r, cells] of rows.entries()) {
+    if (cells.some((cell) => cell.type !== (r === 0 ? 'tableHeader' : 'tableCell'))) return undefined
+    const texts = cells.map((cell) => {
+      const children = childBlocks(cell) ?? []
+      if (children.length > 1 || (children[0] && children[0].type !== 'paragraph')) return undefined
+      const line = children[0] && Array.isArray(children[0].content) ? protocolText(children[0]) : ''
+      return line.includes('\n') ? undefined : line.replace(/\|/g, '\\|')
+    })
+    if (texts.some((t) => t === undefined)) return undefined
+    lines.push(`| ${texts.join(' | ')} |`)
+    if (r === 0) lines.push(`| ${cells.map(() => '---').join(' | ')} |`)
+  }
+  return lines.join('\n')
+}
+
+/** A block as text, when text has a syntax for it. */
+const printable = (block: Block): string | undefined => (block.type === 'table' ? tableText(block) : protocolText(block))
 
 /**
  * List items keep their ids by the same rule as blocks: one that still reads
@@ -136,12 +255,12 @@ const screenKey = (block: Block) => canonical(visible({ ...block, id: '' }))
 
 /**
  * Whether text can carry this block: printing it and reading it back gives the
- * same block, id and all. A table, an attachment, a nested list or an inline
- * node marker text has no syntax for does not.
+ * same block, id and all. An attachment, a table that is not one header row
+ * and one-line cells, or an inline node marker text has no syntax for does not.
  */
 function spellable(block: Block): boolean {
-  const text = protocolText(block)
-  if (!text.trim()) return false
+  const text = printable(block)
+  if (!text?.trim()) return false
   const back = reparse(text, [block])
   return back.length === 1 && canonical(visible(back[0])) === canonical(visible(block))
 }
@@ -193,7 +312,7 @@ const cellText = (cell: Block): string =>
 /** What one block reads as, in the text the agent is shown. */
 const blockText = (block: Block) => {
   let text = printed.get(block)
-  if (text === undefined) printed.set(block, (text = spellable(block) ? protocolText(block) : standIn(block)))
+  if (text === undefined) printed.set(block, (text = spellable(block) ? printable(block)! : standIn(block)))
   return text
 }
 /** `spellable` re-parses a block, and one block is printed several times per edit — and per project in `ship projects`. */
@@ -363,9 +482,11 @@ function allIds(blocks: Block[]): string[] {
 }
 
 /**
- * The value to publish for a new description, given the one it replaces: the
- * text itself for marker text, an edited document for a block document. A
- * format this version cannot read is refused rather than overwritten.
+ * The value to publish for a new description, given the one it replaces: an
+ * edited document for a block document, and a new one read from the text for
+ * marker text or none (`''`) — marker text has no block ids, so nothing
+ * anchored to it is lost. An empty text stays empty. A format this version
+ * cannot read is refused rather than overwritten.
  */
 export function describe(
   previous: string,
@@ -375,7 +496,13 @@ export function describe(
   if (format === 'unknown') {
     throw new BadRequest('This description is in a content format this version does not read, so it cannot be edited without losing it. Nothing was published.')
   }
-  if (format !== 'blocks') return { value: text }
+  if (format !== 'blocks') {
+    if (!text.trim()) return { value: text }
+    const blocks = textToBlocks(text, [])
+    const problems = validateBlockDocument(doc(blocks))
+    if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join('; ')}. Nothing was published.`)
+    return { value: serializeBlockDocument(doc(blocks)), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks.length, removed: [] } }
+  }
   try {
     parseBlockDocument(previous)
   } catch {

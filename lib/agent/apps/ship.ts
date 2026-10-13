@@ -334,8 +334,9 @@ export type ProjectEdit = FieldEdit
  * A new description, given as text (AGE-8). One saved from Ship's editor is a
  * block document whose blocks comments anchor to (§13.6), so the text is
  * applied to it — every block it does not change keeps its id — and the change
- * is tagged `estiva-blocks-1`. Marker text is written as it comes.
- * `lib/agent/descriptions.ts` has the matching rule.
+ * is tagged `estiva-blocks-1`. A marker description becomes a block document
+ * read from the text, tables included (RIC-20). `lib/agent/descriptions.ts`
+ * has the matching rule.
  */
 function descriptionEdit(subject: Pick<Project, 'description' | 'descriptionFormat'>, text: string): FieldEdit {
   const { value, contentFormat, blocks } = describe(subject.description, subject.descriptionFormat, text)
@@ -2250,8 +2251,12 @@ export const shipApp: AgentApp = {
 
         Both kinds are declared, so a credential that cannot list in a team is
         told before the record is written rather than after (PEEK-172).
+
+        A description follows as a `describe-project` change (RIC-20): it is a
+        block document, and Ship's `add-project` declares no format for its
+        description, so the record cannot carry one.
       */
-      signs: [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND],
+      signs: [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND, KIND_CHANGE],
       summary: 'start a new project in a team',
       usage: 'create-project --team <name|folder> --title "..." [--description "..."]',
       async run(context, args) {
@@ -2270,17 +2275,22 @@ export const shipApp: AgentApp = {
         const state = await loadWorkspace(context)
         const id = randomUUID()
         const description = flagValue(args, 'description')
+        const body = description ? describe('', undefined, description) : undefined
         const [result, placed] = await act(
           context,
           state,
           { addr: team.channel ?? `${KIND_CHANNEL_METADATA}::${team.id}`, author: '', folder: team.id },
           'add-project',
-          { name: title, ...(description ? { description } : {}) },
+          { name: title, ...(body && !body.contentFormat ? { description: body.value } : {}) },
           [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND],
           { newId: id, folderHasState: team.hasState, manifest: state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`) },
         )
         const created = { result, placed, addr: `${KIND.PROJECT}:${context.signer.pubkey}:${id}` }
         published(created.result, `a new project "${title}"`)
+        const described = body?.contentFormat
+          ? await setField(context, state, { addr: created.addr, author: context.signer.pubkey, folder: team.id }, 'description', body.value, 'Description', body.contentFormat)
+          : undefined
+        if (described) published(described, `the description of "${title}" — the project itself was created, ${created.addr}, without one`)
 
         return {
           created: { title, addr: created.addr, team: { id: team.id, name: team.name } },
@@ -2324,15 +2334,17 @@ export const shipApp: AgentApp = {
         // (MAN-5). The record's own Folder only when nothing lists it.
         const listed = (await readFolders(context)).find((folder) => folder.addresses?.includes(project.addr))?.id
         const id = randomUUID()
+        // A block document (RIC-20), which Ship's `add-issue` declares for its description.
         const description = flagValue(args, 'description')
+        const body = description ? describe('', undefined, description) : undefined
         const [result] = await act(
           context,
           state,
           { addr: project.addr, author: project.author, folder: listed ?? project.contentFolder },
           'add-issue',
-          { title, ...(description ? { description } : {}) },
+          { title, ...(body ? { description: body.value } : {}) },
           [KIND.ISSUE],
-          { newId: id },
+          { newId: id, contentFormat: body?.contentFormat },
         )
         const created = { result, id, addr: `${KIND.ISSUE}:${context.signer.pubkey}:${id}` }
         published(created.result, `a new issue in ${project.title}`)

@@ -103,10 +103,20 @@ chunk per block, with `descriptionFormat: "estiva-blocks-1"`; edit that text and
 pass it back to `edit-issue`/`edit-project --description`. Every chunk that comes
 back unchanged keeps its block exactly — id, table, attachment — and a changed
 stretch keeps the ids of the blocks it rewrites where it can (AGE-8,
-`lib/agent/descriptions.ts`). Leave a table's `| … |` lines or an
-`[attachment: …]` line as printed: changing the text around one is refused,
-because text cannot carry it. The write's `blocks.removed` lists ids that are
+`lib/agent/descriptions.ts`). The write's `blocks.removed` lists ids that are
 gone; a comment anchored to one now shows as detached.
+
+**Every description the agent writes is a block document** (RIC-20, Miky
+2026-10-13). `create-issue`, `create-project` and an edit of a marker
+description read the text as marker text plus GFM pipe tables — a header row,
+a `| --- |` row, then rows — and tag the result `estiva-blocks-1`, so a table
+draws as a table in Ship and Peek. `create-project` writes the description as a
+`describe-project` change after the record, because Ship's `add-project`
+declares no format for it. A table with a header row and one-line cells prints
+back as that GFM and can be edited as text; any other table (no header, a
+heading or a line break in a cell) prints as `| … |` lines, and an
+`[attachment: …]` line likewise — leave those as printed: changing the text
+around one is refused, because text cannot carry it.
 
 `edit-project` takes any of `--title`, `--description`, `--status` and `--lead`,
 and touches only the ones passed. **Project statuses are their own vocabulary** —
