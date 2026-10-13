@@ -16348,17 +16348,6 @@ function serializeBlockDocument(doc2) {
 function newBlockId() {
   return bytesToHex(randomBytes(6));
 }
-function listItemDepths(items) {
-  const out = [];
-  for (const item of items) {
-    const raw = item.attrs?.indent;
-    const asked = typeof raw === "number" && Number.isInteger(raw) && raw > 0 ? raw : 0;
-    const ceiling = out.length === 0 ? 0 : out[out.length - 1] + 1;
-    out.push(Math.min(asked, ceiling, MAX_LIST_DEPTH));
-  }
-  return out;
-}
-var MAX_LIST_DEPTH = 8;
 function inlineTextOf(block) {
   if (!Array.isArray(block.content))
     return "";
@@ -16425,7 +16414,8 @@ var KIND = {
   APP_DATA: 30078,
   /** NIP-FC File — see docs/buzz-compat/nips/NIP-FC.md in the Peek repo. */
   FILE: 30840,
-  // 30841 (NIP-FC Component) is retired — never reallocate it (COM-3, KINDS.md).
+  /** NIP-FC Component. */
+  COMPONENT: 30841,
   /**
    * NIP-42 relay auth — the challenge response that turns a connected socket
    * into an authenticated one (`Kind::Authentication`, PEE-5).
@@ -16597,7 +16587,7 @@ function buildEdit(pubkey, createdAtMs, args2) {
 function buildBareFile(pubkey, createdAtMs, args2) {
   assertHex64(pubkey, "pubkey");
   if (!args2.channelUuid)
-    throw new Error("a bare file must name the Folder it lives in (h)");
+    throw new Error("a bare file must name the team channel it lives in (h)");
   if (args2.parent !== void 0 && !/^\d+:[0-9a-f]{64}:/.test(args2.parent)) {
     throw new Error(`parent must be an address "<kind>:<pubkey>:<d>", got "${args2.parent}"`);
   }
@@ -17121,18 +17111,12 @@ function blockDocumentToMarkerText(doc2) {
         break;
       }
       case "bulletList":
+        for (const item of block.content ?? [])
+          lines.push(`- ${itemText(item)}`);
+        break;
       case "orderedList": {
-        const items = block.content ?? [];
-        const depths = listItemDepths(items);
         const start = typeof block.attrs?.start === "number" ? block.attrs.start : 1;
-        const next = [];
-        items.forEach((item, i) => {
-          const depth = depths[i];
-          next.length = depth + 1;
-          next[depth] ??= depth === 0 ? start : 1;
-          const marker = block.type === "bulletList" ? "-" : `${next[depth]++}.`;
-          lines.push(`${"  ".repeat(depth)}${marker} ${itemText(item)}`);
-        });
+        (block.content ?? []).forEach((item, i) => lines.push(`${start + i}. ${itemText(item)}`));
         break;
       }
       case "blockquote":
@@ -20297,6 +20281,7 @@ async function loadWorkspace(context2) {
         ...base,
         status: rawStatus(object3, vocabOf(root)),
         lead: metaValue(object3, "lead"),
+        key: metaValue(object3, "key"),
         archived: Boolean(object3.archived),
         ownArchive: object3.archived,
         contentFolder: folderOf(root) ?? ""
@@ -20438,6 +20423,7 @@ function projectSummary(project, directory, vocab) {
     ref: project.addr,
     short: short(project.id),
     title: project.title,
+    key: project.key,
     status: status(vocab, project.status),
     lead: who(directory, project.lead),
     archived: archiveSummary(directory, project.archive),
@@ -20978,6 +20964,7 @@ async function showProject(context2, state, project) {
     kind: "project",
     addr: project.addr,
     title: project.title,
+    key: project.key,
     status: status(state.vocab.project, project.status),
     lead: who(directory, project.lead),
     author: who(directory, project.author),
@@ -21734,14 +21721,21 @@ Pass an address to say which.`
             */
       signs: [KIND2.PROJECT, KIND.FOLDER_COMMAND, KIND_CHANGE],
       summary: "start a new project in a team",
-      usage: 'create-project --team <name|folder> --title "..." [--description "..."]',
+      usage: 'create-project --team <name|folder> --title "..." [--description "..."] [--key ABC]',
       async run(context2, args2) {
         const title = flagValue(args2, "title");
         if (!title) throw new BadRequest("create-project needs --title.");
         const reference = flagValue(args2, "team");
         if (!reference) throw new BadRequest("create-project needs --team: the team the project is filed into.");
+        const key = flagValue(args2, "key");
+        if (key !== void 0 && !/^[A-Z]{3,6}$/.test(key)) throw new BadRequest("--key is 3\u20136 capital letters A to Z, the prefix of the project's refs.");
         const team = await resolveTeam(context2, reference);
         const state = await loadWorkspace(context2);
+        if (key) {
+          const holder = state.projects.find((project) => project.key === key);
+          if (holder) throw new BadRequest(`--key ${key} is used by "${holder.title}". Pick another.`);
+          if (state.issues.some((issue2) => issue2.ref?.startsWith(`${key}-`))) throw new BadRequest(`--key ${key} is already used by older issues' refs. Pick another.`);
+        }
         const id = randomUUID();
         const description = flagValue(args2, "description");
         const body = description ? describe2("", void 0, description) : void 0;
@@ -21750,7 +21744,7 @@ Pass an address to say which.`
           state,
           { addr: team.channel ?? `${KIND_CHANNEL_METADATA}::${team.id}`, author: "", folder: team.id },
           "add-project",
-          { name: title, ...body && !body.contentFormat ? { description: body.value } : {} },
+          { name: title, ...body && !body.contentFormat ? { description: body.value } : {}, ...key ? { key } : {} },
           [KIND2.PROJECT, KIND.FOLDER_COMMAND],
           { newId: id, folderHasState: team.hasState, manifest: state.manifestFor(`${KIND2.PROJECT}:${context2.signer.pubkey}:${id}`) }
         );
@@ -21759,7 +21753,7 @@ Pass an address to say which.`
         const described = body?.contentFormat ? await setField(context2, state, { addr: created.addr, author: context2.signer.pubkey, folder: team.id }, "description", body.value, "Description", body.contentFormat) : void 0;
         if (described) published(described, `the description of "${title}" \u2014 the project itself was created, ${created.addr}, without one`);
         return {
-          created: { title, addr: created.addr, team: { id: team.id, name: team.name } },
+          created: { title, ...key ? { key } : {}, addr: created.addr, team: { id: team.id, name: team.name } },
           eventId: created.result.eventId,
           /*
             Apart from the record, as Ship reports it: a refused listing is a

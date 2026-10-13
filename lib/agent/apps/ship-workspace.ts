@@ -64,6 +64,8 @@ export interface Project {
   /** The raw vocabulary value, as `set-project-status` takes it. */
   status: string
   lead?: string
+  /** The prefix of its issues' refs (SHI-4, SPEC §6.1), when it has one yet. */
+  key?: string
   /** Archived itself or with its Folder — what the listings hide. */
   archived: boolean
   /** The archive in force: its own, or its Folder's with `with` naming the Folder. */
@@ -278,6 +280,7 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
         ...base,
         status: rawStatus(object, vocabOf(root)),
         lead: metaValue(object, 'lead'),
+        key: metaValue(object, 'key'),
         archived: Boolean(object.archived),
         ownArchive: object.archived,
         contentFolder: folderOf(root) ?? '',
