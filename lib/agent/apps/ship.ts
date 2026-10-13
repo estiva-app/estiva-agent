@@ -132,6 +132,7 @@ function projectSummary(project: Project, directory: Directory, vocab: Vocabular
     ref: project.addr,
     short: short(project.id),
     title: project.title,
+    key: project.key,
     status: status(vocab, project.status),
     lead: who(directory, project.lead),
     archived: archiveSummary(directory, project.archive),
@@ -1191,6 +1192,7 @@ async function showProject(context: AgentContext, state: Workspace, project: Pro
     kind: 'project' as const,
     addr: project.addr,
     title: project.title,
+    key: project.key,
     status: status(state.vocab.project, project.status),
     lead: who(directory, project.lead),
     author: who(directory, project.author),
@@ -2258,12 +2260,14 @@ export const shipApp: AgentApp = {
       */
       signs: [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND, KIND_CHANGE],
       summary: 'start a new project in a team',
-      usage: 'create-project --team <name|folder> --title "..." [--description "..."]',
+      usage: 'create-project --team <name|folder> --title "..." [--description "..."] [--key ABC]',
       async run(context, args) {
         const title = flagValue(args, 'title')
         if (!title) throw new BadRequest('create-project needs --title.')
         const reference = flagValue(args, 'team')
         if (!reference) throw new BadRequest('create-project needs --team: the team the project is filed into.')
+        const key = flagValue(args, 'key')
+        if (key !== undefined && !/^[A-Z]{3,6}$/.test(key)) throw new BadRequest('--key is 3–6 capital letters A to Z, the prefix of the project\'s refs.')
 
         // Resolved against the Folders that have state, so `hasState` is the read's answer.
         const team = await resolveTeam(context, reference)
@@ -2273,6 +2277,17 @@ export const shipApp: AgentApp = {
           one a project this identity authored resolves to.
         */
         const state = await loadWorkspace(context)
+        /*
+          SPEC §6.1 (SHI-4): a key no project this identity can see holds, and
+          no ref it can see starts with. Left out, Ship gives the project one
+          the first time it numbers an issue in it — the agent does not derive
+          keys, so it cannot disagree with Ship about one.
+        */
+        if (key) {
+          const holder = state.projects.find((project) => project.key === key)
+          if (holder) throw new BadRequest(`--key ${key} is used by "${holder.title}". Pick another.`)
+          if (state.issues.some((issue) => issue.ref?.startsWith(`${key}-`))) throw new BadRequest(`--key ${key} is already used by older issues' refs. Pick another.`)
+        }
         const id = randomUUID()
         const description = flagValue(args, 'description')
         const body = description ? describe('', undefined, description) : undefined
@@ -2281,7 +2296,7 @@ export const shipApp: AgentApp = {
           state,
           { addr: team.channel ?? `${KIND_CHANNEL_METADATA}::${team.id}`, author: '', folder: team.id },
           'add-project',
-          { name: title, ...(body && !body.contentFormat ? { description: body.value } : {}) },
+          { name: title, ...(body && !body.contentFormat ? { description: body.value } : {}), ...(key ? { key } : {}) },
           [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND],
           { newId: id, folderHasState: team.hasState, manifest: state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`) },
         )
@@ -2293,7 +2308,7 @@ export const shipApp: AgentApp = {
         if (described) published(described, `the description of "${title}" — the project itself was created, ${created.addr}, without one`)
 
         return {
-          created: { title, addr: created.addr, team: { id: team.id, name: team.name } },
+          created: { title, ...(key ? { key } : {}), addr: created.addr, team: { id: team.id, name: team.name } },
           eventId: created.result.eventId,
           /*
             Apart from the record, as Ship reports it: a refused listing is a

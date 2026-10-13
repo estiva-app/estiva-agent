@@ -20297,6 +20297,7 @@ async function loadWorkspace(context2) {
         ...base,
         status: rawStatus(object3, vocabOf(root)),
         lead: metaValue(object3, "lead"),
+        key: metaValue(object3, "key"),
         archived: Boolean(object3.archived),
         ownArchive: object3.archived,
         contentFolder: folderOf(root) ?? ""
@@ -20438,6 +20439,7 @@ function projectSummary(project, directory, vocab) {
     ref: project.addr,
     short: short(project.id),
     title: project.title,
+    key: project.key,
     status: status(vocab, project.status),
     lead: who(directory, project.lead),
     archived: archiveSummary(directory, project.archive),
@@ -20978,6 +20980,7 @@ async function showProject(context2, state, project) {
     kind: "project",
     addr: project.addr,
     title: project.title,
+    key: project.key,
     status: status(state.vocab.project, project.status),
     lead: who(directory, project.lead),
     author: who(directory, project.author),
@@ -21734,14 +21737,21 @@ Pass an address to say which.`
             */
       signs: [KIND2.PROJECT, KIND.FOLDER_COMMAND, KIND_CHANGE],
       summary: "start a new project in a team",
-      usage: 'create-project --team <name|folder> --title "..." [--description "..."]',
+      usage: 'create-project --team <name|folder> --title "..." [--description "..."] [--key ABC]',
       async run(context2, args2) {
         const title = flagValue(args2, "title");
         if (!title) throw new BadRequest("create-project needs --title.");
         const reference = flagValue(args2, "team");
         if (!reference) throw new BadRequest("create-project needs --team: the team the project is filed into.");
+        const key = flagValue(args2, "key");
+        if (key !== void 0 && !/^[A-Z]{3,6}$/.test(key)) throw new BadRequest("--key is 3\u20136 capital letters A to Z, the prefix of the project's refs.");
         const team = await resolveTeam(context2, reference);
         const state = await loadWorkspace(context2);
+        if (key) {
+          const holder = state.projects.find((project) => project.key === key);
+          if (holder) throw new BadRequest(`--key ${key} is used by "${holder.title}". Pick another.`);
+          if (state.issues.some((issue2) => issue2.ref?.startsWith(`${key}-`))) throw new BadRequest(`--key ${key} is already used by older issues' refs. Pick another.`);
+        }
         const id = randomUUID();
         const description = flagValue(args2, "description");
         const body = description ? describe2("", void 0, description) : void 0;
@@ -21750,7 +21760,7 @@ Pass an address to say which.`
           state,
           { addr: team.channel ?? `${KIND_CHANNEL_METADATA}::${team.id}`, author: "", folder: team.id },
           "add-project",
-          { name: title, ...body && !body.contentFormat ? { description: body.value } : {} },
+          { name: title, ...body && !body.contentFormat ? { description: body.value } : {}, ...key ? { key } : {} },
           [KIND2.PROJECT, KIND.FOLDER_COMMAND],
           { newId: id, folderHasState: team.hasState, manifest: state.manifestFor(`${KIND2.PROJECT}:${context2.signer.pubkey}:${id}`) }
         );
@@ -21759,7 +21769,7 @@ Pass an address to say which.`
         const described = body?.contentFormat ? await setField(context2, state, { addr: created.addr, author: context2.signer.pubkey, folder: team.id }, "description", body.value, "Description", body.contentFormat) : void 0;
         if (described) published(described, `the description of "${title}" \u2014 the project itself was created, ${created.addr}, without one`);
         return {
-          created: { title, addr: created.addr, team: { id: team.id, name: team.name } },
+          created: { title, ...key ? { key } : {}, addr: created.addr, team: { id: team.id, name: team.name } },
           eventId: created.result.eventId,
           /*
             Apart from the record, as Ship reports it: a refused listing is a
