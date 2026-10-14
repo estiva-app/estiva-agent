@@ -16167,8 +16167,10 @@ function fenceCloses(lines, from) {
       return j;
   return -1;
 }
-function parseBodySegments(body) {
+function parseBodySegments(body, options = {}) {
   const lines = body.split("\n");
+  if (options.indentedItems)
+    return parseWithIndentedItems(lines);
   const segments = [];
   let i = 0;
   while (i < lines.length) {
@@ -16233,6 +16235,87 @@ function parseBodySegments(body) {
     }
   }
   return segments;
+}
+var INDENTED_ITEM_RE = /^([ \t]*)([-•]|\d+\.)\s([\s\S]*)$/;
+var columnOf = (lead) => [...lead].reduce((column, c) => column + (c === "	" ? 4 : 1), 0);
+function parseWithIndentedItems(lines) {
+  const segments = [];
+  const fenced = fencedLines(lines);
+  let rest = [];
+  const flush = () => {
+    if (rest.length)
+      segments.push(...parseBodySegments(rest.join("\n")));
+    rest = [];
+  };
+  let i = 0;
+  while (i < lines.length) {
+    const opens = /^[-•]\s/.test(lines[i]) ? "bullet" : /^\d+\.\s/.test(lines[i]) ? "numbered" : void 0;
+    if (!opens || fenced[i]) {
+      rest.push(lines[i++]);
+      continue;
+    }
+    flush();
+    const items = [];
+    const depths = [];
+    const stack = [];
+    while (i < lines.length) {
+      const match = INDENTED_ITEM_RE.exec(lines[i]);
+      if (!match)
+        break;
+      const column = columnOf(match[1]);
+      const kind = /^\d/.test(match[2]) ? "numbered" : "bullet";
+      if (column === 0 && kind !== opens)
+        break;
+      if (column > 0 && items.length === 0)
+        break;
+      let depth = 0;
+      if (items.length > 0) {
+        const above = stack[stack.length - 1];
+        if (column > above.column)
+          depth = Math.min(above.depth + 1, MAX_LIST_DEPTH);
+        else {
+          while (stack[stack.length - 1].column > column)
+            stack.pop();
+          depth = stack[stack.length - 1].depth;
+          if (stack[stack.length - 1].column === column)
+            stack.pop();
+        }
+      }
+      stack.push({ column, depth });
+      items.push(match[3]);
+      depths.push(depth);
+      i++;
+    }
+    if (items.length === 0) {
+      rest.push(lines[i++]);
+      continue;
+    }
+    const indented = depths.some((depth) => depth > 0) ? { depths } : {};
+    if (opens === "bullet")
+      segments.push({ type: "bullet", items, ...indented });
+    else {
+      const first = Number.parseInt(lines[i - items.length], 10);
+      segments.push({ type: "numbered", items, ...first > 1 ? { start: first } : {}, ...indented });
+    }
+  }
+  flush();
+  return segments;
+}
+function fencedLines(lines) {
+  const fenced = lines.map(() => false);
+  let open = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!FENCE_RE.test(lines[i]))
+      continue;
+    if (open === -1)
+      open = i;
+    else {
+      for (let j = open; j <= i; j++)
+        fenced[j] = true;
+      open = -1;
+    }
+  }
+  return fenced;
 }
 var MARK_ORDER = ["bold", "italic", "underline", "code"];
 function markersToInlineNodes(text2) {
@@ -16430,6 +16513,13 @@ var KIND = {
   /** NIP-FC File — see docs/buzz-compat/nips/NIP-FC.md in the Peek repo. */
   FILE: 30840,
   // 30841 (NIP-FC Component) is retired — never reallocate it (COM-3, KINDS.md).
+  /**
+   * The document — a file type an app owns through its `kind:31990`, as Ship
+   * owns an issue; Leaf is the first owner. The bare file's shape, but owned:
+   * a document is written and opened in its owner's app, where a topic
+   * (`FILE`) is a conversation nobody owns (SPEC, Miky 2026-10-14).
+   */
+  DOCUMENT: 30842,
   /**
    * NIP-42 relay auth — the challenge response that turns a connected socket
    * into an authenticated one (`Kind::Authentication`, PEE-5).
@@ -17030,21 +17120,37 @@ function textOf(block) {
 var keyOf = (block) => `${block.type}\0${textOf(block)}`;
 var TASK = /^\[( |x|X)\] /;
 var ALERT = /^\[!([A-Za-z]+)\]$/;
-function itemFromText(item, description) {
+var ESCAPED_TASK = /^\\*\[( |x|X)\] /;
+var ESCAPED_ALERT = /^\\*\[![A-Za-z]+\]$/;
+function escaped(text2, pattern) {
+  const lead = text2.length - text2.trimStart().length;
+  return reads(text2.slice(lead), pattern) ? `${text2.slice(0, lead)}\\${text2.slice(lead)}` : text2;
+}
+function unescaped(text2, pattern) {
+  const lead = text2.length - text2.trimStart().length;
+  return text2[lead] === "\\" && reads(text2.slice(lead), pattern) ? text2.slice(0, lead) + text2.slice(lead + 1) : text2;
+}
+var reads = (text2, pattern) => pattern.test(text2) || pattern.test(text2.trimEnd());
+function itemFromText(item, description, depth = 0) {
+  const indent = depth > 0 ? { indent: depth } : void 0;
   const task = description ? TASK.exec(item) : null;
-  if (!task)
-    return { type: "listItem", id: "", content: markersToInlineNodes(item) };
+  if (!task) {
+    const text2 = description ? unescaped(item, ESCAPED_TASK) : item;
+    return { type: "listItem", id: "", ...indent ? { attrs: indent } : {}, content: markersToInlineNodes(text2) };
+  }
   return {
     type: "listItem",
     id: "",
-    attrs: { checked: task[1] !== " " },
+    attrs: { ...indent, checked: task[1] !== " " },
     content: markersToInlineNodes(item.slice(task[0].length))
   };
 }
 function quoteFromLines(lines, description) {
   const alert = description && lines.length > 0 ? ALERT.exec(lines[0].trim()) : null;
-  if (!alert)
-    return { type: "blockquote", id: "", content: markersToInlineNodes(lines.join("\n")) };
+  if (!alert) {
+    const text2 = description && lines.length > 0 ? [unescaped(lines[0], ESCAPED_ALERT), ...lines.slice(1)] : lines;
+    return { type: "blockquote", id: "", content: markersToInlineNodes(text2.join("\n")) };
+  }
   return { type: "blockquote", id: "", attrs: { tone: alert[1].toLowerCase() }, content: markersToInlineNodes(lines.slice(1).join("\n")) };
 }
 function blockFromSegment(seg, description) {
@@ -17055,14 +17161,14 @@ function blockFromSegment(seg, description) {
       return {
         type: "bulletList",
         id: "",
-        content: seg.items.map((item) => itemFromText(item, description))
+        content: seg.items.map((item, i) => itemFromText(item, description, seg.depths?.[i]))
       };
     case "numbered":
       return {
         type: "orderedList",
         id: "",
         ...seg.start ? { attrs: { start: seg.start } } : {},
-        content: seg.items.map((item) => itemFromText(item, description))
+        content: seg.items.map((item, i) => itemFromText(item, description, seg.depths?.[i]))
       };
     case "quote":
       return quoteFromLines(seg.lines, description);
@@ -17079,7 +17185,8 @@ function blockFromSegment(seg, description) {
   }
 }
 function markerTextToBlockDocument(text2, previous, options = {}) {
-  const fresh = parseBodySegments(text2).map((seg) => blockFromSegment(seg, options.description === true));
+  const description = options.description === true;
+  const fresh = parseBodySegments(text2, { indentedItems: description }).map((seg) => blockFromSegment(seg, description));
   const old = previous?.content ?? [];
   const takenIds = /* @__PURE__ */ new Set();
   const usedOld = /* @__PURE__ */ new Set();
@@ -17157,7 +17264,8 @@ function blockDocumentToMarkerText(doc2, options = {}) {
           const marker = block.type === "bulletList" ? "-" : `${next[depth]++}.`;
           const checked = description ? listItemChecked(item) : void 0;
           const task = checked === void 0 ? "" : checked ? "[x] " : "[ ] ";
-          lines.push(`${"  ".repeat(depth)}${marker} ${task}${itemText(item)}`);
+          const text2 = description && checked === void 0 ? escaped(itemText(item), ESCAPED_TASK) : itemText(item);
+          lines.push(`${"  ".repeat(depth)}${marker} ${task}${text2}`);
         });
         break;
       }
@@ -17165,7 +17273,10 @@ function blockDocumentToMarkerText(doc2, options = {}) {
         const tone = description && typeof block.attrs?.tone === "string" && /^[A-Za-z]+$/.test(block.attrs.tone) ? block.attrs.tone : "";
         if (tone)
           lines.push(`> [!${tone.toUpperCase()}]`);
-        for (const line of inline.split("\n"))
+        const quoted = inline.split("\n");
+        if (description && !tone)
+          quoted[0] = escaped(quoted[0], ESCAPED_ALERT);
+        for (const line of quoted)
           lines.push(`> ${line}`);
         break;
       }
@@ -17937,9 +18048,10 @@ function carryChildIds(before, after) {
     if (!candidate || used.has(i) || candidate.type !== child.type) return child;
     used.add(i);
     const { content: _content, attrs, ...shape } = candidate;
-    const { checked: was, ...rest } = attrs ?? {};
+    const { checked: was, indent: _indent, ...rest } = attrs ?? {};
     const checked = child.attrs?.checked ?? (typeof was === "boolean" ? void 0 : was);
-    const merged = { ...rest, ...checked !== void 0 ? { checked } : {} };
+    const indent = child.attrs?.indent;
+    const merged = { ...rest, ...indent !== void 0 ? { indent } : {}, ...checked !== void 0 ? { checked } : {} };
     return { ...shape, ...Object.keys(merged).length ? { attrs: merged } : {}, ...child.content !== void 0 ? { content: child.content } : {} };
   });
 }

@@ -30,7 +30,13 @@
  * it as text; any other table still prints as `| … |` lines and is refused.
  * A checklist item prints as `- [ ] ` / `- [x] ` and a callout as a quote
  * opening `> [!NOTE]` (RIC-19), so the agent reads which items are ticked and
- * can tick one; an unchanged chunk keeps its block verbatim as before.
+ * can tick one; an unchanged chunk keeps its block verbatim as before. An
+ * indented item prints two spaces a level and reads back at its depth, and a
+ * plain item or quote that would read as a box or a callout prints with a `\`
+ * in front (protocol 0.35.0, d98a5636), so a nested list, a checklist and a
+ * callout are edited like any other block. A list the editor never writes — an
+ * indented first item, a jump of two levels — prints at the depth it is drawn,
+ * not the one stored, so it is still kept whole and refused when edited.
  *
  * **Every description the agent writes is a block document** (RIC-20, Miky
  * 2026-10-13: option 1). A new description, or an edit of a marker one, is the
@@ -251,9 +257,9 @@ const printable = (block: Block): string | undefined => (block.type === 'table' 
 /**
  * List items keep their ids by the same rule as blocks: one that still reads
  * the same is kept whole, wherever it moved; else the item at the same index
- * keeps its id and attrs with the new text — except its tick, which is the
- * text's (`- [x]`), so a tick never stays behind on an item the text moved
- * away from (RIC-19).
+ * keeps its id and attrs with the new text — except its tick and its depth,
+ * which are the text's (`- [x]`, two spaces a level), so neither stays behind
+ * on an item the text moved away from (RIC-19, d98a5636).
  */
 function carryChildIds(before: Block[], after: Block[] | undefined): Block[] | undefined {
   if (!after) return undefined
@@ -273,10 +279,12 @@ function carryChildIds(before: Block[], after: Block[] | undefined): Block[] | u
     if (!candidate || used.has(i) || candidate.type !== child.type) return child
     used.add(i)
     const { content: _content, attrs, ...shape } = candidate
-    const { checked: was, ...rest } = attrs ?? {}
+    // Depth is the text's too (d98a5636): an item outdented in the text is outdented.
+    const { checked: was, indent: _indent, ...rest } = attrs ?? {}
     // A `checked` text cannot spell (not a boolean) prints as a plain item, so plain text keeps it as another app wrote it.
     const checked = child.attrs?.checked ?? (typeof was === 'boolean' ? undefined : was)
-    const merged = { ...rest, ...(checked !== undefined ? { checked } : {}) }
+    const indent = child.attrs?.indent
+    const merged = { ...rest, ...(indent !== undefined ? { indent } : {}), ...(checked !== undefined ? { checked } : {}) }
     return { ...shape, ...(Object.keys(merged).length ? { attrs: merged } : {}), ...(child.content !== undefined ? { content: child.content } : {}) }
   })
 }

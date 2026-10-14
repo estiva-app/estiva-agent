@@ -213,13 +213,14 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
     list.every((b) => b.type === 'text' || (typeof b.id === 'string' && b.id.length > 0 && allHaveIds(Array.isArray(b.content) ? (b.content as Block[]) : [])))
   check('…every block, row, cell and cell paragraph has an id', allHaveIds(blocks))
 
-  // The negative control: text with no table reads exactly as Ship read the same text as marker text.
+  // The negative control: text with no table reads exactly as protocol reads a description's text (d98a5636: nesting included).
   const plain = '# Heading\n\nA paragraph with **bold** and `code`.\n\n- one\n  - nested\n- two\n\n> quoted\n\n```\n| not | a table |\n| --- | --- |\n```'
   const strip = (v: unknown): unknown => (Array.isArray(v) ? v.map(strip) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'id').map(([k, x]) => [k, strip(x)])) : v)
   check(
-    'text with no table is the document Ship drew from it as marker text',
-    JSON.stringify(strip(blocksOf(describe('', undefined, plain).value))) === JSON.stringify(strip(markerTextToBlockDocument(plain).content)),
+    'text with no table is the document protocol reads from it as a description',
+    JSON.stringify(strip(blocksOf(describe('', undefined, plain).value))) === JSON.stringify(strip(markerTextToBlockDocument(plain, undefined, { description: true }).content)),
   )
+  check('…its indented item nested, one list', JSON.stringify((blocksOf(describe('', undefined, plain).value)[2].content as Block[]).map((b) => b.attrs?.indent ?? 0)) === '[0,1,0]')
   check('…and a table inside a code fence stays code', !blocksOf(describe('', undefined, plain).value).some((b) => b.type === 'table'))
 
   // The agent reads its table back as the text it wrote, and can edit it.
@@ -319,6 +320,42 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
   const created = describe('', undefined, '- [ ] first\n- [x] second\n\n> [!TIP]\n> Read the logs first.')
   const createdBlocks = blocksOf(created.value)
   check('a new description reads a checklist and a callout from text', (createdBlocks[0].content as Block[]).map((b) => b.attrs?.checked).join() === 'false,true' && createdBlocks[1].attrs?.tone === 'tip', created.value)
+}
+
+// d98a5636: a nested list, a nested checklist item and a plain item that looks like a box are edited like any list.
+{
+  const at = (id: string, t: string, attrs?: object) => ({ type: 'listItem', id, ...(attrs ? { attrs } : {}), content: [text(t)] })
+  const nested = JSON.stringify({
+    type: 'doc',
+    content: [
+      { type: 'bulletList', id: 'dn', content: [at('n1', 'tests pass', { checked: true }), at('n2', 'merged', { checked: false }), at('n3', 'deployed', { checked: false, indent: 1 })] },
+      { type: 'blockquote', id: 'dq', attrs: { tone: 'warning' }, content: [text('Never on a real issue.')] },
+      { type: 'bulletList', id: 'de', content: [at('e1', '[ ] literally brackets')] },
+      { type: 'heading', id: 'dh', attrs: { level: 2 }, content: [text('Progress')] },
+      { type: 'bulletList', id: 'dp', content: [at('r1', 'kickoff done'), at('r2', 'checked as QA-1', { indent: 1 }), at('r3', 'nested twice', { indent: 2 })] },
+    ],
+  })
+  const printed = descriptionText(nested, 'blocks')
+  check('a nested list prints two spaces a level, ticks included', printed.includes('- [ ] merged\n  - [ ] deployed') && printed.includes('- kickoff done\n  - checked as QA-1\n    - nested twice'), printed)
+  check('a plain item that would read as a box prints escaped', printed.includes('- \\[ ] literally brackets'), printed)
+  check('text sent back unchanged keeps the whole document', editBlockDocument(nested, printed).value === nested)
+
+  // The Done-when's edit: a Progress line inside the nested list, and the indented checklist item ticked.
+  const edited = editBlockDocument(nested, printed.replace('    - nested twice', '    - nested twice\n- PR opened').replace('  - [ ] deployed', '  - [x] deployed'))
+  const progress = byId(edited.value, 'dp')?.content as Block[]
+  check('a line added inside a nested list keeps every item, id and depth', JSON.stringify(progress.map((b) => [b.id, b.attrs?.indent ?? 0])) === JSON.stringify([['r1', 0], ['r2', 1], ['r3', 2], [progress[3].id, 0]]) && (progress[3].content as { text: string }[])[0].text === 'PR opened', JSON.stringify(progress))
+  check('the indented checklist item is ticked under its own id, still indented', byId(edited.value, 'n3')?.attrs?.checked === true && byId(edited.value, 'n3')?.attrs?.indent === 1, JSON.stringify(byId(edited.value, 'n3')))
+  check('the callout and the escaped item are kept exactly', JSON.stringify(byId(edited.value, 'dq')) === JSON.stringify(byId(nested, 'dq')) && JSON.stringify(byId(edited.value, 'de')) === JSON.stringify(byId(nested, 'de')))
+  check('nothing is removed', edited.removed.length === 0, JSON.stringify(edited.removed))
+
+  const outdented = editBlockDocument(nested, printed.replace('  - checked as QA-1', '- checked as QA-1'))
+  check('an item outdented in the text is outdented, under its id', byId(outdented.value, 'r2')?.attrs?.indent === undefined && byId(outdented.value, 'r2') !== undefined, JSON.stringify(byId(outdented.value, 'r2')))
+
+  const reworded = editBlockDocument(nested, printed.replace('literally brackets', 'still brackets'))
+  check('an escaped item edits as a plain item', byId(reworded.value, 'e1')?.attrs === undefined && (byId(reworded.value, 'e1')?.content as { text: string }[])[0].text === '[ ] still brackets', JSON.stringify(byId(reworded.value, 'e1')))
+
+  const created = describe('', undefined, '- one\n    - one.one\n- two')
+  check('a new description reads a four-space indent as one level', JSON.stringify((blocksOf(created.value)[0].content as Block[]).map((b) => b.attrs?.indent ?? 0)) === '[0,1,0]', created.value)
 }
 
 if (failures) {
