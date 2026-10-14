@@ -118,6 +118,13 @@ heading or a line break in a cell) prints as `| … |` lines, and an
 `[attachment: …]` line likewise — leave those as printed: changing the text
 around one is refused, because text cannot carry it.
 
+A nested list, a checklist and a callout are text like any other block
+(d98a5636, SPEC §13.3 "A description as text"): an indented item prints two
+spaces a level and is read relative to the item above, a checklist item as
+`- [ ] `/`- [x] `, a callout as `> [!WARNING]`, and a plain item or quote that
+would read as one of those prints with a `\` in front — keep the `\`, it is
+what keeps it plain.
+
 `edit-project` takes any of `--title`, `--description`, `--status` and `--lead`,
 and touches only the ones passed. **Project statuses are their own vocabulary** —
 `planned`, `in_progress`, `completed`, `cancelled` — not the issue ones, and an
