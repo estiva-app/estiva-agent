@@ -105,7 +105,7 @@ npx tsx scripts/agent.ts ship edit-comment PEE-1 --message <id|phrase> --body ".
 npx tsx scripts/agent.ts ship set-status PEE-1 in_progress
 npx tsx scripts/agent.ts ship assign PEE-1 me
 npx tsx scripts/agent.ts ship people          # the keys assign and --lead require
-npx tsx scripts/agent.ts ship create-issue --project "Peek: Feedback" --title "..."
+npx tsx scripts/agent.ts ship create-issue --project "Peek: Feedback" --title "..." --summary "..."
 npx tsx scripts/agent.ts ship edit-project "Cross-app read state" --status completed
 ```
 
@@ -160,7 +160,21 @@ spaces a level and is read relative to the item above, a checklist item as
 would read as one of those prints with a `\` in front — keep the `\`, it is
 what keeps it plain.
 
-`edit-project` takes any of `--title`, `--description`, `--status` and `--lead`,
+**Every file has a summary beside its title** (SPEC §6.12, SUM-2): one or two
+sentences of plain text, about 240 characters, saying what it is for — what a
+card, a list row and the link picker show under the title in every app. Give
+one with `--summary` to every issue, project and topic you create, and change
+it with `edit-issue`/`edit-project`/`peek edit-topic --summary` when a reshape
+changes what the file is about; `--summary ""` clears it. A summary a person
+wrote is rewritten only then, and you say so (Miky, 2026-10-15). Line breaks
+fold to spaces; past ~240 it is written whole and a note says so. `issues` and
+`projects` print a file's summary as the indented line under its row, and
+`show`, `status` and `peek topics` carry it as `summary`: read it before
+opening a whole description. Which action writes it comes from the app's
+manifest (§7.3), so `--summary` on an app that declares none yet is refused
+with nothing published.
+
+`edit-project` takes any of `--title`, `--summary`, `--description`, `--status` and `--lead`,
 and touches only the ones passed. **Project statuses are their own vocabulary** —
 `planned`, `in_progress`, `completed`, `cancelled` — not the issue ones, and an
 issue status is refused rather than written. `--lead` takes a hex pubkey, `me`,
@@ -217,7 +231,8 @@ npx tsx scripts/agent.ts peek topic "Planning and sequencing"
 npx tsx scripts/agent.ts peek reply "Planning and sequencing" <conversation> --body "..."
 npx tsx scripts/agent.ts peek edit "Planning and sequencing" <conversation> --message <id|phrase> --body "..."
 npx tsx scripts/agent.ts peek say "Planning and sequencing" --body "..."
-npx tsx scripts/agent.ts peek create-topic --folder "Estiva HQ" --title "..."
+npx tsx scripts/agent.ts peek create-topic --folder "Estiva HQ" --title "..." --summary "..."
+npx tsx scripts/agent.ts peek edit-topic "Planning and sequencing" --summary "..."
 ```
 
 **A Peek topic is a file** — a bare `kind:30840` listed by a Folder in Peek's
@@ -225,9 +240,10 @@ tree — and its conversation is NIP-22 `kind:1111` comments on that file
 (FOL-23/26). `topics` walks the tree the way Peek draws it: the top-level
 Folders, and every Folder row they list. `say` is the file owner's `comment`
 action, `reply` is that comment with NIP-22's lowercase tags naming the
-conversation's opening comment, and `create-topic` is the file plus the
-`kind:1852` that lists it — each the event Peek's own composer writes, built
-through the same interop runtime. A reply always attaches to the opening
+conversation's opening comment, `create-topic` is the Folder's built-in
+`create-file` — the file, its summary as a seed, then the `kind:1852` that
+lists it — and `edit-topic` is the file's `summarize` change, each the event
+Peek writes, built through the same interop runtime. A reply always attaches to the opening
 comment, because Peek's thread pane draws one level and a reply to a reply
 would be on no page.
 

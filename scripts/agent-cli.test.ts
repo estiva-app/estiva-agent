@@ -208,11 +208,18 @@ for (const app of [shipApp, peekApp]) {
 
 console.log('\n— listing rows —')
 
-const row = issueRow({ ref: 'FOL-19', short: '42d82497', addr: 'x', title: 'A ?file= URL does not open the file it names when the Folder is a team Folder and the file is old', status: 'In Progress', assignee: undefined, author: 'A', project: undefined, archived: undefined, statusChangedAt: undefined }, ISSUE_VOCAB)
+const fol19 = { ref: 'FOL-19', short: '42d82497', addr: 'x', title: 'A ?file= URL does not open the file it names when the Folder is a team Folder and the file is old', summary: undefined, status: 'In Progress', assignee: undefined, author: 'A', project: undefined, archived: undefined, statusChangedAt: undefined }
+const row = issueRow(fol19, ISSUE_VOCAB)
 check('an issue row is ref, status value, short id, clipped title', row.startsWith('FOL-19   in_progress  42d82497 A ?file= URL') && row.endsWith('…'), row)
 check('and under 100 chars', row.length < 100, String(row.length))
 const prow = projectRow({ ref: 'x', short: '2385fd92', title: 'Make Agent more token efficient', status: 'Planned', lead: 'Miky', archived: true, folder: 'f', issues: 2 } as never, PROJECT_VOCAB)
 check('a project row carries short, status, count, title, archived and lead', prow === '2385fd92 planned        2 issues Make Agent more token efficient (archived) — Miky', prow)
+
+// SUM-2: a summary is the row's second line, so it is read before the description is.
+const summarized = issueRow({ ...fol19, summary: 'Opening a shared link lands on the file, not the Folder.' }, ISSUE_VOCAB).split('\n')
+check('an issue with a summary prints it as an indented second line', summarized.length === 2 && summarized[1] === '         Opening a shared link lands on the file, not the Folder.', JSON.stringify(summarized))
+const sprow = projectRow({ ref: 'x', short: '2385fd92', title: 'Agent', summary: 'Claude reads less.', status: 'Planned', folder: 'f', issues: 2 } as never, PROJECT_VOCAB)
+check('a project with a summary prints it as an indented second line', sprow === '2385fd92 planned        2 issues Agent\n         Claude reads less.', sprow)
 
 console.log('\n— resolving a project (the one that used to guess) —')
 

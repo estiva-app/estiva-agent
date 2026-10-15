@@ -127,6 +127,10 @@
     {
       "name": "peek_create_topic",
       "description": "Create a new Peek topic in a Folder"
+    },
+    {
+      "name": "peek_edit_topic",
+      "description": "Change a Peek topic's one-line summary"
     }
   ],
   "keywords": [

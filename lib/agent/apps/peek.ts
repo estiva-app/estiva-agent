@@ -26,18 +26,23 @@
  *    the comment, one level deep, because Peek's thread pane reads and writes
  *    one level — and **the thread read** is `threadsOf`, the `#e` read Peek's
  *    pane uses. Both are interop's since PRO-20, so neither is a copy here;
- *  - **a new topic** is `buildBareFile` plus `planPlaceFile`, Peek's
- *    `createTopicAsViewer`.
+ *  - **a new topic** is the Folder's built-in `create-file` (SPEC §3.2), the
+ *    action Peek's launcher starts one with: the file, then the `kind:1852`
+ *    that lists it;
+ *  - **a summary** is whichever action the file's manifest declares as
+ *    emitting `field: summary` (SPEC §6.12, §7.3) — the bare file's `summarize`.
  */
 import {
   buildActionEvent,
+  buildActionEvents,
   conversationsOf,
   createProjectionCache,
   folderOf,
+  FOLDER_ACTIONS_ADDRESS,
   KIND_BARE_FILE,
   KIND_CHANNEL_METADATA,
   listFolders,
-  planPlaceFile,
+  resolveActingManifest,
   resolveFolderContents,
   resolveManifest,
   threadsOf,
@@ -46,15 +51,17 @@ import {
   type PeopleFn,
   type ForeignObject,
   type ProjectionCache,
+  type ResolvedManifest,
   type QueryFn,
 } from '@estiva-app/interop'
-import { buildBareFile, KIND, type SignedEvent } from '@estiva-app/protocol'
-import { decorationsOf, type EditFold } from '@estiva-app/conversation'
+import { KIND, type SignedEvent } from '@estiva-app/protocol'
+import { decorationsOf, KIND_CHANGE, type EditFold } from '@estiva-app/conversation'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
 import { withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveOne } from '../resolve'
+import { summaryAction, summaryText, summaryWarning } from '../summary'
 
 const tagValue = (event: SignedEvent, name: string) =>
   event.tags.find((tag) => tag[0] === name)?.[1]
@@ -75,6 +82,8 @@ export interface Topic {
   /** `30840:<pubkey>:<d>` — what its comments carry as `a`. */
   address: string
   title: string
+  /** Its one-line summary (SPEC §6.12), absent when it has none. */
+  summary?: string
   /** The Folder that lists it, as Peek's tree shows it. */
   folder: { id: string; name?: string }
   /** Where a person opens it, from the owner's manifest. */
@@ -120,6 +129,8 @@ async function loadTopics(context: AgentContext, cache: ProjectionCache, folderR
       topics.set(file.address, {
         address: file.address,
         title: file.slots.title?.value ?? '(untitled)',
+        // Every file kind's `subtitle` is its summary (SPEC §7.2), built into interop.
+        summary: file.slots.subtitle?.value,
         folder: { id: folder.id, name: folder.name },
         url: file.openUrl,
         object: file,
@@ -303,27 +314,31 @@ function findThread<T extends { id: string; opening: string }>(threads: T[], ref
 }
 
 /**
- * The owner's `comment` action on a topic, built by the runtime and signed as
- * the agent — Peek's `applyActionAsViewer`, restated.
+ * One of the owner's actions on a topic, built by the runtime and signed as the
+ * agent — Peek's `applyActionAsViewer`, restated.
  *
- * The kind, whether a comment may be written at all, and the Folder all come
- * off the manifest and the file itself; nothing here names `1111`. `replyTo`
- * makes it NIP-22's reply to that comment, built by the runtime too (PRO-20).
+ * The kind, whether the action may be taken at all, and the Folder all come off
+ * the manifest and the file itself; nothing here names `1111` or `1851`.
+ * `pick` chooses the action from the manifest — by id for `comment`, by what it
+ * emits for a summary (§7.3). `replyTo` makes a comment NIP-22's reply to
+ * another, built by the runtime too (PRO-20). `signs` is the one kind the
+ * command writes: a manifest declaring the action as anything else is refused,
+ * as `ship`'s `act` refuses one.
  */
-async function comment(
+async function onTopic(
   context: AgentContext,
   topic: Topic,
-  body: string,
+  pick: (manifest: ResolvedManifest['manifest'], kind: number) => string | undefined,
+  value: string,
+  signs: number,
   replyTo?: { id: string; kind: number; author: string },
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
-  // Interop tags every `nostr:npub…` in a comment's body (0.53), and these verbs
-  // take no `--mention` yet, so a body that names anybody is refused here as
-  // `ship comment` refuses one `--mention` did not name.
-  withMentions(body, [])
   const query = relayQuery(context)
   const pointer = pointerOf(topic.address)
   const resolved = await resolveManifest(pointer, query)
-  if (!resolved) throw new BadRequest(`No app claims ${topic.title}'s kind, so there is nothing to comment on.`)
+  if (!resolved) throw new BadRequest(`No app claims ${topic.title}'s kind, so there is no declared way to change it.`)
+  const actionId = pick(resolved.manifest, pointer.kind)
+  if (!actionId) throw new BadRequest(`${topic.title}'s manifest declares no action for that. Nothing was published.`)
   const [root] = await query([{ kinds: [pointer.kind], authors: [pointer.pubkey], '#d': [pointer.identifier], limit: 1 }])
   const folder = root ? folderOf(root) : null
   if (!folder) throw new BadRequest(`${topic.title} has no Folder on the relay, so there is nowhere to write.`)
@@ -334,16 +349,28 @@ async function comment(
     address: topic.address,
     objectAuthor: pointer.pubkey,
     folder,
-    actionId: 'comment',
-    value: body,
+    actionId,
+    value,
     replyTo,
     pubkey: context.signer.pubkey,
     createdAtMs: Date.now(),
   })
-  if (typeof built === 'string') throw new BadRequest(`${topic.title} does not take a comment: ${built}`)
+  if (typeof built === 'string') throw new BadRequest(`${topic.title} does not take ${actionId}: ${built}`)
+  if (built.kind !== signs) {
+    throw new BadRequest(`The manifest read for ${topic.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`)
+  }
   const signed = await context.signer.sign(built)
   const result = await context.relay.publish(signed)
   return { ...result, eventId: result.eventId ?? signed.id }
+}
+
+/** The owner's `comment` action on a topic. */
+function comment(context: AgentContext, topic: Topic, body: string, replyTo?: { id: string; kind: number; author: string }) {
+  // Interop tags every `nostr:npub…` in a comment's body (0.53), and these verbs
+  // take no `--mention` yet, so a body that names anybody is refused here as
+  // `ship comment` refuses one `--mention` did not name.
+  withMentions(body, [])
+  return onTopic(context, topic, () => 'comment', body, KIND.COMMENT, replyTo)
 }
 
 
@@ -373,6 +400,7 @@ export const peekApp: AgentApp = {
               return {
                 id: topic.address.split(':')[2],
                 title: topic.title,
+                summary: topic.summary,
                 folder: topic.folder.name ?? topic.folder.id,
                 /*
                   Top-level comments only: a reply names its comment, not the
@@ -418,6 +446,7 @@ export const peekApp: AgentApp = {
         return {
           id: topic.address.split(':')[2],
           title: topic.title,
+          summary: topic.summary,
           folder: topic.folder.name ?? topic.folder.id,
           url: topic.url,
           conversations: conversations.map((thread) => ({
@@ -567,36 +596,59 @@ export const peekApp: AgentApp = {
       name: 'create-topic',
       signs: [KIND_BARE_FILE, KIND.FOLDER_COMMAND],
       summary: 'start a new topic in a Folder',
-      usage: 'create-topic --folder <name|id> --title "..."',
+      usage: 'create-topic --folder <name|id> --title "..." [--summary "..."]',
       async run(context, args) {
         const folderRef = flagValue(args, 'folder')
         if (!folderRef) throw new BadRequest('create-topic needs --folder — a topic is a file in a Folder.')
         const title = flagValue(args, 'title')
         if (!title) throw new BadRequest('create-topic needs --title.')
+        const summary = summaryText(flagValue(args, 'summary') ?? '')
 
         // A top-level Folder only: those are on every person's tree, whereas a
         // Folder that exists but no drawn Folder lists would take the topic
         // somewhere nobody can reach — this ticket's bug again.
-        const folder = findFolder(topLevelFolders(await listFolders(relayQuery(context))), folderRef)
+        const query = relayQuery(context)
+        const folder = findFolder(topLevelFolders(await listFolders(query)), folderRef)
 
         /*
-          Peek's `createTopicAsViewer`: the file, then the placement. A Folder
-          with state lists only what its state names, so it needs a `kind:1852`
-          add; a Folder without state lists by `h` already, and an add there
-          would emit state listing this one file and empty the Folder
-          (peek#192). `hasState` comes off the read just made, never a guess.
-          File first, so a refused add leaves a topic that exists rather than a
-          listing that points at nothing.
+          The Folder's built-in `create-file` (SPEC §3.2), as Peek's launcher
+          starts a topic: the file, with the summary as its seed (§6.12), then
+          the placement. A Folder with state lists only what its state names, so
+          it needs a `kind:1852` add; one without lists by `h` already, and an
+          add there would emit state listing this one file and empty the Folder
+          (peek#192) — which the runtime decides from `hasState`, off the read
+          just made. File first, so a refused add leaves a topic that exists
+          rather than a listing that points at nothing.
         */
+        const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`
+        const pointer = pointerOf(channel)
+        const creator = await resolveActingManifest(pointer, FOLDER_ACTIONS_ADDRESS, query)
+        if (!creator) throw new BadRequest(`${folder.name ?? folder.id} offers no way to create a file. Nothing was published.`)
+        if (summary && !creator.manifest.actions?.find((action) => action.id === 'create-file')?.input?.properties?.summary) {
+          throw new BadRequest('A Folder here takes no summary on a new file yet, so --summary has nowhere to go. Nothing was published.')
+        }
         const fileId = crypto.randomUUID()
-        const file = await context.signer.sign(
-          buildBareFile(context.signer.pubkey, Date.now(), { fileId, title, channelUuid: folder.id }),
-        )
-        published(await context.relay.publish(file), `a new topic "${title}"`)
+        const built = buildActionEvents({
+          manifest: creator.manifest,
+          kind: KIND_CHANNEL_METADATA,
+          address: channel,
+          objectAuthor: pointer.pubkey,
+          folder: folder.id,
+          actionId: 'create-file',
+          value: { title, ...(summary ? { summary } : {}) },
+          newId: fileId,
+          folderHasState: folder.hasState,
+          pubkey: context.signer.pubkey,
+          createdAtMs: Date.now(),
+        })
+        if (typeof built === 'string') throw new BadRequest(built)
+        const stray = built.find((event, i) => (i === 0 ? event.kind !== KIND_BARE_FILE : event.kind !== KIND.FOLDER_COMMAND))
+        if (stray) throw new BadRequest(`Creating a file here would write a kind:${stray.kind}, which create-topic does not write. Nothing was published.`)
 
-        const address = `${KIND_BARE_FILE}:${context.signer.pubkey}:${fileId}`
-        for (const unsigned of planPlaceFile(context.signer.pubkey, Date.now(), { folder: folder.id, address, hasState: folder.hasState })) {
-          const result = await context.relay.publish(await context.signer.sign(unsigned))
+        const [file, ...placement] = await Promise.all(built.map((event) => context.signer.sign(event)))
+        published(await context.relay.publish(file), `a new topic "${title}"`)
+        for (const event of placement) {
+          const result = await context.relay.publish(event)
           if (!result.ok) {
             throw new BadRequest(
               `Created "${title}" (${fileId}) but ${folder.name ?? folder.id} refused to list it, so it is on no page in Peek: ${result.reason ?? 'no reason given'}`,
@@ -604,7 +656,35 @@ export const peekApp: AgentApp = {
           }
         }
 
-        return { created: { topic: title, id: fileId, folder: folder.name ?? folder.id }, eventId: file.id }
+        return {
+          created: { topic: title, ...(summary ? { summary } : {}), id: fileId, folder: folder.name ?? folder.id },
+          eventId: file.id,
+          ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
+        }
+      },
+    },
+    {
+      name: 'edit-topic',
+      signs: [KIND_CHANGE],
+      summary: "change a topic's summary",
+      usage: 'edit-topic <topic> --summary "..."',
+      async run(context, args) {
+        const reference = args.positional[0]
+        if (!reference) throw new BadRequest('edit-topic needs a topic — try `peek topics` first.')
+        const text = flagValue(args, 'summary')
+        if (text === undefined) throw new BadRequest('edit-topic needs --summary. An empty one clears it.')
+        const summary = summaryText(text)
+
+        const topic = findTopic(await loadTopics(context, createProjectionCache()), reference)
+        // The action that emits `field: summary` (SPEC §7.3), found by what it emits, not by its id.
+        const result = await onTopic(context, topic, summaryAction, summary, KIND_CHANGE)
+        published(result, `the summary of ${topic.title}`)
+
+        return {
+          changed: { topic: topic.title, from: topic.summary ?? '', to: summary, url: topic.url },
+          eventId: result.eventId,
+          ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
+        }
       },
     },
   ],
