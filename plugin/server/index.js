@@ -9007,28 +9007,28 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   const superParse = inst._zod.parse;
   const _normalized = cached(() => normalizeDef(def));
   const generateFastpass = (shape) => {
-    const doc2 = new Doc(["shape", "payload", "ctx"]);
+    const doc3 = new Doc(["shape", "payload", "ctx"]);
     const normalized = _normalized.value;
     const parseStr = (key) => {
       const k = esc(key);
       return `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
     };
-    doc2.write(`const input = payload.value;`);
+    doc3.write(`const input = payload.value;`);
     const ids = /* @__PURE__ */ Object.create(null);
     let counter = 0;
     for (const key of normalized.keys) {
       ids[key] = `key_${counter++}`;
     }
-    doc2.write(`const newResult = {};`);
+    doc3.write(`const newResult = {};`);
     for (const key of normalized.keys) {
       const id = ids[key];
       const k = esc(key);
       const schema = shape[key];
       const isOptionalIn = schema?._zod?.optin === "optional";
       const isOptionalOut = schema?._zod?.optout === "optional";
-      doc2.write(`const ${id} = ${parseStr(key)};`);
+      doc3.write(`const ${id} = ${parseStr(key)};`);
       if (isOptionalIn && isOptionalOut) {
-        doc2.write(`
+        doc3.write(`
         if (${id}.issues.length) {
           if (${k} in input) {
             payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
@@ -9048,7 +9048,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
         
       `);
       } else if (!isOptionalIn) {
-        doc2.write(`
+        doc3.write(`
         const ${id}_present = ${k} in input;
         if (${id}.issues.length) {
           payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
@@ -9075,7 +9075,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
 
       `);
       } else {
-        doc2.write(`
+        doc3.write(`
         if (${id}.issues.length) {
           payload.issues = payload.issues.concat(${id}.issues.map(iss => ({
             ...iss,
@@ -9094,9 +9094,9 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
       `);
       }
     }
-    doc2.write(`payload.value = newResult;`);
-    doc2.write(`return payload;`);
-    const fn = doc2.compile();
+    doc3.write(`payload.value = newResult;`);
+    doc3.write(`return payload;`);
+    const fn = doc3.compile();
     return (payload, ctx) => fn(shape, payload, ctx);
   };
   let fastpass;
@@ -16425,8 +16425,8 @@ function parseBlockDocument(input) {
     throw new BlockDocumentError(problems);
   return value;
 }
-function serializeBlockDocument(doc2) {
-  return JSON.stringify(doc2);
+function serializeBlockDocument(doc3) {
+  return JSON.stringify(doc3);
 }
 function newBlockId() {
   return bytesToHex(randomBytes(6));
@@ -17240,10 +17240,10 @@ function markerTextToBlockDocument(text2, previous, options = {}) {
   return { type: "doc", content: fresh.map((block, i) => fill(block, ids[i] || void 0)) };
 }
 var itemText = (item) => isInlineRun2(item.content) ? inlineNodesToMarkers(item.content) : "";
-function blockDocumentToMarkerText(doc2, options = {}) {
+function blockDocumentToMarkerText(doc3, options = {}) {
   const description = options.description === true;
   const lines = [];
-  for (const block of doc2.content) {
+  for (const block of doc3.content) {
     const inline = isInlineRun2(block.content) ? inlineNodesToMarkers(block.content) : "";
     switch (block.type) {
       case "heading": {
@@ -17294,6 +17294,152 @@ function blockDocumentToMarkerText(doc2, options = {}) {
     lines.push("");
   }
   return lines.join("\n").replace(/\n+$/, "");
+}
+
+// node_modules/@estiva-app/protocol/dist/description-text.js
+var DESCRIPTION = { description: true };
+var doc = (content) => ({ type: "doc", content });
+var childBlocks = (block) => Array.isArray(block.content) && block.content.length > 0 && block.content.every((node) => typeof node.id === "string") ? block.content : void 0;
+function descriptionTextToBlockDocument(text2, previous) {
+  const before = previous?.content ?? [];
+  const mark = placeholderFor(text2);
+  const tables = [];
+  const lines = text2.split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fenceEnd = fenceCloses(lines, i);
+    if (fenceEnd !== -1) {
+      out.push(...lines.slice(i, fenceEnd + 1));
+      i = fenceEnd;
+      continue;
+    }
+    const header = PIPE.test(line) ? rowCells(line) : void 0;
+    if (!header || i + 1 >= lines.length || !isSeparator(lines[i + 1], header.length)) {
+      out.push(line);
+      continue;
+    }
+    const rows = [header];
+    for (i += 2; i < lines.length && lines[i].trim() && PIPE.test(lines[i]); i++)
+      rows.push(rowCells(lines[i]));
+    i--;
+    out.push("", `${mark}${tables.length}${mark}`, "");
+    tables.push(rows);
+  }
+  const aligned = before.filter((block) => block.type !== "table");
+  if (!tables.length)
+    return markerTextToBlockDocument(text2, doc(aligned), DESCRIPTION);
+  const marked = out.join("\n");
+  const places = new Map(tables.map((_, n) => [`${mark}${n}${mark}`, n]));
+  const placeOf = (block) => block.type === "paragraph" ? places.get(inlineTextOf(block)) : void 0;
+  markerTextToBlockDocument(marked, void 0, DESCRIPTION).content.forEach((block, i) => {
+    if (placeOf(block) !== void 0)
+      aligned.splice(i, 0, { type: "paragraph", id: "" });
+  });
+  const oldTables = before.filter((block) => block.type === "table");
+  const used = /* @__PURE__ */ new Set();
+  const lend = (rows, n) => {
+    const printed2 = tableToDescriptionText(tableBlock(rows, void 0));
+    const same = oldTables.find((old2) => !used.has(old2) && printed2 !== void 0 && tableToDescriptionText(old2) === printed2);
+    const positional = oldTables.length === tables.length && !used.has(oldTables[n]) ? oldTables[n] : void 0;
+    const old = same ?? positional;
+    if (old)
+      used.add(old);
+    return old;
+  };
+  return doc(markerTextToBlockDocument(marked, doc(aligned), DESCRIPTION).content.map((block) => {
+    const n = placeOf(block);
+    return n === void 0 ? block : tableBlock(tables[n], lend(tables[n], n));
+  }));
+}
+function placeholderFor(text2) {
+  for (let code = 57344; code <= 63743; code++) {
+    const mark = String.fromCharCode(code);
+    if (!text2.includes(mark))
+      return mark;
+  }
+  let n = 0;
+  while (text2.includes(`\uE000${n}x`))
+    n++;
+  return `\uE000${n}x`;
+}
+var PIPE = /(?<!\\)\|/;
+function rowCells(line) {
+  const inner = line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "");
+  return inner.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|"));
+}
+function isSeparator(line, width) {
+  if (!PIPE.test(line))
+    return false;
+  const cells = rowCells(line);
+  return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell));
+}
+function tableBlock(rows, old) {
+  const width = Math.max(...rows.map((cells) => cells.length));
+  const oldRows = old ? childBlocks(old) ?? [] : [];
+  return {
+    type: "table",
+    id: old?.id ?? newBlockId(),
+    content: rows.map((cells, r) => {
+      const oldCells = oldRows[r] ? childBlocks(oldRows[r]) ?? [] : [];
+      const type = r === 0 ? "tableHeader" : "tableCell";
+      return {
+        type: "tableRow",
+        id: oldRows[r]?.id ?? newBlockId(),
+        content: Array.from({ length: width }, (_, c) => tableCell(type, cells[c] ?? "", oldCells[c]?.type === type ? oldCells[c] : void 0))
+      };
+    })
+  };
+}
+function tableCell(type, text2, old) {
+  const [parsed, ...more] = text2 ? markerTextToBlockDocument(text2).content : [];
+  const paragraph = parsed?.type === "paragraph" && !more.length ? parsed : text2 ? { type: "paragraph", id: "", content: [{ type: "text", text: text2 }] } : { type: "paragraph", id: "" };
+  const oldParagraph = old ? childBlocks(old)?.[0] : void 0;
+  return {
+    type,
+    id: old?.id ?? newBlockId(),
+    attrs: old?.attrs ?? { colspan: 1, rowspan: 1 },
+    content: [{ ...paragraph, id: oldParagraph?.type === "paragraph" ? oldParagraph.id : newBlockId() }]
+  };
+}
+function tableToDescriptionText(block) {
+  const rows = (childBlocks(block) ?? []).map((row) => childBlocks(row) ?? []);
+  if (!rows.length || !rows[0].length)
+    return void 0;
+  const lines = [];
+  for (const [r, cells] of rows.entries()) {
+    if (cells.some((cell) => cell.type !== (r === 0 ? "tableHeader" : "tableCell")))
+      return void 0;
+    const texts = cells.map((cell) => {
+      const children = childBlocks(cell) ?? [];
+      if (children.length > 1 || children[0] && children[0].type !== "paragraph")
+        return void 0;
+      const line = children[0] && Array.isArray(children[0].content) ? cellParagraphText(children[0]) : "";
+      return line.includes("\n") ? void 0 : line.replace(/\|/g, "\\|");
+    });
+    if (texts.some((t) => t === void 0))
+      return void 0;
+    lines.push(`| ${texts.join(" | ")} |`);
+    if (r === 0)
+      lines.push(`| ${cells.map(() => "---").join(" | ")} |`);
+  }
+  return lines.join("\n");
+}
+var cellParagraphText = (paragraph) => blockDocumentToMarkerText(doc([trimRun(paragraph)]), DESCRIPTION);
+function trimRun(block) {
+  const run = [...block.content];
+  while (run.length) {
+    const last = run[run.length - 1];
+    if (last.type !== "text" || typeof last.text !== "string")
+      break;
+    const trimmedText = last.text.trimEnd();
+    if (trimmedText) {
+      run[run.length - 1] = { ...last, text: trimmedText };
+      break;
+    }
+    run.pop();
+  }
+  return { ...block, content: run };
 }
 
 // node_modules/@estiva-app/protocol/dist/media.js
@@ -17895,8 +18041,8 @@ function findMessage(messages, reference) {
 }
 
 // lib/agent/descriptions.ts
-var doc = (content) => ({ type: "doc", content });
-var childBlocks = (block) => Array.isArray(block.content) && block.content.length > 0 && block.content.every((node) => typeof node.id === "string") ? block.content : void 0;
+var doc2 = (content) => ({ type: "doc", content });
+var childBlocks2 = (block) => Array.isArray(block.content) && block.content.length > 0 && block.content.every((node) => typeof node.id === "string") ? block.content : void 0;
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
@@ -17905,10 +18051,10 @@ function canonical(value) {
   }
   return JSON.stringify(value);
 }
-var protocolText = (block) => blockDocumentToMarkerText(doc([trimRuns(block)]), DESCRIPTION);
-var DESCRIPTION = { description: true };
+var protocolText = (block) => blockDocumentToMarkerText(doc2([trimRuns(block)]), DESCRIPTION2);
+var DESCRIPTION2 = { description: true };
 function trimRuns(block) {
-  const children = childBlocks(block);
+  const children = childBlocks2(block);
   if (children) return { ...block, content: children.map(trimRuns) };
   if (!Array.isArray(block.content) || block.content.length === 0) return block;
   const run = [...block.content];
@@ -17926,10 +18072,10 @@ function trimRuns(block) {
 }
 function reparse(text2, previous) {
   const old = new Map(previous.filter((block) => block.id).map((block) => [block.id, block]));
-  return textToBlocks(text2, previous).map((fresh) => {
+  return descriptionTextToBlockDocument(text2, doc2(previous)).content.map((fresh) => {
     const before = old.get(fresh.id);
     if (!before) return fresh;
-    const children = carryChildIds(childBlocks(before) ?? [], childBlocks(fresh));
+    const children = carryChildIds(childBlocks2(before) ?? [], childBlocks2(fresh));
     const updated = { ...fresh, ...children ? { content: children } : {} };
     if (readsTheSame(before, updated)) return before;
     const { content: _content, ...beforeShape } = before;
@@ -17937,100 +18083,7 @@ function reparse(text2, previous) {
     return protocolText(kept) === protocolText(updated) ? kept : updated;
   });
 }
-function textToBlocks(text2, previous) {
-  const tables = [];
-  const lines = text2.split("\n");
-  const out = [];
-  let fenced = false;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/^ {0,3}```/.test(line)) fenced = !fenced;
-    const header = !fenced && TABLE_ROW.test(line) ? rowCells(line) : void 0;
-    if (!header || i + 1 >= lines.length || !isSeparator(lines[i + 1], header.length)) {
-      out.push(line);
-      continue;
-    }
-    const rows = [header];
-    for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) rows.push(rowCells(lines[i]));
-    i--;
-    out.push("", `${PLACEHOLDER}${tables.length}${PLACEHOLDER}`, "");
-    tables.push(rows);
-  }
-  if (!tables.length) return markerTextToBlockDocument(text2, doc(previous), DESCRIPTION).content;
-  const oldTables = previous.filter((block) => block.type === "table");
-  const used = /* @__PURE__ */ new Set();
-  const lend = (rows, n) => {
-    const printed2 = tableText(tableBlock(rows, void 0));
-    const same = oldTables.find((old2) => !used.has(old2) && printed2 !== void 0 && tableText(old2) === printed2);
-    const positional = oldTables.length === tables.length && !used.has(oldTables[n]) ? oldTables[n] : void 0;
-    const old = same ?? positional;
-    if (old) used.add(old);
-    return old;
-  };
-  return markerTextToBlockDocument(out.join("\n"), doc(previous), DESCRIPTION).content.map((block) => {
-    const n = block.type === "paragraph" ? Number(PLACEHOLDER_PARAGRAPH.exec(inlineTextOf(block))?.[1] ?? NaN) : NaN;
-    return n < tables.length ? tableBlock(tables[n], lend(tables[n], n)) : block;
-  });
-}
-var PLACEHOLDER = "\uE000";
-var PLACEHOLDER_PARAGRAPH = new RegExp(`^${PLACEHOLDER}(\\d+)${PLACEHOLDER}$`);
-var TABLE_ROW = /^ {0,3}\|/;
-function rowCells(line) {
-  const inner = line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "");
-  return inner.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|"));
-}
-function isSeparator(line, width) {
-  if (!TABLE_ROW.test(line)) return false;
-  const cells = rowCells(line);
-  return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell));
-}
-function tableBlock(rows, old) {
-  const width = rows[0].length;
-  const oldRows = old ? childBlocks(old) ?? [] : [];
-  return {
-    type: "table",
-    id: old?.id ?? newBlockId(),
-    content: rows.map((cells, r) => {
-      const oldCells = oldRows[r] ? childBlocks(oldRows[r]) ?? [] : [];
-      const type = r === 0 ? "tableHeader" : "tableCell";
-      return {
-        type: "tableRow",
-        id: oldRows[r]?.id ?? newBlockId(),
-        content: Array.from({ length: width }, (_, c) => tableCell(type, cells[c] ?? "", oldCells[c]?.type === type ? oldCells[c] : void 0))
-      };
-    })
-  };
-}
-function tableCell(type, text2, old) {
-  const [parsed, ...more] = text2 ? markerTextToBlockDocument(text2).content : [];
-  const paragraph = parsed?.type === "paragraph" && !more.length ? parsed : text2 ? { type: "paragraph", id: "", content: [{ type: "text", text: text2 }] } : { type: "paragraph", id: "" };
-  const oldParagraph = old ? childBlocks(old)?.[0] : void 0;
-  return {
-    type,
-    id: old?.id ?? newBlockId(),
-    attrs: old?.attrs ?? { colspan: 1, rowspan: 1 },
-    content: [{ ...paragraph, id: oldParagraph?.type === "paragraph" ? oldParagraph.id : newBlockId() }]
-  };
-}
-function tableText(block) {
-  const rows = (childBlocks(block) ?? []).map((row) => childBlocks(row) ?? []);
-  if (!rows.length || !rows[0].length) return void 0;
-  const lines = [];
-  for (const [r, cells] of rows.entries()) {
-    if (cells.some((cell) => cell.type !== (r === 0 ? "tableHeader" : "tableCell"))) return void 0;
-    const texts = cells.map((cell) => {
-      const children = childBlocks(cell) ?? [];
-      if (children.length > 1 || children[0] && children[0].type !== "paragraph") return void 0;
-      const line = children[0] && Array.isArray(children[0].content) ? protocolText(children[0]) : "";
-      return line.includes("\n") ? void 0 : line.replace(/\|/g, "\\|");
-    });
-    if (texts.some((t) => t === void 0)) return void 0;
-    lines.push(`| ${texts.join(" | ")} |`);
-    if (r === 0) lines.push(`| ${cells.map(() => "---").join(" | ")} |`);
-  }
-  return lines.join("\n");
-}
-var printable = (block) => block.type === "table" ? tableText(block) : protocolText(block);
+var printable = (block) => block.type === "table" ? tableToDescriptionText(block) : protocolText(block);
 function carryChildIds(before, after) {
   if (!after) return void 0;
   const used = /* @__PURE__ */ new Set();
@@ -18064,7 +18117,7 @@ function spellable(block) {
   return back.length === 1 && canonical(visible(back[0])) === canonical(visible(block));
 }
 function visible(block) {
-  const children = childBlocks(block);
+  const children = childBlocks2(block);
   if (children) return { ...block, content: children.map(visible) };
   if (!Array.isArray(block.content)) return block;
   const characters = [];
@@ -18083,8 +18136,8 @@ function visible(block) {
 function standIn(block) {
   const attrs = block.attrs ?? {};
   if (block.type === "table") {
-    const rows = childBlocks(block) ?? [];
-    return rows.map((row) => `| ${(childBlocks(row) ?? []).map((cell) => cellText(cell)).join(" | ")} |`).join("\n");
+    const rows = childBlocks2(block) ?? [];
+    return rows.map((row) => `| ${(childBlocks2(row) ?? []).map((cell) => cellText(cell)).join(" | ")} |`).join("\n");
   }
   if (block.type === "attachment") {
     const name = typeof attrs.filename === "string" && attrs.filename ? attrs.filename : typeof attrs.url === "string" ? attrs.url : block.id;
@@ -18093,7 +18146,7 @@ function standIn(block) {
   const text2 = protocolText(block);
   return text2.trim() ? text2 : `[${block.type}: ${block.id}]`;
 }
-var cellText = (cell) => (childBlocks(cell) ?? []).map((child) => childBlocks(child) ? cellText(child) : inlineTextOf(child)).join(" ").replace(/\s+/g, " ").trim();
+var cellText = (cell) => (childBlocks2(cell) ?? []).map((child) => childBlocks2(child) ? cellText(child) : inlineTextOf(child)).join(" ").replace(/\s+/g, " ").trim();
 var blockText = (block) => {
   let text2 = printed.get(block);
   if (text2 === void 0) printed.set(block, text2 = spellable(block) ? printable(block) : standIn(block));
@@ -18205,12 +18258,12 @@ function editBlockDocument(previous, text2) {
   };
 }
 function serialized(blocks) {
-  const problems = validateBlockDocument(doc(blocks));
+  const problems = validateBlockDocument(doc2(blocks));
   if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join("; ")}. Nothing was published.`);
-  return serializeBlockDocument(doc(blocks));
+  return serializeBlockDocument(doc2(blocks));
 }
 function allIds(blocks) {
-  return blocks.flatMap((block) => [block.id, ...allIds(childBlocks(block) ?? [])]).filter(Boolean);
+  return blocks.flatMap((block) => [block.id, ...allIds(childBlocks2(block) ?? [])]).filter(Boolean);
 }
 function describe2(previous, format, text2) {
   if (format === "unknown") {
@@ -18218,7 +18271,7 @@ function describe2(previous, format, text2) {
   }
   if (format !== "blocks") {
     if (!text2.trim()) return { value: text2 };
-    const blocks2 = textToBlocks(text2, []);
+    const blocks2 = descriptionTextToBlockDocument(text2).content;
     return { value: serialized(blocks2), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks2.length, removed: [] } };
   }
   try {
