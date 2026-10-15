@@ -141,8 +141,11 @@ gone; a comment anchored to one now shows as detached.
 **Every description the agent writes is a block document** (RIC-20, Miky
 2026-10-13). `create-issue`, `create-project` and an edit of a marker
 description read the text as marker text plus GFM pipe tables — a header row,
-a `| --- |` row, then rows — and tag the result `estiva-blocks-1`, so a table
-draws as a table in Ship and Peek. `create-project` writes the description as a
+a `| --- |` row, then rows, outer pipes optional — and tag the result
+`estiva-blocks-1`, so a table
+draws as a table in Ship and Peek. That reader is `@estiva-app/protocol`'s
+`descriptionTextToBlockDocument` (LEAF-10), the one a markdown paste into Leaf
+or Ship uses too: change how text is read there, never here. `create-project` writes the description as a
 `describe-project` change after the record, because Ship's `add-project`
 declares no format for it. A table with a header row and one-line cells prints
 back as that GFM and can be edited as text; any other table (no header, a

@@ -18179,6 +18179,7 @@ function chunkPositions(text2, chunk, fences) {
 var MAX_MATCHES = 4e3;
 function unchangedBlocks(text2, chunks) {
   const fences = [...text2.matchAll(/^```/gm)].map((fence) => fence.index);
+  if (fences.length % 2 === 1) fences.pop();
   const matches = [];
   chunks.forEach((chunk, i) => {
     if (!chunk.trim()) return;

@@ -286,7 +286,9 @@ function chunkPositions(text: string, chunk: string, fences: number[]): number[]
 const MAX_MATCHES = 4000
 
 function unchangedBlocks(text: string, chunks: string[]): { i: number; at: number; end: number }[] {
+  // An unclosed fence is not a fence, as protocol reads the text: a last ``` with no partner opens nothing.
   const fences = [...text.matchAll(/^```/gm)].map((fence) => fence.index)
+  if (fences.length % 2 === 1) fences.pop()
   /*
     The chain is quadratic in matches, and a document of many identical blocks
     has matches in the square of its size. Real descriptions have a few dozen;
