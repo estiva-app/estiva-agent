@@ -13,7 +13,7 @@
  *
  * 1. **A chunk that comes back unchanged keeps its block verbatim** — id, attrs,
  *    marks, and anything marker text cannot spell (a table, an attachment).
- * 2. **What changed is re-parsed** with protocol's `markerTextToBlockDocument`,
+ * 2. **What changed is re-parsed** with protocol's `descriptionTextToBlockDocument`,
  *    given the blocks it replaced, so an edited block keeps its id by that
  *    module's rule (same type and text, else same type at the same index). A
  *    re-parsed block keeps the old block's attrs and its list items' ids
@@ -25,7 +25,9 @@
  *
  * Text is read as marker text plus one thing marker text has no syntax for: a
  * GFM pipe table, which becomes a §13.3 `table` block shaped as Ship's editor
- * saves one (RIC-20). So a table Ship's editor wrote is spellable when its
+ * saves one (RIC-20). That reader is protocol's (0.36.0, LEAF-10), so the
+ * agent and an editor's markdown paste read the same text the same way; it
+ * moved there from here. So a table Ship's editor wrote is spellable when its
  * first row is a header and each cell one line of text, and the agent can edit
  * it as text; any other table still prints as `| … |` lines and is refused.
  * A checklist item prints as `- [ ] ` / `- [x] ` and a callout as a quote
@@ -49,11 +51,11 @@
 import {
   BLOCK_DOCUMENT_FORMAT,
   blockDocumentToMarkerText,
+  descriptionTextToBlockDocument,
   inlineTextOf,
-  markerTextToBlockDocument,
-  newBlockId,
   parseBlockDocument,
   serializeBlockDocument,
+  tableToDescriptionText,
   validateBlockDocument,
   type Block,
   type BlockDocument,
@@ -118,7 +120,7 @@ function trimRuns(block: Block): Block {
  */
 function reparse(text: string, previous: Block[]): Block[] {
   const old = new Map(previous.filter((block) => block.id).map((block) => [block.id, block]))
-  return textToBlocks(text, previous).map((fresh) => {
+  return descriptionTextToBlockDocument(text, doc(previous)).content.map((fresh) => {
     const before = old.get(fresh.id)
     if (!before) return fresh
     const children = carryChildIds(childBlocks(before) ?? [], childBlocks(fresh))
@@ -131,128 +133,8 @@ function reparse(text: string, previous: Block[]): Block[] {
   })
 }
 
-/**
- * Text as blocks: protocol's marker reading, with each GFM pipe table — a
- * header row, a `| --- |` row, then rows — read as a `table` block. A table is
- * a block boundary, so it stands in the marker text as a placeholder
- * paragraph of its own, and the document is parsed once: `previous` then
- * lends ids by the same index the whole text has. A table takes the ids of a
- * table in `previous` that prints the same; failing that, of the table at its
- * position, but only when the text has as many tables as `previous` — else a
- * deleted table's ids would pass to the next one.
- */
-function textToBlocks(text: string, previous: Block[]): Block[] {
-  const tables: string[][][] = []
-  const lines = text.split('\n')
-  const out: string[] = []
-  let fenced = false
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (/^ {0,3}```/.test(line)) fenced = !fenced
-    const header = !fenced && TABLE_ROW.test(line) ? rowCells(line) : undefined
-    if (!header || i + 1 >= lines.length || !isSeparator(lines[i + 1], header.length)) {
-      out.push(line)
-      continue
-    }
-    const rows = [header]
-    for (i += 2; i < lines.length && TABLE_ROW.test(lines[i]); i++) rows.push(rowCells(lines[i]))
-    i--
-    out.push('', `${PLACEHOLDER}${tables.length}${PLACEHOLDER}`, '')
-    tables.push(rows)
-  }
-  if (!tables.length) return markerTextToBlockDocument(text, doc(previous), DESCRIPTION).content
-  const oldTables = previous.filter((block) => block.type === 'table')
-  const used = new Set<Block>()
-  const lend = (rows: string[][], n: number): Block | undefined => {
-    const printed = tableText(tableBlock(rows, undefined))
-    const same = oldTables.find((old) => !used.has(old) && printed !== undefined && tableText(old) === printed)
-    const positional = oldTables.length === tables.length && !used.has(oldTables[n]) ? oldTables[n] : undefined
-    const old = same ?? positional
-    if (old) used.add(old)
-    return old
-  }
-  return markerTextToBlockDocument(out.join('\n'), doc(previous), DESCRIPTION).content.map((block) => {
-    const n = block.type === 'paragraph' ? Number(PLACEHOLDER_PARAGRAPH.exec(inlineTextOf(block))?.[1] ?? NaN) : NaN
-    // Text that merely spells a placeholder is left as it was written.
-    return n < tables.length ? tableBlock(tables[n], lend(tables[n], n)) : block
-  })
-}
-
-/** A private-use character, so no text a person writes is mistaken for a table's place. */
-const PLACEHOLDER = '\uE000'
-const PLACEHOLDER_PARAGRAPH = new RegExp(`^${PLACEHOLDER}(\\d+)${PLACEHOLDER}$`)
-const TABLE_ROW = /^ {0,3}\|/
-
-/** A row's cells, `\|` read as a literal pipe. */
-function rowCells(line: string): string[] {
-  const inner = line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '')
-  return inner.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, '|'))
-}
-
-/** GFM's delimiter row: one `---` (optionally `:`-aligned) per header cell. */
-function isSeparator(line: string, width: number): boolean {
-  if (!TABLE_ROW.test(line)) return false
-  const cells = rowCells(line)
-  return cells.length === width && cells.every((cell) => /^:?-+:?$/.test(cell))
-}
-
-function tableBlock(rows: string[][], old: Block | undefined): Block {
-  const width = rows[0].length
-  const oldRows = old ? (childBlocks(old) ?? []) : []
-  return {
-    type: 'table',
-    id: old?.id ?? newBlockId(),
-    content: rows.map((cells, r) => {
-      const oldCells = oldRows[r] ? (childBlocks(oldRows[r]) ?? []) : []
-      const type = r === 0 ? 'tableHeader' : 'tableCell'
-      return {
-        type: 'tableRow',
-        id: oldRows[r]?.id ?? newBlockId(),
-        content: Array.from({ length: width }, (_, c) => tableCell(type, cells[c] ?? '', oldCells[c]?.type === type ? oldCells[c] : undefined)),
-      }
-    }),
-  }
-}
-
-/** A cell as Ship's editor saves one: one paragraph, the text's inline marks kept. */
-function tableCell(type: string, text: string, old: Block | undefined): Block {
-  const [parsed, ...more] = text ? markerTextToBlockDocument(text).content : []
-  const paragraph: Block =
-    parsed?.type === 'paragraph' && !more.length ? parsed : text ? { type: 'paragraph', id: '', content: [{ type: 'text', text }] } : { type: 'paragraph', id: '' }
-  const oldParagraph = old ? childBlocks(old)?.[0] : undefined
-  return {
-    type,
-    id: old?.id ?? newBlockId(),
-    attrs: old?.attrs ?? { colspan: 1, rowspan: 1 },
-    content: [{ ...paragraph, id: oldParagraph?.type === 'paragraph' ? oldParagraph.id : newBlockId() }],
-  }
-}
-
-/**
- * A table as GFM text, for a table text can carry: a header row first, and
- * each cell one paragraph on one line. Anything else prints as its stand-in.
- */
-function tableText(block: Block): string | undefined {
-  const rows = (childBlocks(block) ?? []).map((row) => childBlocks(row) ?? [])
-  if (!rows.length || !rows[0].length) return undefined
-  const lines: string[] = []
-  for (const [r, cells] of rows.entries()) {
-    if (cells.some((cell) => cell.type !== (r === 0 ? 'tableHeader' : 'tableCell'))) return undefined
-    const texts = cells.map((cell) => {
-      const children = childBlocks(cell) ?? []
-      if (children.length > 1 || (children[0] && children[0].type !== 'paragraph')) return undefined
-      const line = children[0] && Array.isArray(children[0].content) ? protocolText(children[0]) : ''
-      return line.includes('\n') ? undefined : line.replace(/\|/g, '\\|')
-    })
-    if (texts.some((t) => t === undefined)) return undefined
-    lines.push(`| ${texts.join(' | ')} |`)
-    if (r === 0) lines.push(`| ${cells.map(() => '---').join(' | ')} |`)
-  }
-  return lines.join('\n')
-}
-
 /** A block as text, when text has a syntax for it. */
-const printable = (block: Block): string | undefined => (block.type === 'table' ? tableText(block) : protocolText(block))
+const printable = (block: Block): string | undefined => (block.type === 'table' ? tableToDescriptionText(block) : protocolText(block))
 
 /**
  * List items keep their ids by the same rule as blocks: one that still reads
@@ -404,7 +286,9 @@ function chunkPositions(text: string, chunk: string, fences: number[]): number[]
 const MAX_MATCHES = 4000
 
 function unchangedBlocks(text: string, chunks: string[]): { i: number; at: number; end: number }[] {
+  // An unclosed fence is not a fence, as protocol reads the text: a last ``` with no partner opens nothing.
   const fences = [...text.matchAll(/^```/gm)].map((fence) => fence.index)
+  if (fences.length % 2 === 1) fences.pop()
   /*
     The chain is quadratic in matches, and a document of many identical blocks
     has matches in the square of its size. Real descriptions have a few dozen;
@@ -542,7 +426,7 @@ export function describe(
   }
   if (format !== 'blocks') {
     if (!text.trim()) return { value: text }
-    const blocks = textToBlocks(text, [])
+    const blocks = descriptionTextToBlockDocument(text).content
     return { value: serialized(blocks), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks.length, removed: [] } }
   }
   try {

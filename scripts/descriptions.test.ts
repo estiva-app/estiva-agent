@@ -358,6 +358,24 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
   check('a new description reads a four-space indent as one level', JSON.stringify((blocksOf(created.value)[0].content as Block[]).map((b) => b.attrs?.indent ?? 0)) === '[0,1,0]', created.value)
 }
 
+// LEAF-10: the shared reader in the edit path — a table written above an edited paragraph, and three backticks that never close.
+{
+  const plain = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph', id: 'x1', content: [text('Intro.')] }, { type: 'paragraph', id: 'x2', content: [text('Details.')] }] })
+  const edit = editBlockDocument(plain, 'Intro.\n\n| A |\n| --- |\n| 1 |\n\nDetails, edited.')
+  check('a table written above an edited paragraph leaves that paragraph its id, so its comment stays', blocksOf(edit.value).map((b) => b.type).join() === 'paragraph,table,paragraph' && blocksOf(edit.value)[2].id === 'x2' && resolveBlockAnchor('x2', edit.value, 'blocks').state === 'resolved', edit.value)
+
+  const unclosed = JSON.stringify({ type: 'doc', content: [{ type: 'codeBlock', id: 'k1', content: [text('```')] }, document.content[5], { type: 'paragraph', id: 'k3', content: [text('Last.')] }] })
+  const shownUnclosed = descriptionText(unclosed, 'blocks')
+  const lines = shownUnclosed.split('\n').filter((line) => line.startsWith('```')).length
+  let result = ''
+  try {
+    result = editBlockDocument(unclosed, shownUnclosed.replace('Last.', 'Last, edited.')).value
+  } catch (error) {
+    result = String(error)
+  }
+  check('three backticks that never close fence nothing: a table after them is matched and kept', lines % 2 === 1 && JSON.stringify(byId(result.startsWith('{') ? result : '{"content":[]}', 't1')) === JSON.stringify(document.content[5]), `${lines} fence lines; ${result.slice(0, 200)}`)
+}
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)
