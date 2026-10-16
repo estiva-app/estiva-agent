@@ -18808,6 +18808,7 @@ var KIND_PROFILE = 0;
 var KIND_HANDLER_RECOMMENDATION = 31989;
 var KIND_HANDLER_INFORMATION = 31990;
 var KIND_COMMENT2 = 1111;
+var KIND_MESSAGE2 = 9;
 var KIND_DELETION2 = 5;
 function commentKindsOf(manifest) {
   const declared = manifest.actions?.find((action) => action.id === "comment");
@@ -19152,6 +19153,22 @@ var BARE_FILE_MANIFEST = {
         title: { field: "pubkey", as: "pubkey" },
         body: { field: "content" }
       }
+    },
+    /*
+          A chat message, for the comment's reason: no app owns `kind:9` (SPEC
+          §7.8). Peek's manifest claimed it until this release, and drew it exactly
+          so — the author as the title, because the text carries structure and is
+          no title; the text as the body, untruncated.
+    
+          why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-chat-message-belongs-to-the-protocol.md
+        */
+    [String(KIND_MESSAGE2)]: {
+      widget: ["message", "card"],
+      noun: "message",
+      slots: {
+        title: { field: "pubkey", as: "pubkey" },
+        body: { field: "content" }
+      }
     }
   },
   /*
@@ -19283,7 +19300,10 @@ var FOLDER_CREATOR = {
   manifest: {
     name: "Folder",
     about: "What every app may do in a Folder, whichever app made it.",
-    projections: { [String(KIND_BARE_FILE)]: BARE_FILE_MANIFEST.projections[String(KIND_BARE_FILE)] },
+    projections: {
+      [String(KIND_BARE_FILE)]: BARE_FILE_MANIFEST.projections[String(KIND_BARE_FILE)],
+      [String(KIND_MESSAGE2)]: BARE_FILE_MANIFEST.projections[String(KIND_MESSAGE2)]
+    },
     actions: [
       {
         id: "create-file",
@@ -19299,12 +19319,52 @@ var FOLDER_CREATOR = {
           properties: { title: { type: "string" }, [SUMMARY_FIELD]: { type: "string" } },
           required: ["title"]
         }
+      },
+      /*
+        `toAddressOf: 'self'` and no `setTag`: the message hangs under the
+        Folder it was started in, and names it only with the `h` every created
+        event gets. One property, the body, written to `content` — a `kind:9`
+        has an author and a text and nothing else.
+      */
+      {
+        id: "start-a-conversation",
+        label: "Start a conversation",
+        description: "Start a new conversation in this Folder, as a root message that people can then reply to. Use when something is worth its own thread rather than an answer inside an existing one \u2014 this cannot reply to a message. Everyone who can read the Folder reads it.",
+        effect: "writes",
+        appliesTo: String(KIND_CHANNEL_METADATA),
+        emits: { kind: KIND_MESSAGE2, toAddressOf: "self" },
+        input: {
+          type: "object",
+          properties: { message: { type: "string", target: "content" } },
+          required: ["message"]
+        }
       }
     ]
   },
   address: FOLDER_ACTIONS_ADDRESS,
   viaRecommendation: false
 };
+var FOLDER_MANIFEST = {
+  name: "Folder",
+  about: "A Folder no app owns: its name, its one-liner, and the files its state lists.",
+  projections: {
+    [String(KIND_CHANNEL_METADATA)]: {
+      widget: "card",
+      noun: "folder",
+      // The cut Peek's claim made, so no card grows when the claim goes.
+      slots: { title: { tag: "name" }, subtitle: { tag: "about", truncate: 120 } }
+    }
+  }
+};
+function folderManifest(opener) {
+  const name = opener?.webTemplate ? wordOf(opener.manifest.name) : void 0;
+  return {
+    manifest: name ? { ...FOLDER_MANIFEST, name } : FOLDER_MANIFEST,
+    address: FOLDER_ACTIONS_ADDRESS,
+    viaRecommendation: false,
+    ...opener?.webTemplate ? { webTemplate: opener.webTemplate } : {}
+  };
+}
 function bareFileOpenedBy(opener, template) {
   const name = wordOf(opener.name) ?? BARE_FILE_MANIFEST.name;
   const fileNoun = wordOf(opener.fileNoun);
@@ -19403,9 +19463,12 @@ function manifestKeyOf(pointer) {
   return pointer.kind === KIND_BARE_FILE ? String(KIND_BARE_FILE) : `${pointer.kind}:${pointer.pubkey}`;
 }
 async function resolveManifest(pointer, query, cache) {
-  if (pointer.kind === KIND_BARE_FILE || pointer.kind === KIND_COMMENT2) {
-    const opener = await resolveAspectApp("conversation", query, cache, pointer.kind === KIND_COMMENT2 ? "nevent" : "naddr");
+  if (pointer.kind === KIND_BARE_FILE || pointer.kind === KIND_COMMENT2 || pointer.kind === KIND_MESSAGE2) {
+    const opener = await resolveAspectApp("conversation", query, cache, pointer.kind === KIND_BARE_FILE ? "naddr" : "nevent");
     return opener?.webTemplate ? bareFileOpenedBy(opener.manifest, opener.webTemplate) : bareFileManifest();
+  }
+  if (pointer.kind === KIND_CHANNEL_METADATA) {
+    return folderManifest(await resolveAspectApp("conversation", query, cache, "naddr").catch(() => null));
   }
   return throughCache(cache, `${pointer.kind}:${pointer.pubkey}`, () => resolveManifestUncached(pointer, query));
 }
@@ -19494,11 +19557,11 @@ function borrowedFrom(kind, owner, creators) {
   ];
 }
 async function resolveActingManifest(pointer, declaredBy, query, cache) {
+  if (pointer.kind === KIND_CHANNEL_METADATA && declaredBy === FOLDER_ACTIONS_ADDRESS)
+    return FOLDER_CREATOR;
   const owner = await resolveManifest(pointer, query, cache);
   if (!owner || !declaredBy || declaredBy === owner.address)
     return owner;
-  if (pointer.kind === KIND_CHANNEL_METADATA && declaredBy === FOLDER_ACTIONS_ADDRESS)
-    return FOLDER_CREATOR;
   const creators = await creatorsOn(pointer.kind, query, cache);
   return borrowedFrom(pointer.kind, owner, creators).find((creator) => creator.address === declaredBy) ?? null;
 }
@@ -20383,7 +20446,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
       addresses: [...new Set(state.tags.filter((t) => t[0] === "a" && t[1]).map((t) => t[1]))],
       placed: /* @__PURE__ */ new Map()
     }
-  ) : await addressesByContainment(folder, query);
+  ) : options.listedOnly ? { addresses: [], placed: /* @__PURE__ */ new Map() } : await addressesByContainment(folder, query);
   if (addresses.length === 0) {
     const archived = channelAddress ? folderArchiveOf(await readArchiveChanges([channelAddress], query), summary) : void 0;
     return { ...summary, ...archived ? { archived } : {}, files: [], source: state ? "state" : "channel" };
