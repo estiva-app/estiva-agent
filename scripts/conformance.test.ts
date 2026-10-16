@@ -45,7 +45,7 @@ const here = dirname(fileURLToPath(import.meta.url))
  * The events both repositories hold. Pinned here, not read from the fixture,
  * because a checksum a file carries about itself proves nothing.
  */
-const EVENTS_SHA256 = '64cd76f53c9ab7ab346c5dd352fd81b58cfedcece1bd9e944c22817368eac14e'
+const EVENTS_SHA256 = '14bf4e5b8b5ee0ac82f08b3ca3ec9e909ed1b1fcf9f297cc3dd120508adf61b1'
 
 let failures = 0
 function check(label: string, condition: boolean, detail = '') {
@@ -156,7 +156,7 @@ compare(
   new Map(workspace.issues.map((issue) => [issue.addr, { ...issue }])),
   ['author', 'createdAt', 'title', 'description', 'status', 'ref', 'assignee', 'projectAddr', 'folder'],
 )
-check('the change stream is every recorded change', workspace.activity.length === 451, String(workspace.activity.length))
+check('the change stream is every recorded change', workspace.activity.length === 462, String(workspace.activity.length))
 check(
   "the stranger's own project is read with the manifest they recommend",
   workspace.manifestFor(`30850:${STRANGER}:their-project`)?.manifest.records?.changeKind === 9851,

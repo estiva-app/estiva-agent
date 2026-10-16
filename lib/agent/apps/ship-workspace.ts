@@ -58,6 +58,8 @@ export interface Project {
   author: string
   createdAt: number
   title: string
+  /** Its one-line summary (SPEC §6.12); absent when it has none. */
+  summary?: string
   description: string
   /** The model `description` is written in (§13.4): a block document from Ship's editor, or marker text. */
   descriptionFormat?: ContentFormat
@@ -82,6 +84,8 @@ export interface Issue {
   author: string
   createdAt: number
   title: string
+  /** Its one-line summary (SPEC §6.12); absent when it has none. */
+  summary?: string
   description: string
   /** The model `description` is written in (§13.4): a block document from Ship's editor, or marker text. */
   descriptionFormat?: ContentFormat
@@ -272,6 +276,9 @@ export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
       author: root.pubkey,
       createdAt: root.created_at,
       title: object.slots.title?.value ?? '',
+      // Every file kind's `subtitle` is its summary, built into interop (SPEC
+      // §7.2, §6.12), so Ship's manifest need not declare it.
+      summary: object.slots.subtitle?.value,
       description: object.slots.body?.value ?? '',
       descriptionFormat: object.slots.body?.format,
     }

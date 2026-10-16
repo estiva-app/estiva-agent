@@ -19,6 +19,7 @@ import { describe, descriptionText, formatName } from '../descriptions'
 import { mentionedKeys, withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
+import { SUMMARY_LENGTH, summaryRoute, summaryText, summaryWarning } from '../summary'
 import {
   KIND,
   cascadeArchives,
@@ -107,7 +108,19 @@ export function issueRow(issue: ReturnType<typeof issueSummary>, vocab: Vocabula
     statusValue(vocab, issue.status).padEnd(12),
     issue.short,
     clip(issue.title, ROW_TITLE) + (issue.archived ? ' (archived)' : ''),
-  ].join(' ')
+  ].join(' ') + summaryLine(issue.summary)
+}
+
+/** How much of a summary a listing row shows: about the 240 it should be (SPEC §6.12). */
+const ROW_SUMMARY = SUMMARY_LENGTH
+
+/**
+ * A file's summary, as the second line of its row — what it is about, read
+ * before its whole description is (SUM-2). Absent when it has none, so a row
+ * with no summary is one line as before.
+ */
+function summaryLine(summary: string | undefined): string {
+  return summary ? `\n${' '.repeat(9)}${clip(summary, ROW_SUMMARY)}` : ''
 }
 
 export function projectRow(project: ReturnType<typeof projectSummary> & { issues: number }, vocab: Vocabulary): string {
@@ -117,7 +130,7 @@ export function projectRow(project: ReturnType<typeof projectSummary> & { issues
     `${String(project.issues).padStart(3)} issues`,
     clip(project.title, ROW_TITLE) + (project.archived ? ' (archived)' : ''),
     project.lead ? `— ${project.lead}` : '',
-  ].join(' ').trimEnd()
+  ].join(' ').trimEnd() + summaryLine(project.summary)
 }
 
 /** Enough to answer "what happened" without returning the workspace's whole history. */
@@ -132,6 +145,7 @@ function projectSummary(project: Project, directory: Directory, vocab: Vocabular
     ref: project.addr,
     short: short(project.id),
     title: project.title,
+    summary: project.summary,
     key: project.key,
     status: status(vocab, project.status),
     lead: who(directory, project.lead),
@@ -176,6 +190,7 @@ function issueSummary(issue: Issue, directory: Directory, vocab: Vocabulary) {
     short: short(issue.id),
     addr: issue.addr,
     title: issue.title,
+    summary: issue.summary,
     status: status(vocab, issue.status),
     assignee: who(directory, issue.assignee),
     author: who(directory, issue.author),
@@ -326,6 +341,13 @@ export interface FieldEdit {
   text?: string
   /** For a block document: what happened to its blocks. */
   blocks?: { kept: number; edited: number; added: number; removed: string[] }
+  /** Said back with the edit, when what was written is not quite what it should be. */
+  warning?: string
+}
+
+function summaryEdit(current: { summary?: string }, text: string): FieldEdit {
+  const value = summaryText(text)
+  return { field: 'summary', from: current.summary ?? '', value, note: value ? 'Summary' : 'Clear summary', warning: summaryWarning(value) }
 }
 
 /** The project planner's original name for the shape above. */
@@ -361,6 +383,7 @@ function appliedEdit(edit: FieldEdit, eventId?: string) {
     ...(edit.blocks?.removed.length
       ? { note: `${edit.blocks.removed.length} block(s) are no longer in the description; a comment anchored to one now shows as detached (§13.6).` }
       : {}),
+    ...(edit.warning ? { note: edit.warning } : {}),
   }
 }
 
@@ -388,6 +411,9 @@ export function projectEdits(project: Project, args: ParsedArgs, self: string, v
 
   const description = flagValue(args, 'description')
   if (description !== undefined) edits.push(descriptionEdit(project, description))
+
+  const summary = flagValue(args, 'summary')
+  if (summary !== undefined) edits.push(summaryEdit(project, summary))
 
   const status = flagValue(args, 'status')
   if (status !== undefined) {
@@ -435,7 +461,7 @@ export function projectEdits(project: Project, args: ParsedArgs, self: string, v
   }
 
   if (edits.length === 0) {
-    throw new BadRequest('edit-project needs at least one of --title, --description, --status or --lead.')
+    throw new BadRequest('edit-project needs at least one of --title, --summary, --description, --status or --lead.')
   }
 
   return edits
@@ -535,6 +561,9 @@ export function issueEdits(issue: Issue, args: ParsedArgs, projects: Project[]):
   const description = flagValue(args, 'description')
   if (description !== undefined) edits.push(descriptionEdit(issue, description))
 
+  const summary = flagValue(args, 'summary')
+  if (summary !== undefined) edits.push(summaryEdit(issue, summary))
+
   const project = flagValue(args, 'project')
   if (project !== undefined) {
     /*
@@ -558,7 +587,7 @@ export function issueEdits(issue: Issue, args: ParsedArgs, projects: Project[]):
   }
 
   if (edits.length === 0) {
-    throw new BadRequest('edit-issue needs at least one of --title, --description or --project.')
+    throw new BadRequest('edit-issue needs at least one of --title, --summary, --description or --project.')
   }
 
   return edits
@@ -1192,6 +1221,7 @@ async function showProject(context: AgentContext, state: Workspace, project: Pro
     kind: 'project' as const,
     addr: project.addr,
     title: project.title,
+    summary: project.summary,
     key: project.key,
     status: status(state.vocab.project, project.status),
     lead: who(directory, project.lead),
@@ -1562,6 +1592,7 @@ export const shipApp: AgentApp = {
           short: short(issue.id),
           addr: issue.addr,
           title: issue.title,
+          summary: issue.summary,
           status: issue.status,
           assignee: who(directory, issue.assignee),
           pullRequest: pullRequestOn([...comments.map((c) => c.body).reverse(), descriptionText(issue.description, issue.descriptionFormat)]),
@@ -1910,8 +1941,8 @@ export const shipApp: AgentApp = {
     {
       name: 'edit-issue',
       signs: [KIND_CHANGE],
-      summary: 'change an issue’s title, description, or which project it is in',
-      usage: 'edit-issue <ref> [--title "..."] [--description "..."] [--project <ref|none>]',
+      summary: 'change an issue’s title, summary, description, or which project it is in',
+      usage: 'edit-issue <ref> [--title "..."] [--summary "..."] [--description "..."] [--project <ref|none>]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('edit-issue needs an issue reference.')
@@ -1970,8 +2001,8 @@ export const shipApp: AgentApp = {
     {
       name: 'edit-project',
       signs: [KIND_CHANGE],
-      summary: 'change a project’s title, description, status or lead',
-      usage: 'edit-project <ref> [--title "..."] [--description "..."] [--status <s>] [--lead <key|me|none>]',
+      summary: 'change a project’s title, summary, description, status or lead',
+      usage: 'edit-project <ref> [--title "..."] [--summary "..."] [--description "..."] [--status <s>] [--lead <key|me|none>]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('edit-project needs a project reference.')
@@ -2260,7 +2291,7 @@ export const shipApp: AgentApp = {
       */
       signs: [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND, KIND_CHANGE],
       summary: 'start a new project in a team',
-      usage: 'create-project --team <name|folder> --title "..." [--description "..."] [--key ABC]',
+      usage: 'create-project --team <name|folder> --title "..." [--summary "..."] [--description "..."] [--key ABC]',
       async run(context, args) {
         const title = flagValue(args, 'title')
         if (!title) throw new BadRequest('create-project needs --title.')
@@ -2291,14 +2322,25 @@ export const shipApp: AgentApp = {
         const id = randomUUID()
         const description = flagValue(args, 'description')
         const body = description ? describe('', undefined, description) : undefined
+        const manifest = state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`)
+        // Seeded on the record when the manifest takes it, and then readable by
+        // the whole workspace as the project's name is (SPEC §6.12; Miky, 2026-10-15).
+        const summary = summaryText(flagValue(args, 'summary') ?? '')
+        const route = summary ? summaryRoute(manifest?.manifest, 'add-project', KIND.PROJECT) : undefined
+        if (summary && !route) throw new BadRequest(`Ship's manifest declares no summary for a project yet, so --summary has nowhere to go. Nothing was published.`)
         const [result, placed] = await act(
           context,
           state,
           { addr: team.channel ?? `${KIND_CHANNEL_METADATA}::${team.id}`, author: '', folder: team.id },
           'add-project',
-          { name: title, ...(body && !body.contentFormat ? { description: body.value } : {}), ...(key ? { key } : {}) },
+          {
+            name: title,
+            ...(body && !body.contentFormat ? { description: body.value } : {}),
+            ...(key ? { key } : {}),
+            ...(route === 'seed' ? { summary } : {}),
+          },
           [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND],
-          { newId: id, folderHasState: team.hasState, manifest: state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`) },
+          { newId: id, folderHasState: team.hasState, manifest },
         )
         const created = { result, placed, addr: `${KIND.PROJECT}:${context.signer.pubkey}:${id}` }
         published(created.result, `a new project "${title}"`)
@@ -2306,10 +2348,16 @@ export const shipApp: AgentApp = {
           ? await setField(context, state, { addr: created.addr, author: context.signer.pubkey, folder: team.id }, 'description', body.value, 'Description', body.contentFormat)
           : undefined
         if (described) published(described, `the description of "${title}" — the project itself was created, ${created.addr}, without one`)
+        const summarized =
+          route === 'change'
+            ? await setField(context, state, { addr: created.addr, author: context.signer.pubkey, folder: team.id }, 'summary', summary, 'Summary')
+            : undefined
+        if (summarized) published(summarized, `the summary of "${title}" — the project itself was created, ${created.addr}, without one`)
 
         return {
-          created: { title, ...(key ? { key } : {}), addr: created.addr, team: { id: team.id, name: team.name } },
+          created: { title, ...(summary ? { summary } : {}), ...(key ? { key } : {}), addr: created.addr, team: { id: team.id, name: team.name } },
           eventId: created.result.eventId,
+          ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
           /*
             Apart from the record, as Ship reports it: a refused listing is a
             project Ship shows under its team and Peek does not place.
@@ -2324,9 +2372,10 @@ export const shipApp: AgentApp = {
     },
     {
       name: 'create-issue',
-      signs: [KIND.ISSUE],
+      // The change only when a manifest takes no summary on the record (`summaryRoute`).
+      signs: [KIND.ISSUE, KIND_CHANGE],
       summary: 'file one new issue in a project',
-      usage: 'create-issue --project <ref> --title "..." [--description "..."]',
+      usage: 'create-issue --project <ref> --title "..." [--summary "..."] [--description "..."]',
       async run(context, args) {
         const projectRef = flagValue(args, 'project')
         const title = flagValue(args, 'title')
@@ -2352,24 +2401,34 @@ export const shipApp: AgentApp = {
         // A block document (RIC-20), which Ship's `add-issue` declares for its description.
         const description = flagValue(args, 'description')
         const body = description ? describe('', undefined, description) : undefined
+        const addr = `${KIND.ISSUE}:${context.signer.pubkey}:${id}`
+        const summary = summaryText(flagValue(args, 'summary') ?? '')
+        const route = summary ? summaryRoute(state.manifestFor(project.addr)?.manifest, 'add-issue', KIND.ISSUE) : undefined
+        if (summary && !route) throw new BadRequest(`Ship's manifest declares no summary for an issue yet, so --summary has nowhere to go. Nothing was published.`)
         const [result] = await act(
           context,
           state,
           { addr: project.addr, author: project.author, folder: listed ?? project.contentFolder },
           'add-issue',
-          { title, ...(body ? { description: body.value } : {}) },
+          { title, ...(body ? { description: body.value } : {}), ...(route === 'seed' ? { summary } : {}) },
           [KIND.ISSUE],
           { newId: id, contentFormat: body?.contentFormat },
         )
-        const created = { result, id, addr: `${KIND.ISSUE}:${context.signer.pubkey}:${id}` }
+        const created = { result, id, addr }
         published(created.result, `a new issue in ${project.title}`)
+        const summarized =
+          route === 'change'
+            ? await setField(context, state, { addr, author: context.signer.pubkey, folder: listed ?? project.contentFolder }, 'summary', summary, 'Summary')
+            : undefined
+        if (summarized) published(summarized, `the summary of "${title}" — the issue itself was created, ${addr}, without one`)
 
         // The same line every other write echoes, so the short id the next
         // command needs is on screen without a `show` (MAK-2).
         return {
           state: issueLine({ ref: NO_REF, id: created.id, status: state.vocab.issue.fallback, comments: [] }, undefined),
-          created: { short: short(created.id), addr: created.addr, title, project: project.title },
+          created: { short: short(created.id), addr: created.addr, title, ...(summary ? { summary } : {}), project: project.title },
           eventId: created.result.eventId,
+          ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
         }
       },
     },
