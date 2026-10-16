@@ -61,7 +61,7 @@ import { edited, findMessage, publishEdit } from '../conversation'
 import { withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveOne } from '../resolve'
-import { summaryAction, summaryText, summaryWarning } from '../summary'
+import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../summary'
 
 const tagValue = (event: SignedEvent, name: string) =>
   event.tags.find((tag) => tag[0] === name)?.[1]
@@ -624,7 +624,7 @@ export const peekApp: AgentApp = {
         const pointer = pointerOf(channel)
         const creator = await resolveActingManifest(pointer, FOLDER_ACTIONS_ADDRESS, query)
         if (!creator) throw new BadRequest(`${folder.name ?? folder.id} offers no way to create a file. Nothing was published.`)
-        if (summary && !creator.manifest.actions?.find((action) => action.id === 'create-file')?.input?.properties?.summary) {
+        if (summary && summaryRoute(creator.manifest, 'create-file', KIND_BARE_FILE) !== 'seed') {
           throw new BadRequest('A Folder here takes no summary on a new file yet, so --summary has nowhere to go. Nothing was published.')
         }
         const fileId = crypto.randomUUID()
@@ -642,13 +642,16 @@ export const peekApp: AgentApp = {
           createdAtMs: Date.now(),
         })
         if (typeof built === 'string') throw new BadRequest(built)
-        const stray = built.find((event, i) => (i === 0 ? event.kind !== KIND_BARE_FILE : event.kind !== KIND.FOLDER_COMMAND))
+        if (built[0]?.kind !== KIND_BARE_FILE) throw new BadRequest(`Creating a file here would not write a topic. Nothing was published.`)
+        const stray = built.find((event, i) => i > 0 && event.kind !== KIND.FOLDER_COMMAND)
         if (stray) throw new BadRequest(`Creating a file here would write a kind:${stray.kind}, which create-topic does not write. Nothing was published.`)
 
-        const [file, ...placement] = await Promise.all(built.map((event) => context.signer.sign(event)))
+        // Signed one at a time, the placement only once the file is in.
+        const [unsignedFile, ...placement] = built
+        const file = await context.signer.sign(unsignedFile)
         published(await context.relay.publish(file), `a new topic "${title}"`)
-        for (const event of placement) {
-          const result = await context.relay.publish(event)
+        for (const unsigned of placement) {
+          const result = await context.relay.publish(await context.signer.sign(unsigned))
           if (!result.ok) {
             throw new BadRequest(
               `Created "${title}" (${fileId}) but ${folder.name ?? folder.id} refused to list it, so it is on no page in Peek: ${result.reason ?? 'no reason given'}`,
@@ -670,7 +673,7 @@ export const peekApp: AgentApp = {
       usage: 'edit-topic <topic> --summary "..."',
       async run(context, args) {
         const reference = args.positional[0]
-        if (!reference) throw new BadRequest('edit-topic needs a topic — try `peek topics` first.')
+        if (!reference) throw new BadRequest('edit-topic needs a topic: its title, part of one, or its id.')
         const text = flagValue(args, 'summary')
         if (text === undefined) throw new BadRequest('edit-topic needs --summary. An empty one clears it.')
         const summary = summaryText(text)

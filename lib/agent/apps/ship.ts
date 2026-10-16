@@ -19,7 +19,7 @@ import { describe, descriptionText, formatName } from '../descriptions'
 import { mentionedKeys, withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
-import { summaryRoute, summaryText, summaryWarning } from '../summary'
+import { SUMMARY_LENGTH, summaryRoute, summaryText, summaryWarning } from '../summary'
 import {
   KIND,
   cascadeArchives,
@@ -112,7 +112,7 @@ export function issueRow(issue: ReturnType<typeof issueSummary>, vocab: Vocabula
 }
 
 /** How much of a summary a listing row shows: about the 240 it should be (SPEC §6.12). */
-const ROW_SUMMARY = 240
+const ROW_SUMMARY = SUMMARY_LENGTH
 
 /**
  * A file's summary, as the second line of its row — what it is about, read
@@ -1941,7 +1941,7 @@ export const shipApp: AgentApp = {
     {
       name: 'edit-issue',
       signs: [KIND_CHANGE],
-      summary: 'change an issue’s title, description, or which project it is in',
+      summary: 'change an issue’s title, summary, description, or which project it is in',
       usage: 'edit-issue <ref> [--title "..."] [--summary "..."] [--description "..."] [--project <ref|none>]',
       async run(context, args) {
         const reference = args.positional[0]
@@ -2001,7 +2001,7 @@ export const shipApp: AgentApp = {
     {
       name: 'edit-project',
       signs: [KIND_CHANGE],
-      summary: 'change a project’s title, description, status or lead',
+      summary: 'change a project’s title, summary, description, status or lead',
       usage: 'edit-project <ref> [--title "..."] [--summary "..."] [--description "..."] [--status <s>] [--lead <key|me|none>]',
       async run(context, args) {
         const reference = args.positional[0]
@@ -2372,7 +2372,8 @@ export const shipApp: AgentApp = {
     },
     {
       name: 'create-issue',
-      signs: [KIND.ISSUE],
+      // The change only when a manifest takes no summary on the record (`summaryRoute`).
+      signs: [KIND.ISSUE, KIND_CHANGE],
       summary: 'file one new issue in a project',
       usage: 'create-issue --project <ref> --title "..." [--summary "..."] [--description "..."]',
       async run(context, args) {

@@ -128,6 +128,20 @@ console.log('\n— Ship: writing —')
   const edit = await refusal(run(shipApp, 'edit-issue', context, ['i1'], { summary: 'A line.' }))
   check('…and so does edit-issue', published.length === 0 && /declares no action that sets summary/.test(edit), edit)
 }
+{
+  // A create action that takes no summary, beside an action that changes one.
+  const changeOnly = structuredClone(withWriters)
+  delete (changeOnly.actions as Action[]).find((action) => action.id === 'add-issue')?.input?.properties?.summary
+  const { context, published } = ship(changeOnly)
+  await run(shipApp, 'create-issue', context, [], { project: PROJECT, title: 'New', summary: 'A line.' })
+  const [root, change] = published
+  check(
+    'with no seed, create-issue writes the issue bare and then a 1851 on summary, in its Folder',
+    root?.kind === 30851 && tag(root, 'summary') === undefined && change?.kind === 1851 && tag(change, 'field') === 'summary' &&
+      tag(change, 'value') === 'A line.' && tag(change, 'a') === `30851:${SELF}:${tag(root, 'd')}` && tag(change, 'h') === FOLDER,
+    JSON.stringify(published.map((e) => e.tags)),
+  )
+}
 
 // Peek: a top-level Folder whose state lists one topic, and an app claiming
 // Folders as Peek's manifest does on production — `resolveActingManifest`

@@ -20805,7 +20805,7 @@ function issueRow(issue2, vocab) {
     clip(issue2.title, ROW_TITLE) + (issue2.archived ? " (archived)" : "")
   ].join(" ") + summaryLine(issue2.summary);
 }
-var ROW_SUMMARY = 240;
+var ROW_SUMMARY = SUMMARY_LENGTH;
 function summaryLine(summary) {
   return summary ? `
 ${" ".repeat(9)}${clip(summary, ROW_SUMMARY)}` : "";
@@ -21889,7 +21889,7 @@ Pass an address to say which.`
     {
       name: "edit-issue",
       signs: [KIND_CHANGE],
-      summary: "change an issue\u2019s title, description, or which project it is in",
+      summary: "change an issue\u2019s title, summary, description, or which project it is in",
       usage: 'edit-issue <ref> [--title "..."] [--summary "..."] [--description "..."] [--project <ref|none>]',
       async run(context2, args2) {
         const reference = args2.positional[0];
@@ -21926,7 +21926,7 @@ Pass an address to say which.`
     {
       name: "edit-project",
       signs: [KIND_CHANGE],
-      summary: "change a project\u2019s title, description, status or lead",
+      summary: "change a project\u2019s title, summary, description, status or lead",
       usage: 'edit-project <ref> [--title "..."] [--summary "..."] [--description "..."] [--status <s>] [--lead <key|me|none>]',
       async run(context2, args2) {
         const reference = args2.positional[0];
@@ -22194,7 +22194,8 @@ Pass an address to say which.`
     },
     {
       name: "create-issue",
-      signs: [KIND2.ISSUE],
+      // The change only when a manifest takes no summary on the record (`summaryRoute`).
+      signs: [KIND2.ISSUE, KIND_CHANGE],
       summary: "file one new issue in a project",
       usage: 'create-issue --project <ref> --title "..." [--summary "..."] [--description "..."]',
       async run(context2, args2) {
@@ -22582,7 +22583,7 @@ var peekApp = {
         const pointer = pointerOf2(channel);
         const creator = await resolveActingManifest(pointer, FOLDER_ACTIONS_ADDRESS, query);
         if (!creator) throw new BadRequest(`${folder.name ?? folder.id} offers no way to create a file. Nothing was published.`);
-        if (summary && !creator.manifest.actions?.find((action) => action.id === "create-file")?.input?.properties?.summary) {
+        if (summary && summaryRoute(creator.manifest, "create-file", KIND_BARE_FILE) !== "seed") {
           throw new BadRequest("A Folder here takes no summary on a new file yet, so --summary has nowhere to go. Nothing was published.");
         }
         const fileId = crypto.randomUUID();
@@ -22600,12 +22601,14 @@ var peekApp = {
           createdAtMs: Date.now()
         });
         if (typeof built === "string") throw new BadRequest(built);
-        const stray = built.find((event, i) => i === 0 ? event.kind !== KIND_BARE_FILE : event.kind !== KIND.FOLDER_COMMAND);
+        if (built[0]?.kind !== KIND_BARE_FILE) throw new BadRequest(`Creating a file here would not write a topic. Nothing was published.`);
+        const stray = built.find((event, i) => i > 0 && event.kind !== KIND.FOLDER_COMMAND);
         if (stray) throw new BadRequest(`Creating a file here would write a kind:${stray.kind}, which create-topic does not write. Nothing was published.`);
-        const [file, ...placement] = await Promise.all(built.map((event) => context2.signer.sign(event)));
+        const [unsignedFile, ...placement] = built;
+        const file = await context2.signer.sign(unsignedFile);
         published2(await context2.relay.publish(file), `a new topic "${title}"`);
-        for (const event of placement) {
-          const result = await context2.relay.publish(event);
+        for (const unsigned of placement) {
+          const result = await context2.relay.publish(await context2.signer.sign(unsigned));
           if (!result.ok) {
             throw new BadRequest(
               `Created "${title}" (${fileId}) but ${folder.name ?? folder.id} refused to list it, so it is on no page in Peek: ${result.reason ?? "no reason given"}`
@@ -22626,7 +22629,7 @@ var peekApp = {
       usage: 'edit-topic <topic> --summary "..."',
       async run(context2, args2) {
         const reference = args2.positional[0];
-        if (!reference) throw new BadRequest("edit-topic needs a topic \u2014 try `peek topics` first.");
+        if (!reference) throw new BadRequest("edit-topic needs a topic: its title, part of one, or its id.");
         const text2 = flagValue(args2, "summary");
         if (text2 === void 0) throw new BadRequest("edit-topic needs --summary. An empty one clears it.");
         const summary = summaryText(text2);
@@ -22852,7 +22855,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_edit_issue",
-      description: 'Change one Estiva Ship issue: its title, its description, or which project it belongs to. Pass only the fields to change \u2014 anything omitted is left alone. An issue can be moved between projects: pass `project`, or "none" to detach it from every project. Moving re-parents the issue and nothing else \u2014 its conversation stays in the Folder it was filed in, because an event\'s Folder cannot change. ' + WRITE_NOTE,
+      description: 'Change one Estiva Ship issue: its title, its summary, its description, or which project it belongs to. Pass only the fields to change \u2014 anything omitted is left alone. An issue can be moved between projects: pass `project`, or "none" to detach it from every project. Moving re-parents the issue and nothing else \u2014 its conversation stays in the Folder it was filed in, because an event\'s Folder cannot change. ' + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -22969,7 +22972,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_edit_project",
-      description: "Change one Estiva Ship project: its title, description, status or lead. Pass only the fields to change \u2014 anything omitted is left alone. Each field is published as its own change, so a partial failure leaves the earlier ones standing and the answer says which landed. " + WRITE_NOTE,
+      description: "Change one Estiva Ship project: its title, summary, description, status or lead. Pass only the fields to change \u2014 anything omitted is left alone. Each field is published as its own change, so a partial failure leaves the earlier ones standing and the answer says which landed. " + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {

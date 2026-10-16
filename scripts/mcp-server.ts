@@ -340,7 +340,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ship_edit_issue',
       description:
-        'Change one Estiva Ship issue: its title, its description, or which project it belongs to. Pass only the fields to change — anything omitted is left alone. ' +
+        'Change one Estiva Ship issue: its title, its summary, its description, or which project it belongs to. Pass only the fields to change — anything omitted is left alone. ' +
         'An issue can be moved between projects: pass `project`, or "none" to detach it from every project. Moving re-parents the issue and nothing else — its conversation stays in the Folder it was filed in, because an event\'s Folder cannot change. ' +
         WRITE_NOTE,
       inputSchema: {
@@ -477,7 +477,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ship_edit_project',
       description:
-        'Change one Estiva Ship project: its title, description, status or lead. Pass only the fields to change — anything omitted is left alone. Each field is published as its own change, so a partial failure leaves the earlier ones standing and the answer says which landed. ' +
+        'Change one Estiva Ship project: its title, summary, description, status or lead. Pass only the fields to change — anything omitted is left alone. Each field is published as its own change, so a partial failure leaves the earlier ones standing and the answer says which landed. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
