@@ -3,11 +3,11 @@
  * on the wire, and what the listings read back.
  *
  * Offline, over an in-memory relay. Ship's side runs on the manifest Ship
- * published (`conformance/ship-manifest.json`), once as it is — it declares no
- * summary yet, so `--summary` must be refused with nothing published — and
- * once with the two writers SPEC §7.3 says it gains: a `summary` property on
- * `add-issue` and an action emitting `field: summary`. Peek's side runs on
- * interop's built-in Folder and bare-file actions.
+ * published (`conformance/ship-manifest.json`), once as it is — with the two
+ * writers SPEC §7.3 names: a `summary` property on `add-issue` and an action
+ * emitting `field: summary` — and once with those taken out, where `--summary`
+ * must be refused with nothing published. Peek's side runs on interop's
+ * built-in Folder and bare-file actions.
  */
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -64,15 +64,13 @@ const run = (app: typeof shipApp, name: string, context: AgentContext, positiona
   app.commands.find((command) => command.name === name)!.run(context, { positional, flags } as never) as Promise<Record<string, unknown>>
 const refusal = (promise: Promise<unknown>) => promise.then(() => '', (error: Error) => error.message)
 
-// Ship, as published today, and as SPEC §7.3 has it once Ship declares the writers.
-const recorded = JSON.parse(JSON.parse(readFileSync(join(here, '..', 'conformance', 'ship-manifest.json'), 'utf8')).event.content)
-const withWriters = structuredClone(recorded)
-const addIssue = withWriters.actions.find((action: { id: string }) => action.id === 'add-issue')
-addIssue.input.properties.summary = { type: 'string' }
-withWriters.actions.push(
-  { id: 'summarize-issue', label: 'Summary', effect: 'writes', appliesTo: '30851', emits: { kind: 1851, field: 'summary' }, input: { type: 'string' } },
-  { id: 'summarize-project', label: 'Summary', effect: 'writes', appliesTo: '30850', emits: { kind: 1851, field: 'summary' }, input: { type: 'string' } },
-)
+// Ship, as published (it declares the writers since ship#304), and the same
+// manifest with them taken out — an app that has not declared a summary yet.
+type Action = { id: string; emits?: { field?: string }; input?: { properties?: Record<string, unknown> } }
+const withWriters = JSON.parse(JSON.parse(readFileSync(join(here, '..', 'conformance', 'ship-manifest.json'), 'utf8')).event.content)
+const withoutWriters = structuredClone(withWriters)
+withoutWriters.actions = withoutWriters.actions.filter((action: Action) => action.emits?.field !== 'summary')
+for (const action of withoutWriters.actions as Action[]) delete action.input?.properties?.summary
 
 function ship(manifest: unknown) {
   return relay([
@@ -124,7 +122,7 @@ console.log('\n— Ship: writing —')
   check('edit-issue --summary "" clears it with an empty value', tag(published[0], 'field') === 'summary' && tag(published[0], 'value') === '', JSON.stringify(published[0]?.tags))
 }
 {
-  const { context, published } = ship(recorded)
+  const { context, published } = ship(withoutWriters)
   const refused = await refusal(run(shipApp, 'create-issue', context, [], { project: PROJECT, title: 'New', summary: 'A line.' }))
   check('a manifest with no summary writer refuses --summary before publishing anything', published.length === 0 && /declares no summary/.test(refused), refused || `${published.length} published`)
   const edit = await refusal(run(shipApp, 'edit-issue', context, ['i1'], { summary: 'A line.' }))
