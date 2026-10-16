@@ -172,12 +172,13 @@ console.log('\n— Peek —')
 for (const claimed of [false, true]) {
   const { context, published } = peek(claimed)
   const when = claimed ? ' (Peek’s old k 39000 claim still published)' : ''
-  await run(peekApp, 'create-topic', context, [], { folder: 'HQ', title: 'Plans', summary: 'Where the plans live.' })
+  const refused = await refusal(run(peekApp, 'create-topic', context, [], { folder: 'HQ', title: 'Plans', summary: 'Where the plans live.' }))
   const file = published[0]
   check(
     `create-topic seeds the summary on the new topic, in its Folder${when}`,
-    file?.kind === 30840 && tag(file, 'title') === 'Plans' && tag(file, 'summary') === 'Where the plans live.' && tag(file, 'h') === FOLDER,
-    JSON.stringify(file?.tags),
+    !refused &&
+      file?.kind === 30840 && tag(file, 'title') === 'Plans' && tag(file, 'summary') === 'Where the plans live.' && tag(file, 'h') === FOLDER,
+    refused || JSON.stringify(file?.tags),
   )
   const listing = published[1]
   check(
