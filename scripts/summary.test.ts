@@ -143,18 +143,20 @@ console.log('\n— Ship: writing —')
   )
 }
 
-// Peek: a top-level Folder whose state lists one topic, and an app claiming
-// Folders as Peek's manifest does on production — `resolveActingManifest`
-// hands back the Folder's built-ins only when some app owns the kind.
+// Peek: a top-level Folder whose state lists one topic, and no app claiming
+// Folders. A Folder is the protocol's (SPEC §3.2): since interop 0.58 its
+// manifest is built in and answered before NIP-89, so `create-file` is there
+// whether or not Peek's manifest still claims `k 39000` — which it is about to
+// stop doing. `peek(true)` adds that claim as production has it until then.
 const PEEK_KEY = 'c'.repeat(64)
-const folderApp = {
+const stalePeekClaim = {
   name: 'Peek',
   records: { changeKind: 1851, targetTag: 'a', fieldTag: 'field', valueTag: 'value', order: ['ts', 'created_at', 'id'], rule: 'last-write-wins-per-field' },
   projections: { 39000: { widget: 'card', slots: { title: { tag: 'name' } } } },
 }
-function peek() {
+function peek(claimed = false) {
   return relay([
-    event(31990, [['d', 'peek'], ['k', '39000']], JSON.stringify(folderApp), PEEK_KEY),
+    ...(claimed ? [event(31990, [['d', 'peek'], ['k', '39000']], JSON.stringify(stalePeekClaim), PEEK_KEY)] : []),
     event(39000, [['d', FOLDER], ['name', 'HQ']], '', RELAY_KEY),
     event(30890, [['d', FOLDER], ['a', `30840:${SELF}:t1`]], '', RELAY_KEY),
     event(30840, [['d', 't1'], ['title', 'Launch'], ['h', FOLDER], ['summary', 'What we call the launch.']]),
@@ -167,18 +169,19 @@ console.log('\n— Peek —')
   const listed = (await run(peekApp, 'topics', context, [], {})) as { topics: { title: string; summary?: string }[] }
   check('peek topics lists a topic’s summary', listed.topics[0]?.summary === 'What we call the launch.', JSON.stringify(listed.topics[0]))
 }
-{
-  const { context, published } = peek()
+for (const claimed of [false, true]) {
+  const { context, published } = peek(claimed)
+  const when = claimed ? ' (Peek’s old k 39000 claim still published)' : ''
   await run(peekApp, 'create-topic', context, [], { folder: 'HQ', title: 'Plans', summary: 'Where the plans live.' })
   const file = published[0]
   check(
-    'create-topic seeds the summary on the new topic, in its Folder',
+    `create-topic seeds the summary on the new topic, in its Folder${when}`,
     file?.kind === 30840 && tag(file, 'title') === 'Plans' && tag(file, 'summary') === 'Where the plans live.' && tag(file, 'h') === FOLDER,
     JSON.stringify(file?.tags),
   )
   const listing = published[1]
   check(
-    '…then lists it in the Folder, as Peek’s launcher does',
+    `…then lists it in the Folder, as Peek’s launcher does${when}`,
     published.length === 2 && tag(listing, 'h') === FOLDER && listing!.tags.some((t) => t[0] === 'a' && t[1] === `30840:${SELF}:${tag(file, 'd')}`),
     JSON.stringify(listing),
   )
