@@ -44,6 +44,7 @@ import {
 } from '../lib/agent/cli'
 import { shipApp } from '../lib/agent/apps/ship'
 import { peekApp, PEEK_WRITE_NOTE } from '../lib/agent/apps/peek'
+import { fileApp } from '../lib/agent/apps/file'
 
 const server = new Server({ name: 'estiva', version: '0.2.0' }, { capabilities: { tools: {} } })
 
@@ -116,6 +117,8 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   peek_edit_message: { app: peekApp, command: 'edit' },
   peek_say: { app: peekApp, command: 'say' },
   peek_create_topic: { app: peekApp, command: 'create-topic' },
+  peek_edit_topic: { app: peekApp, command: 'edit-topic' },
+  file_summarize: { app: fileApp, command: 'summarize' },
 }
 
 /** A required string argument, or the empty string the command will refuse. */
@@ -658,6 +661,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'file_summarize',
+      description:
+        "Change any file's summary by its address, whichever app it belongs to — a Leaf page's included, which has no other tool. " +
+        "The file's own manifest says how it is written. For an issue, a project or a topic, the tools named for them do the same by title.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          address: { type: 'string', description: "The file's address, `kind:pubkey:d`." },
+          summary: { type: 'string', description: `${SUMMARY_NOTE.replace('Optional. ', '')} An empty string clears it.` },
+        },
+        required: ['address', 'summary'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'estiva_ping',
       description:
         'Check the Estiva connection and report which hop is broken, without reading any workspace data. ' +
@@ -731,6 +749,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'peek_edit_topic':
         // Not `flagsFrom`, which drops an empty string — and an empty summary is how one is cleared.
         return dispatch(command('edit-topic', peekApp), args(typeof input.summary === 'string' ? { summary: input.summary } : {}, [str(input.topic)]))
+      case 'file_summarize':
+        return dispatch(command('summarize', fileApp), args(typeof input.summary === 'string' ? { summary: input.summary } : {}, [str(input.address)]))
 
       case 'estiva_ping':
         return text({ at: new Date().toISOString(), ...(await connectionStatus(shipApp, { client: callingClient() })) })

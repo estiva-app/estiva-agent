@@ -131,6 +131,10 @@
     {
       "name": "peek_edit_topic",
       "description": "Change a Peek topic's one-line summary"
+    },
+    {
+      "name": "file_summarize",
+      "description": "Change any file's one-line summary by its address, a Leaf page's included"
     }
   ],
   "keywords": [

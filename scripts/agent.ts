@@ -16,5 +16,6 @@
 import { run } from '../lib/agent/cli'
 import { peekApp } from '../lib/agent/apps/peek'
 import { shipApp } from '../lib/agent/apps/ship'
+import { fileApp } from '../lib/agent/apps/file'
 
-void run([shipApp, peekApp], process.argv.slice(2))
+void run([shipApp, peekApp, fileApp], process.argv.slice(2))
