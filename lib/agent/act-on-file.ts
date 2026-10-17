@@ -14,9 +14,17 @@
 import { buildActionEvent, folderOf, resolveManifest, type QueryFn, type ResolvedManifest } from '@estiva-app/interop'
 import { BadRequest, type AgentContext } from './cli'
 
+/** A `d` may itself hold a colon, so everything after the pubkey is the identifier. */
 export function pointerOf(address: string) {
-  const [kind, pubkey, identifier] = address.split(':')
-  return { kind: Number(kind), pubkey, identifier, relays: [] as string[] }
+  const [kind, pubkey, ...rest] = address.split(':')
+  return { kind: Number(kind), pubkey, identifier: rest.join(':'), relays: [] as string[] }
+}
+
+/** A publish the relay refused, said in its own words. */
+export function published(result: { ok: boolean; reason?: string }, what: string): void {
+  if (!result.ok) {
+    throw new BadRequest(`The relay refused ${what}: ${result.reason ?? 'no reason given'}`)
+  }
 }
 
 export function relayQuery(context: AgentContext): QueryFn {

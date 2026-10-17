@@ -51,7 +51,7 @@ import {
 } from '@estiva-app/interop'
 import { KIND, type SignedEvent } from '@estiva-app/protocol'
 import { decorationsOf, KIND_CHANGE, type EditFold } from '@estiva-app/conversation'
-import { actOnFile, pointerOf, relayQuery } from '../act-on-file'
+import { actOnFile, pointerOf, published, relayQuery } from '../act-on-file'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
 import { withMentions } from '../mentions'
@@ -205,12 +205,6 @@ export const PEEK_WRITE_NOTE =
  * Every write funnels through here so no caller can forget, since the failure
  * mode is an agent reporting a message posted that the relay dropped.
  */
-function published(result: { ok: boolean; reason?: string }, what: string): void {
-  if (!result.ok) {
-    throw new BadRequest(`The relay refused ${what}: ${result.reason ?? 'no reason given'}`)
-  }
-}
-
 interface Message {
   id: string
   author: string

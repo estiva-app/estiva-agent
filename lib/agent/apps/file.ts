@@ -13,7 +13,7 @@
 import { resolveForeignObject } from '@estiva-app/interop'
 import { addrToNaddr } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
-import { actOnFile, relayQuery } from '../act-on-file'
+import { actOnFile, published, relayQuery } from '../act-on-file'
 import { BadRequest, flagValue, type AgentApp } from '../cli'
 import { summaryAction, summaryText, summaryWarning } from '../summary'
 
@@ -44,7 +44,7 @@ export const fileApp: AgentApp = {
         const title = file?.slots.title?.value ?? address
 
         const result = await actOnFile(context, { address, title }, summaryAction, summary, KIND_CHANGE)
-        if (!result.ok) throw new Error(`The relay refused the summary of ${title}: ${result.reason ?? 'no reason given'}`)
+        published(result, `the summary of ${title}`)
 
         return {
           changed: { file: title, address, from: file?.slots.subtitle?.value ?? '', to: summary },
