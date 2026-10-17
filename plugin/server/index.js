@@ -22610,7 +22610,7 @@ function published2(result, what) {
 function relayQuery2(context2) {
   return (filters) => context2.relay.queryAll(filters);
 }
-async function actOnFile(context2, file, pick2, value, signs, replyTo) {
+async function actOnFile(context2, file, pick2, value, signs, replyTo, shape) {
   const query = relayQuery2(context2);
   const pointer = pointerOf2(file.address);
   const resolved = await resolveManifest(pointer, query);
@@ -22637,6 +22637,8 @@ async function actOnFile(context2, file, pick2, value, signs, replyTo) {
   if (built.kind !== signs) {
     throw new BadRequest(`The manifest read for ${file.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`);
   }
+  const wrong = shape?.(built.tags, folder);
+  if (wrong) throw new BadRequest(`The manifest read for ${file.title} builds "${actionId}" ${wrong}. Nothing was published.`);
   const signed = await context2.signer.sign(built);
   const result = await context2.relay.publish(signed);
   return { ...result, eventId: result.eventId ?? signed.id };
@@ -23012,6 +23014,16 @@ var peekApp = {
 
 // lib/agent/apps/file.ts
 var ADDRESS = /^\d+:[0-9a-f]{64}:[^\s]+$/;
+function specShape(tags, address, summary, folder) {
+  const expected = { a: address, field: "summary", value: summary, h: folder };
+  const names = tags.map((tag) => tag[0]);
+  for (const [name, value] of Object.entries(expected)) {
+    const found = tags.filter((tag) => tag[0] === name);
+    if (found.length !== 1 || found[0][1] !== value) return `with ${name} not "${value}"`;
+  }
+  const stray = names.find((name) => !(name in expected) && name !== "ts");
+  return stray ? `with a "${stray}" tag a summary change does not carry` : void 0;
+}
 var fileApp = {
   name: "file",
   summary: "any file by its address, through its own app\u2019s manifest",
@@ -23031,7 +23043,7 @@ var fileApp = {
         const summary = summaryText(text2);
         const file = await resolveForeignObject(addrToNaddr(address), relayQuery2(context2), async () => ({}));
         const title = file?.slots.title?.value ?? address;
-        const result = await actOnFile(context2, { address, title }, summaryAction, summary, KIND_CHANGE);
+        const result = await actOnFile(context2, { address, title }, summaryAction, summary, KIND_CHANGE, void 0, (tags, folder) => specShape(tags, address, summary, folder));
         published2(result, `the summary of ${title}`);
         return {
           changed: { file: title, address, from: file?.slots.subtitle?.value ?? "", to: summary },

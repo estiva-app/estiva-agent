@@ -203,19 +203,20 @@ for (const claimed of [false, true]) {
 // module for, claimed by that app's own manifest, as Leaf claims 30842.
 const LEAF_KEY = 'd'.repeat(64)
 const DOC = `30842:${SELF}:doc1`
-function leaf(withSummarize = true) {
+function leaf(withSummarize = true, summarizeKind = 1851, extra: SignedEvent[] = [], withDoc = true, targetTag = 'a') {
   const manifest = {
     name: 'Leaf',
-    records: { changeKind: 1851, targetTag: 'a', fieldTag: 'field', valueTag: 'value', order: ['ts', 'created_at', 'id'], rule: 'last-write-wins-per-field' },
+    records: { changeKind: 1851, targetTag, fieldTag: 'field', valueTag: 'value', order: ['ts', 'created_at', 'id'], rule: 'last-write-wins-per-field' },
     projections: { 30842: { widget: 'card', noun: 'document', slots: { title: { tag: 'title', fold: 'title' } } } },
     actions: [
       { id: 'rename', label: 'Rename', effect: 'writes', appliesTo: ['30842'], emits: { kind: 1851, field: 'title' }, input: { type: 'string' } },
-      ...(withSummarize ? [{ id: 'summarize', label: 'Edit summary', effect: 'writes', appliesTo: ['30842'], emits: { kind: 1851, field: 'summary' }, input: { type: 'string' } }] : []),
+      ...(withSummarize ? [{ id: 'summarize', label: 'Edit summary', effect: 'writes', appliesTo: ['30842'], emits: { kind: summarizeKind, field: 'summary' }, input: { type: 'string' } }] : []),
     ],
   }
   return relay([
     event(31990, [['d', 'estiva-leaf'], ['k', '30842']], JSON.stringify(manifest), LEAF_KEY),
-    event(30842, [['d', 'doc1'], ['title', 'Plan'], ['h', FOLDER], ['summary', 'The old line.']]),
+    ...extra,
+    ...(withDoc ? [event(30842, [['d', 'doc1'], ['title', 'Plan'], ['h', FOLDER], ['summary', 'The old line.']])] : []),
   ])
 }
 
@@ -242,6 +243,29 @@ console.log('\n— Any file, by its address —')
   const { context, published } = leaf()
   const refused = await refusal(run(fileApp as never, 'summarize', context, [`30842:${SELF}:nobody`], { summary: 'A line.' }))
   check('an address nothing answers for is refused with nothing published', published.length === 0 && /Nothing readable/.test(refused), refused || `${published.length} published`)
+}
+{
+  // A manifest is anybody's event: one declaring the summary as a deletion must not get one signed.
+  const { context, published } = leaf(true, 5)
+  const refused = await refusal(run(fileApp as never, 'summarize', context, [DOC], { summary: 'A line.' }))
+  check('a manifest declaring the summary as another kind is refused with nothing published', published.length === 0 && /does not write/.test(refused), refused || JSON.stringify(published))
+}
+{
+  // Any member can publish the newest claim on a kind: one naming the target in its own tag must not get it signed.
+  const { context, published } = leaf(true, 1851, [], true, 'x')
+  const refused = await refusal(run(fileApp as never, 'summarize', context, [DOC], { summary: 'A line.' }))
+  check('a manifest that builds a summary change with tags of its own is refused with nothing published', published.length === 0 && /Nothing was published/.test(refused), refused || JSON.stringify(published.map((e) => e.tags)))
+}
+{
+  // Another person's document with the same d, in another Folder, newer than the real one.
+  const OTHER_FOLDER = '99999999-2222-3333-4444-555555555555'
+  const impostor = event(30842, [['d', 'doc1'], ['title', 'Not it'], ['h', OTHER_FOLDER]], '', 'e'.repeat(64), 1_900_000_000)
+  const { context, published } = leaf(true, 1851, [impostor])
+  await run(fileApp as never, 'summarize', context, [DOC], { summary: 'A line.' })
+  check('another author’s file with the same d never lends its Folder', published.length === 1 && tag(published[0], 'h') === FOLDER, JSON.stringify(published.map((e) => e.tags)))
+  const alone = leaf(true, 1851, [impostor], false)
+  const refused = await refusal(run(fileApp as never, 'summarize', alone.context, [DOC], { summary: 'A line.' }))
+  check('…and with only that file on the relay, the address is refused with nothing published', alone.published.length === 0 && /Nothing readable/.test(refused), refused || JSON.stringify(alone.published.map((e) => e.tags)))
 }
 
 console.log(failures ? `\n${failures} failed.` : '\nAll summary checks passed.')

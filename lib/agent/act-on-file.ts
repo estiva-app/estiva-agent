@@ -38,6 +38,8 @@ export async function actOnFile(
   value: string,
   signs: number,
   replyTo?: { id: string; kind: number; author: string },
+  /** Refuses a built event whose tags are not the ones the caller means to sign, naming why. */
+  shape?: (tags: string[][], folder: string) => string | undefined,
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
   const query = relayQuery(context)
   const pointer = pointerOf(file.address)
@@ -67,6 +69,8 @@ export async function actOnFile(
   if (built.kind !== signs) {
     throw new BadRequest(`The manifest read for ${file.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`)
   }
+  const wrong = shape?.(built.tags, folder)
+  if (wrong) throw new BadRequest(`The manifest read for ${file.title} builds "${actionId}" ${wrong}. Nothing was published.`)
   const signed = await context.signer.sign(built)
   const result = await context.relay.publish(signed)
   return { ...result, eventId: result.eventId ?? signed.id }

@@ -20,6 +20,24 @@ import { summaryAction, summaryText, summaryWarning } from '../summary'
 /** `kind:pubkey:d`, the one handle every app's file has. A title would be one app's lookup. */
 const ADDRESS = /^\d+:[0-9a-f]{64}:[^\s]+$/
 
+/**
+ * The summary change SPEC §6.12 defines, whatever manifest built it: this file's `a`, `field` summary,
+ * the value asked for, the file's own Folder as `h`, and an optional `ts`. A manifest is found by the
+ * newest claim on the kind until the workspace's list of apps exists, so any member can publish one;
+ * pinning the tags means such a manifest can make this refuse, never make the agent sign something else.
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/claude-learns-each-app-from-its-manifest.md
+ */
+function specShape(tags: string[][], address: string, summary: string, folder: string): string | undefined {
+  const expected: Record<string, string> = { a: address, field: 'summary', value: summary, h: folder }
+  const names = tags.map((tag) => tag[0])
+  for (const [name, value] of Object.entries(expected)) {
+    const found = tags.filter((tag) => tag[0] === name)
+    if (found.length !== 1 || found[0][1] !== value) return `with ${name} not "${value}"`
+  }
+  const stray = names.find((name) => !(name in expected) && name !== 'ts')
+  return stray ? `with a "${stray}" tag a summary change does not carry` : undefined
+}
+
 export const fileApp: AgentApp = {
   name: 'file',
   summary: 'any file by its address, through its own app’s manifest',
@@ -43,7 +61,7 @@ export const fileApp: AgentApp = {
         const file = await resolveForeignObject(addrToNaddr(address), relayQuery(context), async () => ({}))
         const title = file?.slots.title?.value ?? address
 
-        const result = await actOnFile(context, { address, title }, summaryAction, summary, KIND_CHANGE)
+        const result = await actOnFile(context, { address, title }, summaryAction, summary, KIND_CHANGE, undefined, (tags, folder) => specShape(tags, address, summary, folder))
         published(result, `the summary of ${title}`)
 
         return {
