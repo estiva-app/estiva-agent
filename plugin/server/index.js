@@ -16025,6 +16025,10 @@ function addressToPointer(address) {
   }
   return { kind, pubkey: pubkey.toLowerCase(), identifier, relays: [] };
 }
+function addrToNaddr(address, relays = []) {
+  const [kind, pubkey, ...rest] = address.split(":");
+  return encodeNaddr({ kind: Number(kind), pubkey, identifier: rest.join(":"), relays });
+}
 function referenceToPointer(input) {
   const trimmed = input.replace(/^nostr:/i, "");
   return trimmed.toLowerCase().startsWith("naddr1") ? decodeNaddr(trimmed) : addressToPointer(trimmed);
@@ -19542,6 +19546,9 @@ async function creatorsOn(kind, query, cache) {
     return creators;
   });
 }
+function creatorsOrNone(kind, query, cache) {
+  return creatorsOn(kind, query, cache).catch(() => []);
+}
 function borrowedFrom(kind, owner, creators) {
   const builtIn = kind === KIND_CHANNEL_METADATA ? [FOLDER_CREATOR] : [];
   const builtInMakes = new Set(builtIn.flatMap((creator) => (creator.manifest.actions ?? []).map((a) => a.emits.kind)));
@@ -19555,6 +19562,12 @@ function borrowedFrom(kind, owner, creators) {
       return actions.length ? [{ ...creator, manifest: { ...creator.manifest, actions } }] : [];
     })
   ];
+}
+function borrowedActions(kind, owner, creators) {
+  return borrowedFrom(kind, owner, creators).flatMap((creator) => resolveActions(creator.manifest, kind, {}).map((action) => ({
+    ...action,
+    declaredBy: { address: creator.address, ...creator.manifest.name ? { appName: creator.manifest.name } : {} }
+  })));
 }
 async function resolveActingManifest(pointer, declaredBy, query, cache) {
   if (pointer.kind === KIND_CHANNEL_METADATA && declaredBy === FOLDER_ACTIONS_ADDRESS)
@@ -19818,6 +19831,32 @@ function buildObject(args2) {
     ...args2.archived ? { archived: args2.archived } : {}
   };
 }
+async function resolveForeignObject(naddr, query, lookupPeople, depth = 0, cache, options = {}) {
+  const pointer = addressPointerOf(naddr);
+  if (!pointer)
+    return null;
+  const resolved = await resolveManifest(pointer, query, cache);
+  if (!resolved)
+    return null;
+  const plan = planObject(naddr, pointer, resolved, depth);
+  if (!plan)
+    return null;
+  const [answered, creators, files] = await Promise.all([
+    query(plan.filters),
+    creatorsOrNone(pointer.kind, query, cache),
+    options.folderFiles && pointer.kind === KIND_CHANNEL_METADATA ? folderFilesOf(pointer.identifier, query, lookupPeople, cache) : void 0
+  ]);
+  const followUp = childChangeFilters(plan, answered);
+  const assembled = assembleObject(plan, answered, followUp.length ? await queryChunked(followUp, query) : []);
+  if (assembled.object.unreachable)
+    return assembled.object;
+  if (options.archivedWith)
+    await markArchivedParents([{ object: assembled.object, manifest: resolved.manifest }], query);
+  return withFiles(withBorrowed(withPeople(assembled, await (lookupPeople ?? peopleViaRelay(query))(peopleOf(assembled))), borrowedActions(pointer.kind, resolved, creators)), files);
+}
+function withBorrowed(object3, borrowed) {
+  return borrowed.length ? { ...object3, actions: [...object3.actions, ...borrowed] } : object3;
+}
 function projectEvents(events, manifestFor) {
   const roots = /* @__PURE__ */ new Map();
   for (const event of events) {
@@ -19868,6 +19907,30 @@ function projectEvents(events, manifestFor) {
     });
   });
 }
+async function folderFilesOf(folder, query, lookupPeople, cache) {
+  try {
+    const contents = await resolveFolderContents(folder, query, lookupPeople, cache, { listedOnly: true });
+    return contents.hasState ? contents.files : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function withFiles(object3, files) {
+  return files ? { ...object3, children: files } : object3;
+}
+async function markArchivedParents(entries, query) {
+  const waiting = entries.filter(({ object: o }) => !o.unreachable && !o.archived && o.parentRef && addressPointerOf(o.parentRef));
+  if (waiting.length === 0)
+    return;
+  const rules = waiting.map(({ object: object3, manifest }) => relatedRuleOf(manifest, object3.parentRef));
+  const parents = [...new Set(waiting.map(({ object: object3 }) => object3.parentRef))];
+  const changes = await readArchiveChanges(parents, query, rules);
+  for (const [index, { object: object3 }] of waiting.entries()) {
+    const archive = archiveOf(changes, object3.parentRef, rules[index], void 0);
+    if (archive)
+      object3.archived = { ...archive, with: object3.parentRef };
+  }
+}
 function relatedRuleOf(manifest, address) {
   const kind = addressPointerOf(address)?.kind;
   return manifest && kind !== void 0 && manifest.projections?.[String(kind)] ? archiveRuleOf(manifest) : ARCHIVE_RULE;
@@ -19900,6 +19963,89 @@ function addressPointerOf(reference) {
   } catch {
     return null;
   }
+}
+function planObject(naddr, pointer, resolved, depth) {
+  const { manifest } = resolved;
+  const address = pointerToAddress(pointer);
+  const openUrl = resolved.webTemplate?.replace("<bech32>", naddr.replace(/^nostr:/, ""));
+  const commentKinds = commentKindsOf(manifest);
+  const projection = manifest.projections?.[String(pointer.kind)];
+  if (!projection)
+    return null;
+  const records = foldRuleOf(manifest);
+  const childFilter = childFilterFor({ projection, manifest, pointer, depth });
+  const filters = [
+    { kinds: [pointer.kind], authors: [pointer.pubkey], "#d": [pointer.identifier], limit: 1 },
+    // Only when the app actually declares a change kind — see `foldRuleOf`.
+    ...manifest.records ? [{ kinds: [manifest.records.changeKind], "#a": [address], limit: 500 }] : [],
+    // Every file may be archived, including one whose app folds nothing
+    // (FOL-46). SPEC's change kind, when the app has not named its own.
+    ...manifest.records ? [] : [{ kinds: [ARCHIVE_RULE.changeKind], "#a": [address], limit: 500 }],
+    { kinds: commentKinds, "#a": [address], limit: CONVERSATION_LIMIT },
+    ...childFilter ? [childFilter.filter] : [],
+    ...childFilter?.movedIn ? [childFilter.movedIn] : []
+  ];
+  return { naddr, pointer, address, resolved, projection, records, commentKinds, childFilter, filters, openUrl };
+}
+function assembleObject(plan, answered, childChanges = []) {
+  const { naddr, pointer, address, resolved, projection, commentKinds, childFilter, openUrl } = plan;
+  const { manifest, viaRecommendation } = resolved;
+  const seen = /* @__PURE__ */ new Set();
+  const events = answered.filter((e) => !seen.has(e.id) && !!seen.add(e.id));
+  const root = events.find((e) => e.kind === pointer.kind && e.pubkey === pointer.pubkey && tagValue2(e, "d") === pointer.identifier);
+  if (!root) {
+    return {
+      object: {
+        ref: address,
+        address,
+        naddr: naddr.replace(/^nostr:/, ""),
+        // Nothing was read, so there is no event to name. The reference is the
+        // address; that is all this case ever knows.
+        eventId: "",
+        kind: pointer.kind,
+        widget: projection.widget,
+        appName: manifest.name,
+        ...nounOf(projection),
+        slots: {},
+        meta: [],
+        comments: [],
+        actions: [],
+        viaRecommendation,
+        // Offered even here. "You cannot see this object" is exactly when
+        // somebody wants to open it in the app that can.
+        openUrl,
+        unreachable: true
+      }
+    };
+  }
+  const folded = foldOf(events, address, manifest, root);
+  const comments = events.filter((e) => commentKinds.includes(e.kind) && isCommentOn(e, address, commentKinds)).sort(byOrder).map((e) => ({ id: e.id, author: e.pubkey, body: e.content, createdAt: e.created_at }));
+  const object3 = buildObject({
+    root,
+    pointer,
+    manifest,
+    projection,
+    folded,
+    viaRecommendation,
+    webTemplate: resolved.webTemplate,
+    comments,
+    archived: archiveOf(events, address, archiveRuleOf(manifest), root)
+  });
+  const children = childrenFrom({
+    events,
+    childFilter,
+    manifest,
+    webTemplate: resolved.webTemplate,
+    viaRecommendation,
+    childChanges
+  });
+  return { object: object3, ...children ? { children } : {} };
+}
+function peopleOf({ object: object3, children }) {
+  return [...new Set([object3, ...children ?? []].flatMap(pubkeysIn))];
+}
+function withPeople({ object: object3, children }, people) {
+  return { ...object3, people, ...children ? { children: children.map((c) => ({ ...c, people })) } : {} };
 }
 function declaredChildSpec(projection) {
   const spec = projection.slots.list;
@@ -19962,6 +20108,156 @@ function listsChildrenOf(projection, manifest) {
   const children = declaredChildSpec(projection);
   return !!children && drawsKind(manifest, children.kind);
 }
+function childFilterFor(args2) {
+  const { projection, manifest, pointer, depth } = args2;
+  const children = declaredChildSpec(projection);
+  if (!children)
+    return void 0;
+  if (depth >= MAX_LIST_DEPTH2)
+    return null;
+  if (!drawsKind(manifest, children.kind))
+    return null;
+  const parent = children.match === "identifier" ? pointer.identifier : pointerToAddress({ ...pointer, relays: [] });
+  const movedBy = children.movedBy && children.match !== "identifier" ? children.movedBy : void 0;
+  return {
+    filter: { kinds: [children.kind], [`#${children.via}`]: [parent], limit: children.limit ?? 100 },
+    kind: children.kind,
+    via: children.via,
+    parent,
+    // This list's own, not whichever projection declares one for the kind — and
+    // none on an identifier list, where a move's address never names the parent.
+    ...movedBy ? { movedBy } : {},
+    // The children moved *in*: the moves naming this parent by `MOVED_TO_TAG`
+    // (SPEC §7.2, FOL-45). A `#via` read cannot see them — their parent is in a
+    // `value` — so without this a child moved here was drawn under nothing.
+    ...movedBy && manifest.records ? { movedIn: { kinds: [manifest.records.changeKind], [`#${MOVED_TO_TAG}`]: [parent], limit: children.limit ?? 100 } } : {}
+  };
+}
+function movedInAddressesOf(events, childFilter, records) {
+  if (!childFilter.movedIn || !records)
+    return [];
+  const prefix = `${childFilter.kind}:`;
+  const targets = events.filter((e) => e.kind === records.changeKind && hasTagValue(e, MOVED_TO_TAG, childFilter.parent)).map((e) => tagValue2(e, records.targetTag)).filter((address) => !!address && address.startsWith(prefix));
+  return [...new Set(targets)];
+}
+function childrenFrom(args2) {
+  const { events, childFilter, manifest, webTemplate: webTemplate2, viaRecommendation, childChanges = [] } = args2;
+  if (childFilter === void 0)
+    return void 0;
+  if (childFilter === null)
+    return [];
+  const childProjection = manifest.projections?.[String(childFilter.kind)];
+  if (!childProjection)
+    return [];
+  const records = foldRuleOf(manifest);
+  const { movedBy } = childFilter;
+  const created = childRootsOf(events, childFilter);
+  const createdAddresses = new Set(created.map(childAddressOf));
+  const movedIn = new Set(movedInAddressesOf(events, childFilter, manifest.records).filter((a) => !createdAddresses.has(a)));
+  const movedInRoots = /* @__PURE__ */ new Map();
+  for (const event of childChanges) {
+    const address = event.kind === childFilter.kind ? childAddressOf(event) : void 0;
+    if (!address || !movedIn.has(address))
+      continue;
+    const current = movedInRoots.get(address);
+    if (!current || event.created_at > current.created_at)
+      movedInRoots.set(address, event);
+  }
+  return [...created, ...[...movedInRoots.values()].sort(byOrder)].flatMap((event) => {
+    const address = childAddressOf(event);
+    const folded = address ? foldOf(childChanges, address, manifest, event) : {};
+    if (movedBy && folded[movedBy] && folded[movedBy].value !== childFilter.parent)
+      return [];
+    if (address && movedIn.has(address) && folded[movedBy]?.value !== childFilter.parent)
+      return [];
+    if (records.hiddenWhen && folded[records.hiddenWhen.field]?.value === records.hiddenWhen.equals)
+      return [];
+    if (address && manifest.records && archiveOf(childChanges, address, records, event))
+      return [];
+    return [
+      buildChildObject({ root: event, manifest, projection: childProjection, records, webTemplate: webTemplate2, viaRecommendation, folded })
+    ];
+  });
+}
+function childRootsOf(events, childFilter) {
+  return events.filter((e) => e.kind === childFilter.kind && hasTagValue(e, childFilter.via, childFilter.parent)).sort(byOrder);
+}
+function childAddressOf(event) {
+  const identifier = tagValue2(event, "d");
+  return identifier === void 0 ? void 0 : pointerToAddress({ kind: event.kind, pubkey: event.pubkey, identifier, relays: [] });
+}
+function childChangeFilters(plan, answered) {
+  const { childFilter, resolved, pointer } = plan;
+  const records = resolved.manifest.records;
+  if (!childFilter || !records)
+    return [];
+  if (!answered.some((e) => e.kind === pointer.kind && e.pubkey === pointer.pubkey && tagValue2(e, "d") === pointer.identifier)) {
+    return [];
+  }
+  const created = childRootsOf(answered, childFilter).flatMap((e) => childAddressOf(e) ?? []);
+  const movedIn = movedInAddressesOf(answered, childFilter, records).filter((address) => !created.includes(address));
+  const addresses = [.../* @__PURE__ */ new Set([...created, ...movedIn])];
+  const roots = /* @__PURE__ */ new Map();
+  for (const address of movedIn) {
+    const [, pubkey, ...rest] = address.split(":");
+    roots.set(pubkey, [...roots.get(pubkey) ?? [], rest.join(":")]);
+  }
+  return [
+    ...addresses.length ? archiveFilters(addresses, [records], CHILD_CHANGE_GROUP) : [],
+    ...[...roots].map(([pubkey, identifiers]) => ({ kinds: [childFilter.kind], authors: [pubkey], "#d": identifiers, limit: identifiers.length }))
+  ];
+}
+var CHILD_CHANGE_GROUP = 10;
+function buildChildObject(args2) {
+  const { root, manifest, projection, webTemplate: webTemplate2, viaRecommendation, nevent, folded = {} } = args2;
+  const identifier = tagValue2(root, "d");
+  const addressable = identifier !== void 0;
+  const pointer = {
+    kind: root.kind,
+    pubkey: root.pubkey,
+    identifier: identifier ?? "",
+    relays: []
+  };
+  const address = addressable ? pointerToAddress(pointer) : void 0;
+  const naddr = addressable ? encodeNaddr(pointer) : void 0;
+  const { slots, meta: meta2 } = resolveSlots(projection, root, folded, manifest);
+  return {
+    // A regular event's identity is its id; a replaceable one's is its address,
+    // which survives the author replacing the event.
+    ref: address ?? root.id,
+    address,
+    naddr,
+    eventId: root.id,
+    kind: root.kind,
+    widget: projection.widget,
+    appName: manifest.name,
+    ...nounOf(projection),
+    slots,
+    meta: meta2,
+    comments: [],
+    listsChildren: listsChildrenOf(projection, manifest),
+    // Same field in both builders: a consumer must not get it on a file read one
+    // way and not the other. A child already knows its parent contextually, but
+    // an inconsistent shape is what makes a consumer defensive about a value it
+    // should be able to trust.
+    parentRef: parentRefOf(manifest, root.kind, root, folded),
+    ...parentFieldsOf(manifest, root.kind),
+    folder: tagValue2(root, "h"),
+    /*
+          `<bech32>` is whichever form this object actually has.
+    
+          NIP-89's template says nothing about which NIP-19 entity it will be handed
+          — Ship's declares `naddr` in its own tag because every Ship object is
+          addressable, and a template for an app with non-addressable objects is
+          handed an `nevent`. Substituting the one the object *has* is what makes a
+          single template serve both, and what stops a message linking to nothing.
+        */
+    openUrl: naddr ?? nevent ? webTemplate2?.replace("<bech32>", naddr ?? nevent) : void 0,
+    // See the note above: nothing can be declared to act on a regular event.
+    actions: [],
+    viaRecommendation
+  };
+}
 var OPEN_STATUSES = /* @__PURE__ */ new Set([
   "todo",
   "to do",
@@ -19986,6 +20282,7 @@ var isOpenStatusByLabel = inSet(OPEN_STATUSES);
 var isDoneStatusByLabel = inSet(DONE_STATUSES);
 var STARTED = /* @__PURE__ */ new Set(["in progress", "started", "doing", "in review", "review"]);
 var isStartedByLabel = inSet(STARTED);
+var MAX_LIST_DEPTH2 = 1;
 var isAddressableKind = (kind) => kind >= 3e4 && kind < 4e4;
 var PLACEMENTS = ["h", "buzz-channel"];
 function proseTags(args2) {
@@ -22300,16 +22597,49 @@ Pass an address to say which.`
   ]
 };
 
-// lib/agent/apps/peek.ts
-var tagValue4 = (event, name) => event.tags.find((tag) => tag[0] === name)?.[1];
+// lib/agent/act-on-file.ts
 function pointerOf2(address) {
   const [kind, pubkey, identifier] = address.split(":");
   return { kind: Number(kind), pubkey, identifier, relays: [] };
 }
-var noPeople2 = async () => ({});
 function relayQuery2(context2) {
   return (filters) => context2.relay.queryAll(filters);
 }
+async function actOnFile(context2, file, pick2, value, signs, replyTo) {
+  const query = relayQuery2(context2);
+  const pointer = pointerOf2(file.address);
+  const resolved = await resolveManifest(pointer, query);
+  if (!resolved) throw new BadRequest(`No app claims ${file.title}'s kind, so there is no declared way to change it.`);
+  const actionId = pick2(resolved.manifest, pointer.kind);
+  if (!actionId) throw new BadRequest(`${file.title}'s manifest declares no action for that. Nothing was published.`);
+  const [root] = await query([{ kinds: [pointer.kind], authors: [pointer.pubkey], "#d": [pointer.identifier], limit: 1 }]);
+  if (!root) throw new BadRequest(`Nothing readable at ${file.address}: no such file, or one in a Folder this key cannot read. Nothing was published.`);
+  const folder = folderOf(root);
+  if (!folder) throw new BadRequest(`${file.title} has no Folder on the relay, so there is nowhere to write.`);
+  const built = buildActionEvent({
+    manifest: resolved.manifest,
+    kind: pointer.kind,
+    address: file.address,
+    objectAuthor: pointer.pubkey,
+    folder,
+    actionId,
+    value,
+    replyTo,
+    pubkey: context2.signer.pubkey,
+    createdAtMs: Date.now()
+  });
+  if (typeof built === "string") throw new BadRequest(`${file.title} does not take ${actionId}: ${built}`);
+  if (built.kind !== signs) {
+    throw new BadRequest(`The manifest read for ${file.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`);
+  }
+  const signed = await context2.signer.sign(built);
+  const result = await context2.relay.publish(signed);
+  return { ...result, eventId: result.eventId ?? signed.id };
+}
+
+// lib/agent/apps/peek.ts
+var tagValue4 = (event, name) => event.tags.find((tag) => tag[0] === name)?.[1];
+var noPeople2 = async () => ({});
 async function loadTopics(context2, cache, folderRef) {
   const query = relayQuery2(context2);
   const all = await listFolders(query);
@@ -22411,36 +22741,7 @@ function findThread(threads, reference) {
     hint: "Pass a conversation id from `peek topic`, or a distinctive phrase from its first message."
   });
 }
-async function onTopic(context2, topic, pick2, value, signs, replyTo) {
-  const query = relayQuery2(context2);
-  const pointer = pointerOf2(topic.address);
-  const resolved = await resolveManifest(pointer, query);
-  if (!resolved) throw new BadRequest(`No app claims ${topic.title}'s kind, so there is no declared way to change it.`);
-  const actionId = pick2(resolved.manifest, pointer.kind);
-  if (!actionId) throw new BadRequest(`${topic.title}'s manifest declares no action for that. Nothing was published.`);
-  const [root] = await query([{ kinds: [pointer.kind], authors: [pointer.pubkey], "#d": [pointer.identifier], limit: 1 }]);
-  const folder = root ? folderOf(root) : null;
-  if (!folder) throw new BadRequest(`${topic.title} has no Folder on the relay, so there is nowhere to write.`);
-  const built = buildActionEvent({
-    manifest: resolved.manifest,
-    kind: pointer.kind,
-    address: topic.address,
-    objectAuthor: pointer.pubkey,
-    folder,
-    actionId,
-    value,
-    replyTo,
-    pubkey: context2.signer.pubkey,
-    createdAtMs: Date.now()
-  });
-  if (typeof built === "string") throw new BadRequest(`${topic.title} does not take ${actionId}: ${built}`);
-  if (built.kind !== signs) {
-    throw new BadRequest(`The manifest read for ${topic.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`);
-  }
-  const signed = await context2.signer.sign(built);
-  const result = await context2.relay.publish(signed);
-  return { ...result, eventId: result.eventId ?? signed.id };
-}
+var onTopic = actOnFile;
 function comment(context2, topic, body, replyTo) {
   withMentions(body, []);
   return onTopic(context2, topic, () => "comment", body, KIND.COMMENT, replyTo);
@@ -22709,6 +23010,39 @@ var peekApp = {
   ]
 };
 
+// lib/agent/apps/file.ts
+var ADDRESS = /^\d+:[0-9a-f]{64}:[^\s]+$/;
+var fileApp = {
+  name: "file",
+  summary: "any file by its address, through its own app\u2019s manifest",
+  commands: [
+    {
+      name: "summarize",
+      signs: [KIND_CHANGE],
+      summary: "change any file's summary \u2014 a Leaf page's included \u2014 by its address",
+      usage: 'summarize <kind:pubkey:d> --summary "..."',
+      async run(context2, args2) {
+        const address = args2.positional[0];
+        if (!address || !ADDRESS.test(address)) {
+          throw new BadRequest("summarize needs a file's address, kind:pubkey:d, as `ship show` and `peek topics` print it.");
+        }
+        const text2 = flagValue(args2, "summary");
+        if (text2 === void 0) throw new BadRequest("summarize needs --summary. An empty one clears it.");
+        const summary = summaryText(text2);
+        const file = await resolveForeignObject(addrToNaddr(address), relayQuery2(context2), async () => ({}));
+        const title = file?.slots.title?.value ?? address;
+        const result = await actOnFile(context2, { address, title }, summaryAction, summary, KIND_CHANGE);
+        if (!result.ok) throw new Error(`The relay refused the summary of ${title}: ${result.reason ?? "no reason given"}`);
+        return {
+          changed: { file: title, address, from: file?.slots.subtitle?.value ?? "", to: summary },
+          eventId: result.eventId,
+          ...summaryWarning(summary) ? { note: summaryWarning(summary) } : {}
+        };
+      }
+    }
+  ]
+};
+
 // scripts/mcp-server.ts
 var server = new Server({ name: "estiva", version: "0.2.0" }, { capabilities: { tools: {} } });
 function callingClient() {
@@ -22747,7 +23081,9 @@ var TOOL_COMMANDS = {
   peek_reply: { app: peekApp, command: "reply" },
   peek_edit_message: { app: peekApp, command: "edit" },
   peek_say: { app: peekApp, command: "say" },
-  peek_create_topic: { app: peekApp, command: "create-topic" }
+  peek_create_topic: { app: peekApp, command: "create-topic" },
+  peek_edit_topic: { app: peekApp, command: "edit-topic" },
+  file_summarize: { app: fileApp, command: "summarize" }
 };
 var str = (value) => typeof value === "string" ? value : "";
 var args = (flags, positional = []) => ({
@@ -23192,6 +23528,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: "file_summarize",
+      description: "Change any file's summary by its address, whichever app it belongs to \u2014 a Leaf page's included, which has no other tool. The file's own manifest says how it is written. For an issue, a project or a topic, the tools named for them do the same by title.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: "The file's address, `kind:pubkey:d`." },
+          summary: { type: "string", description: `${SUMMARY_NOTE.replace("Optional. ", "")} An empty string clears it.` }
+        },
+        required: ["address", "summary"],
+        additionalProperties: false
+      }
+    },
+    {
       name: "estiva_ping",
       description: 'Check the Estiva connection and report which hop is broken, without reading any workspace data. Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, runtime, summary }`. `runtime` says where this server is actually running \u2014 platform, whether it is inside WSL, which client opened the session, and **which revision is answering** (`runtime.revision`: commit, branch, and whether the tree is dirty) \u2014 and the credentials hop names where the credential came from. Check `runtime.revision` and `runtime.source` when a listing looks short or a fix seems absent. The server normally runs from a worktree pinned to a commit (`source: "pinned"`); a `source` of `"checkout"` means nothing was pinned and it fell back to a shared working tree that is routinely parked on somebody else\'s branch, which is how a session ends up answering from code days old while every other signal looks correct. That matters when one application runs this server twice: a Desktop extension on the host and a Code session inside WSL are separate installs with separate configuration, so "it works in one place and not the other" is answered by asking both and comparing, not by assuming they share anything. Use it when a read fails, and when a person asks why this is not working: "the connection is down" and "there is nothing to report" look identical in an empty answer, and the causes \u2014 an unconfigured credential, a replaced secret, an identity never admitted to the relay \u2014 have completely different fixes. Several of those fixes are administrative actions in Estiva ID that nobody can carry out from inside this conversation; report the state and say who has to act.',
       inputSchema: { type: "object", properties: {}, additionalProperties: false }
@@ -23232,6 +23581,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return dispatch(command("create-topic", peekApp), args(flagsFrom(input, ["folder", "title", "summary"])));
       case "peek_edit_topic":
         return dispatch(command("edit-topic", peekApp), args(typeof input.summary === "string" ? { summary: input.summary } : {}, [str(input.topic)]));
+      case "file_summarize":
+        return dispatch(command("summarize", fileApp), args(typeof input.summary === "string" ? { summary: input.summary } : {}, [str(input.address)]));
       case "estiva_ping":
         return text({ at: (/* @__PURE__ */ new Date()).toISOString(), ...await connectionStatus(shipApp, { client: callingClient() }) });
       case "ship_list_issues":

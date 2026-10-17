@@ -17,6 +17,7 @@ import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
 import { shipApp } from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
+import { fileApp } from '../lib/agent/apps/file'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -196,6 +197,51 @@ for (const claimed of [false, true]) {
     change?.kind === 1851 && tag(change, 'field') === 'summary' && tag(change, 'value') === 'The launch, renamed.' && tag(change, 'h') === FOLDER && tag(change, 'a') === `30840:${SELF}:t1`,
     JSON.stringify(change?.tags),
   )
+}
+
+// Any file by its address (SUM-8): a document of an app this repository has no
+// module for, claimed by that app's own manifest, as Leaf claims 30842.
+const LEAF_KEY = 'd'.repeat(64)
+const DOC = `30842:${SELF}:doc1`
+function leaf(withSummarize = true) {
+  const manifest = {
+    name: 'Leaf',
+    records: { changeKind: 1851, targetTag: 'a', fieldTag: 'field', valueTag: 'value', order: ['ts', 'created_at', 'id'], rule: 'last-write-wins-per-field' },
+    projections: { 30842: { widget: 'card', noun: 'document', slots: { title: { tag: 'title', fold: 'title' } } } },
+    actions: [
+      { id: 'rename', label: 'Rename', effect: 'writes', appliesTo: ['30842'], emits: { kind: 1851, field: 'title' }, input: { type: 'string' } },
+      ...(withSummarize ? [{ id: 'summarize', label: 'Edit summary', effect: 'writes', appliesTo: ['30842'], emits: { kind: 1851, field: 'summary' }, input: { type: 'string' } }] : []),
+    ],
+  }
+  return relay([
+    event(31990, [['d', 'estiva-leaf'], ['k', '30842']], JSON.stringify(manifest), LEAF_KEY),
+    event(30842, [['d', 'doc1'], ['title', 'Plan'], ['h', FOLDER], ['summary', 'The old line.']]),
+  ])
+}
+
+console.log('\n— Any file, by its address —')
+{
+  const { context, published } = leaf()
+  const out = await run(fileApp as never, 'summarize', context, [DOC], { summary: 'What the plan is\nfor.' })
+  const change = published[0]
+  check(
+    'file summarize is a 1851 on field summary, on that address, in the file’s Folder, folded to one line',
+    published.length === 1 && change?.kind === 1851 && tag(change, 'field') === 'summary' && tag(change, 'value') === 'What the plan is for.' &&
+      tag(change, 'a') === DOC && tag(change, 'h') === FOLDER,
+    JSON.stringify(published.map((e) => e.tags)),
+  )
+  const changed = (out as { changed?: { file?: string; from?: string } }).changed
+  check('and says which file it changed and what its summary was', changed?.file === 'Plan' && changed?.from === 'The old line.', JSON.stringify(out))
+}
+{
+  const { context, published } = leaf(false)
+  const refused = await refusal(run(fileApp as never, 'summarize', context, [DOC], { summary: 'A line.' }))
+  check('a file whose manifest declares no summary action is refused with nothing published', published.length === 0 && /declares no action/.test(refused), refused || `${published.length} published`)
+}
+{
+  const { context, published } = leaf()
+  const refused = await refusal(run(fileApp as never, 'summarize', context, [`30842:${SELF}:nobody`], { summary: 'A line.' }))
+  check('an address nothing answers for is refused with nothing published', published.length === 0 && /Nothing readable/.test(refused), refused || `${published.length} published`)
 }
 
 console.log(failures ? `\n${failures} failed.` : '\nAll summary checks passed.')

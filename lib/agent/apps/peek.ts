@@ -33,29 +33,25 @@
  *    emitting `field: summary` (SPEC §6.12, §7.3) — the bare file's `summarize`.
  */
 import {
-  buildActionEvent,
   buildActionEvents,
   conversationsOf,
   createProjectionCache,
-  folderOf,
   FOLDER_ACTIONS_ADDRESS,
   KIND_BARE_FILE,
   KIND_CHANNEL_METADATA,
   listFolders,
   resolveActingManifest,
   resolveFolderContents,
-  resolveManifest,
   threadsOf,
   topLevelFolders,
   type FolderSummary,
   type PeopleFn,
   type ForeignObject,
   type ProjectionCache,
-  type ResolvedManifest,
-  type QueryFn,
 } from '@estiva-app/interop'
 import { KIND, type SignedEvent } from '@estiva-app/protocol'
 import { decorationsOf, KIND_CHANGE, type EditFold } from '@estiva-app/conversation'
+import { actOnFile, pointerOf, relayQuery } from '../act-on-file'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
 import { withMentions } from '../mentions'
@@ -66,17 +62,8 @@ import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../sum
 const tagValue = (event: SignedEvent, name: string) =>
   event.tags.find((tag) => tag[0] === name)?.[1]
 
-function pointerOf(address: string) {
-  const [kind, pubkey, identifier] = address.split(':')
-  return { kind: Number(kind), pubkey, identifier, relays: [] as string[] }
-}
-
 /** A listing names nobody, so it asks the relay for nobody's profile. */
 const noPeople: PeopleFn = async () => ({})
-
-function relayQuery(context: AgentContext): QueryFn {
-  return (filters) => context.relay.queryAll(filters as never)
-}
 
 export interface Topic {
   /** `30840:<pubkey>:<d>` — what its comments carry as `a`. */
@@ -313,56 +300,8 @@ function findThread<T extends { id: string; opening: string }>(threads: T[], ref
   })
 }
 
-/**
- * One of the owner's actions on a topic, built by the runtime and signed as the
- * agent — Peek's `applyActionAsViewer`, restated.
- *
- * The kind, whether the action may be taken at all, and the Folder all come off
- * the manifest and the file itself; nothing here names `1111` or `1851`.
- * `pick` chooses the action from the manifest — by id for `comment`, by what it
- * emits for a summary (§7.3). `replyTo` makes a comment NIP-22's reply to
- * another, built by the runtime too (PRO-20). `signs` is the one kind the
- * command writes: a manifest declaring the action as anything else is refused,
- * as `ship`'s `act` refuses one.
- */
-async function onTopic(
-  context: AgentContext,
-  topic: Topic,
-  pick: (manifest: ResolvedManifest['manifest'], kind: number) => string | undefined,
-  value: string,
-  signs: number,
-  replyTo?: { id: string; kind: number; author: string },
-): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
-  const query = relayQuery(context)
-  const pointer = pointerOf(topic.address)
-  const resolved = await resolveManifest(pointer, query)
-  if (!resolved) throw new BadRequest(`No app claims ${topic.title}'s kind, so there is no declared way to change it.`)
-  const actionId = pick(resolved.manifest, pointer.kind)
-  if (!actionId) throw new BadRequest(`${topic.title}'s manifest declares no action for that. Nothing was published.`)
-  const [root] = await query([{ kinds: [pointer.kind], authors: [pointer.pubkey], '#d': [pointer.identifier], limit: 1 }])
-  const folder = root ? folderOf(root) : null
-  if (!folder) throw new BadRequest(`${topic.title} has no Folder on the relay, so there is nowhere to write.`)
-
-  const built = buildActionEvent({
-    manifest: resolved.manifest,
-    kind: pointer.kind,
-    address: topic.address,
-    objectAuthor: pointer.pubkey,
-    folder,
-    actionId,
-    value,
-    replyTo,
-    pubkey: context.signer.pubkey,
-    createdAtMs: Date.now(),
-  })
-  if (typeof built === 'string') throw new BadRequest(`${topic.title} does not take ${actionId}: ${built}`)
-  if (built.kind !== signs) {
-    throw new BadRequest(`The manifest read for ${topic.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`)
-  }
-  const signed = await context.signer.sign(built)
-  const result = await context.relay.publish(signed)
-  return { ...result, eventId: result.eventId ?? signed.id }
-}
+/** One of the owner's actions on a topic: `actOnFile`, which `file summarize` shares. */
+const onTopic = actOnFile
 
 /** The owner's `comment` action on a topic. */
 function comment(context: AgentContext, topic: Topic, body: string, replyTo?: { id: string; kind: number; author: string }) {

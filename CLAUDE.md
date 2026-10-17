@@ -174,6 +174,12 @@ opening a whole description. Which action writes it comes from the app's
 manifest (§7.3), so `--summary` on an app that declares none yet is refused
 with nothing published.
 
+`file summarize <kind:pubkey:d> --summary "…"` (MCP `file_summarize`) does
+the same for any file by its address, whichever app it belongs to — the only
+way to write a Leaf page's summary (SUM-8). It reads the file's own manifest,
+so it names no app, and it costs a few requests where `edit-issue` reloads
+all of Ship.
+
 `edit-project` takes any of `--title`, `--summary`, `--description`, `--status` and `--lead`,
 and touches only the ones passed. **Project statuses are their own vocabulary** —
 `planned`, `in_progress`, `completed`, `cancelled` — not the issue ones, and an
