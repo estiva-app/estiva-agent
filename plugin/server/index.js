@@ -17628,17 +17628,24 @@ async function clientCredentialsToken({
   clientSecret,
   base = DEFAULT_ID_BASE
 }) {
+  const encode3 = (part) => new URLSearchParams({ p: part }).toString().slice(2);
+  const basic = Buffer.from(`${encode3(clientId)}:${encode3(clientSecret)}`).toString("base64");
   const response = await fetch(`${trimSlashes(base)}/token`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ grantType: "client_credentials", clientId, clientSecret })
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      authorization: `Basic ${basic}`
+    },
+    body: new URLSearchParams({ grant_type: "client_credentials" }).toString()
   });
   const text2 = await response.text();
   if (!response.ok) {
     let detail = text2.slice(0, 200);
     try {
       const body = JSON.parse(text2);
-      detail = body.error?.message ?? detail;
+      if (typeof body.error === "string")
+        detail = [body.error, body.error_description].filter(Boolean).join(": ");
+      else detail = body.error?.message ?? detail;
     } catch {
     }
     throw new Error(`POST /token \u2192 ${response.status} ${detail}`);

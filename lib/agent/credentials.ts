@@ -121,24 +121,41 @@ const trimSlashes = (url: string) => url.replace(/\/+$/, '')
  * A `401` here is nearly always a rotated secret rather than a typo: re-issuing
  * a credential for an identity **replaces** the old one, so a secret that
  * worked yesterday failing today is the expected shape of that, not a mystery.
+ *
+ * The request is plain OAuth 2.0 (RFC 6749 §4.4): a form body, and the client
+ * id and secret in `Authorization: Basic`, each form-urlencoded first
+ * (§2.3.1). Estiva ID's own JSON format is being removed.
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/sign-in-is-plain-oauth.md
  */
 export async function clientCredentialsToken({
   clientId,
   clientSecret,
   base = DEFAULT_ID_BASE,
 }: ServiceCredentials): Promise<TokenResponse> {
+  const encode = (part: string) => new URLSearchParams({ p: part }).toString().slice(2)
+  const basic = Buffer.from(`${encode(clientId)}:${encode(clientSecret)}`).toString('base64')
   const response = await fetch(`${trimSlashes(base)}/token`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ grantType: 'client_credentials', clientId, clientSecret }),
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      authorization: `Basic ${basic}`,
+    },
+    body: new URLSearchParams({ grant_type: 'client_credentials' }).toString(),
   })
 
   const text = await response.text()
   if (!response.ok) {
     let detail = text.slice(0, 200)
     try {
-      const body = JSON.parse(text) as { error?: { message?: string } }
-      detail = body.error?.message ?? detail
+      // RFC 6749 §5.2 (`{ error: 'invalid_client', error_description? }`), or
+      // the service's own shape for anything else, a 500 included.
+      const body = JSON.parse(text) as {
+        error?: string | { message?: string }
+        error_description?: string
+      }
+      if (typeof body.error === 'string')
+        detail = [body.error, body.error_description].filter(Boolean).join(': ')
+      else detail = body.error?.message ?? detail
     } catch {
       // keep the raw text
     }
