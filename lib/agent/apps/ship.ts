@@ -2393,12 +2393,12 @@ export const shipApp: AgentApp = {
           short id printed below is how to name it.
         */
 
-        // Filed in the project's own Folder, not the one that lists it, so the
-        // issue has the project's readers — as Ship's `workFolder` does. Only a
-        // record that names no Folder falls back to the one that lists it.
+        // Filed in the project's own Folder, never one that lists it, so the
+        // issue has the project's readers — as Ship's `workFolder` does. A
+        // record naming no Folder is refused (0 of 76 projects, 19 Oct).
         // why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/what-belongs-to-a-file-is-stored-with-it.md
-        const folder = project.contentFolder || (await readFolders(context)).find((listing) => listing.addresses?.includes(project.addr))?.id
-        if (!folder) throw new BadRequest(`“${project.title}” names no Folder, and no Folder lists it, so a new issue has nowhere to be filed. Nothing was published.`)
+        const folder = project.contentFolder
+        if (!folder) throw new BadRequest(`“${project.title}” names no Folder of its own, so a new issue has nowhere to be filed. Nothing was published.`)
         const id = randomUUID()
         // A block document (RIC-20), which Ship's `add-issue` declares for its description.
         const description = flagValue(args, 'description')

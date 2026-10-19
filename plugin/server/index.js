@@ -22562,8 +22562,8 @@ Pass an address to say which.`
         if (!title) throw new BadRequest("create-issue needs --title.");
         const state = await loadWorkspace(context2);
         const project = findProject(state.projects, projectRef);
-        const folder = project.contentFolder || (await readFolders(context2)).find((listing) => listing.addresses?.includes(project.addr))?.id;
-        if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no Folder, and no Folder lists it, so a new issue has nowhere to be filed. Nothing was published.`);
+        const folder = project.contentFolder;
+        if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no Folder of its own, so a new issue has nowhere to be filed. Nothing was published.`);
         const id = randomUUID();
         const description = flagValue(args2, "description");
         const body = description ? describe2("", void 0, description) : void 0;

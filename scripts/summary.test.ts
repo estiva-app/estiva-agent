@@ -132,7 +132,7 @@ console.log('\n— Ship: writing —')
   )
 }
 {
-  // A project record naming no Folder: the Folder that lists it, else a refusal with nothing published.
+  // A project record naming no Folder, listed by a team: never filed in the listing (record what-belongs-to-a-file-is-stored-with-it).
   const BARE = `30850:${SELF}:p2`
   const TEAM = '99999999-8888-7777-6666-555555555555'
   const listed = ship(withWriters, [
@@ -140,12 +140,12 @@ console.log('\n— Ship: writing —')
     event(39000, [['d', TEAM], ['name', 'Team']], '', RELAY_KEY),
     event(30890, [['d', TEAM], ['a', BARE]], '', RELAY_KEY),
   ])
-  await run(shipApp, 'create-issue', listed.context, [], { project: BARE, title: 'New' })
-  check('create-issue on a project naming no Folder files it in the Folder that lists it', tag(listed.published[0], 'h') === TEAM, JSON.stringify(listed.published[0]?.tags))
-
-  const unlisted = ship(withWriters, [event(30850, [['d', 'p2'], ['name', 'No Folder']])])
-  const refused = await refusal(run(shipApp, 'create-issue', unlisted.context, [], { project: BARE, title: 'New' }))
-  check('…and with no Folder listing it either, refuses with nothing published', unlisted.published.length === 0 && /nowhere to be filed/.test(refused), refused || `${unlisted.published.length} published`)
+  const refused = await refusal(run(shipApp, 'create-issue', listed.context, [], { project: BARE, title: 'New', summary: 'A line.' }))
+  check(
+    'create-issue on a project naming no Folder of its own refuses, with nothing published in the Folder that lists it',
+    listed.published.length === 0 && /nowhere to be filed/.test(refused),
+    refused || JSON.stringify(listed.published.map((e) => [e.kind, tag(e, 'h')])),
+  )
 }
 {
   const { context, published } = ship(withWriters)
