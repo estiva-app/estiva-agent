@@ -2393,10 +2393,12 @@ export const shipApp: AgentApp = {
           short id printed below is how to name it.
         */
 
-        // Filed in the Folder that lists the project — where both apps draw it
-        // and its people get unread signals — as Ship's `workFolder` does
-        // (MAN-5). The record's own Folder only when nothing lists it.
-        const listed = (await readFolders(context)).find((folder) => folder.addresses?.includes(project.addr))?.id
+        // Filed in the project's own Folder, never one that lists it, so the
+        // issue has the project's readers — as Ship's `workFolder` does. A
+        // record naming no Folder is refused (0 of 76 projects, 19 Oct).
+        // why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/what-belongs-to-a-file-is-stored-with-it.md
+        const folder = project.contentFolder
+        if (!folder) throw new BadRequest(`“${project.title}” names no Folder of its own, so a new issue has nowhere to be filed. Nothing was published.`)
         const id = randomUUID()
         // A block document (RIC-20), which Ship's `add-issue` declares for its description.
         const description = flagValue(args, 'description')
@@ -2408,7 +2410,7 @@ export const shipApp: AgentApp = {
         const [result] = await act(
           context,
           state,
-          { addr: project.addr, author: project.author, folder: listed ?? project.contentFolder },
+          { addr: project.addr, author: project.author, folder },
           'add-issue',
           { title, ...(body ? { description: body.value } : {}), ...(route === 'seed' ? { summary } : {}) },
           [KIND.ISSUE],
@@ -2418,7 +2420,7 @@ export const shipApp: AgentApp = {
         published(created.result, `a new issue in ${project.title}`)
         const summarized =
           route === 'change'
-            ? await setField(context, state, { addr, author: context.signer.pubkey, folder: listed ?? project.contentFolder }, 'summary', summary, 'Summary')
+            ? await setField(context, state, { addr, author: context.signer.pubkey, folder }, 'summary', summary, 'Summary')
             : undefined
         if (summarized) published(summarized, `the summary of "${title}" — the issue itself was created, ${addr}, without one`)
 

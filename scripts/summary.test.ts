@@ -73,8 +73,9 @@ const withoutWriters = structuredClone(withWriters)
 withoutWriters.actions = withoutWriters.actions.filter((action: Action) => action.emits?.field !== 'summary')
 for (const action of withoutWriters.actions as Action[]) delete action.input?.properties?.summary
 
-function ship(manifest: unknown) {
+function ship(manifest: unknown, extra: SignedEvent[] = []) {
   return relay([
+    ...extra,
     event(31990, [['d', 'ship'], ['k', '30850'], ['k', '30851']], JSON.stringify(manifest)),
     event(31989, [['d', '30850'], ['a', `31990:${SELF}:ship`]]),
     event(31989, [['d', '30851'], ['a', `31990:${SELF}:ship`]]),
@@ -105,6 +106,46 @@ console.log('\n— Ship: writing —')
   await run(shipApp, 'create-issue', context, [], { project: PROJECT, title: 'New', summary: 'One line\nabout it.' })
   check('create-issue seeds the summary on the issue root, folded to one line', published[0]?.kind === 30851 && tag(published[0], 'summary') === 'One line about it.', JSON.stringify(published[0]?.tags))
   check('and publishes nothing else', published.length === 1, String(published.length))
+}
+{
+  // A moved project: another team's Folder lists it, its own Folder is still FOLDER (LTX-4).
+  const TEAM = '99999999-8888-7777-6666-555555555555'
+  const { context, published } = ship(withWriters, [
+    event(39000, [['d', TEAM], ['name', 'Team']], '', RELAY_KEY),
+    event(30890, [['d', TEAM], ['a', PROJECT]], '', RELAY_KEY),
+  ])
+  await run(shipApp, 'create-issue', context, [], { project: PROJECT, title: 'New' })
+  check('create-issue files a moved project’s issue in the project’s own Folder, not the one listing it', tag(published[0], 'h') === FOLDER, JSON.stringify(published[0]?.tags))
+
+  // The same with a summary written as a change after the issue: both in the project's Folder.
+  const changeOnly = structuredClone(withWriters)
+  delete (changeOnly.actions as Action[]).find((action) => action.id === 'add-issue')?.input?.properties?.summary
+  const moved = ship(changeOnly, [
+    event(39000, [['d', TEAM], ['name', 'Team']], '', RELAY_KEY),
+    event(30890, [['d', TEAM], ['a', PROJECT]], '', RELAY_KEY),
+  ])
+  await run(shipApp, 'create-issue', moved.context, [], { project: PROJECT, title: 'New', summary: 'A line.' })
+  check(
+    '…and its summary, written after it as a 1851, goes to the same Folder',
+    moved.published.length === 2 && moved.published.every((e) => tag(e, 'h') === FOLDER),
+    JSON.stringify(moved.published.map((e) => [e.kind, tag(e, 'h')])),
+  )
+}
+{
+  // A project record naming no Folder, listed by a team: never filed in the listing (record what-belongs-to-a-file-is-stored-with-it).
+  const BARE = `30850:${SELF}:p2`
+  const TEAM = '99999999-8888-7777-6666-555555555555'
+  const listed = ship(withWriters, [
+    event(30850, [['d', 'p2'], ['name', 'No Folder']]),
+    event(39000, [['d', TEAM], ['name', 'Team']], '', RELAY_KEY),
+    event(30890, [['d', TEAM], ['a', BARE]], '', RELAY_KEY),
+  ])
+  const refused = await refusal(run(shipApp, 'create-issue', listed.context, [], { project: BARE, title: 'New', summary: 'A line.' }))
+  check(
+    'create-issue on a project naming no Folder of its own refuses, with nothing published in the Folder that lists it',
+    listed.published.length === 0 && /nowhere to be filed/.test(refused),
+    refused || JSON.stringify(listed.published.map((e) => [e.kind, tag(e, 'h')])),
+  )
 }
 {
   const { context, published } = ship(withWriters)
