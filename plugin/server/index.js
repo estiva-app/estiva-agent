@@ -18734,7 +18734,7 @@ function planMoveFile(pubkey, createdAtMs, args2) {
   const listed = listing?.find((candidate) => candidate.ref === file.ref || !!file.address && candidate.address === file.address);
   const set = listing ? [...listed ? [listed] : [], ...listedBeneath(listing, listed ?? file)] : [file];
   const moving = set.filter((candidate) => candidate.address);
-  if (args2.to.private && moving.some((candidate) => candidate.folder !== args2.to.id))
+  if (args2.to.private && moving.some((candidate) => candidate.scopedTo !== args2.to.id))
     return { ok: false, reason: "target-is-private" };
   const moved = [...new Set(moving.map((candidate) => candidate.address))];
   if (!moved.length)
@@ -18776,7 +18776,7 @@ function planMoveFromFolders(pubkey, createdAtMs, args2) {
   if (!to.hasState)
     return { ok: false, reason: "target-has-no-state" };
   if (moved.size === 0) {
-    if (to.private && file.folder !== to.id)
+    if (to.private && file.scopedTo !== to.id)
       return { ok: false, reason: "target-is-private" };
     if (!file.address)
       return { ok: true, removes: [], moved: [] };
@@ -19071,6 +19071,9 @@ function folderOf(root) {
   }
   return tagValue2(root, "h") ?? tagValue2(root, "buzz-channel") ?? null;
 }
+function writeFolderOf(root) {
+  return tagValue2(root, "h") ?? tagValue2(root, "buzz-channel");
+}
 var hasTagValue = (e, name, value) => e.tags.some((t) => t[0] === name && t[1] === value);
 function parseManifest(event) {
   try {
@@ -19126,13 +19129,10 @@ var BARE_FILE_MANIFEST = {
       slots: {
         title: { tag: "title", fold: "title" },
         /*
-          The text is the `description` fold, seeded from `content` (SPEC §6.7,
-          Leaf 1): anyone in the Folder saves it with the `describe` action
-          below, the author included — a republished root would lose silently
-          to an older change. Ship's body slot is the same fold, minus the
-          `tag`: a `30840` carries its text in `content`, never in a tag.
+          No `body`: a topic is a conversation and has no text (SPEC §6.7,
+          2026-10-19), so nothing draws one and no document app lists it.
+          why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-document-app-writes-what-a-files-app-shares.md
         */
-        body: { fold: "description", field: "content" },
         // A bare file may hold bare files — a sub-topic under a topic. Children
         // of *other* kinds are found the other way round, by their own `a`
         // (`parentRefOf` below), which is FOL-4's generic direction; this slot
@@ -19184,7 +19184,8 @@ var BARE_FILE_MANIFEST = {
   },
   /*
       The manifest is the only place a consumer learns of any of these actions
-      (FOL-33; `move` from FOL-4, `describe` from Leaf 1). A Peek page offering Rename and Delete on a bare file and
+      (FOL-33; `move` from FOL-4). No `describe`: Leaf 1 added one and LTX took
+      it out again, since a topic has no text (SPEC §6.7). A Peek page offering Rename and Delete on a bare file and
       nothing on a Ship issue does so because *this* list says `rename` and
       `delete` and Ship's does not — never because the kind is 30840. The rule is
       the one FOL-31 set for `comment`: a control is drawn from a declaration.
@@ -19216,23 +19217,6 @@ var BARE_FILE_MANIFEST = {
       appliesTo: [String(KIND_BARE_FILE)],
       emits: { kind: 1851, field: "title" },
       input: { type: "string" }
-    },
-    /*
-      `describe` replaces the file's text with a whole §13.3 block document —
-      a snapshot, last save wins (SPEC §6.7, decided 2026-10-13; live merging
-      between open windows is a later layer). The shape of Ship's
-      `describe-issue`, so a consumer that edits one edits both, and finds it
-      by `emits.field` rather than by this id. Every save is a full copy, so a
-      writer saves on leave, never per keystroke.
-    */
-    {
-      id: "describe",
-      label: "Edit",
-      description: "Replace this file's text with new text. A change event, so anyone in the Folder may, and every app reading the file folds it over the text it was made with; the later save wins.",
-      effect: "writes",
-      appliesTo: [String(KIND_BARE_FILE)],
-      emits: { kind: 1851, field: "description" },
-      input: { type: "string", format: BLOCK_DOCUMENT_FORMAT }
     },
     /*
       `summarize` sets the file's one-line summary (SPEC §6.12): plain text, so
@@ -19829,7 +19813,8 @@ function buildObject(args2) {
     listsChildren: listsChildrenOf(projection, manifest),
     parentRef: parentRefOf(manifest, pointer.kind, root, folded),
     ...parentFieldsOf(manifest, pointer.kind),
-    folder: tagValue2(root, "h"),
+    folder: writeFolderOf(root),
+    scopedTo: tagValue2(root, "h"),
     // Substituted here rather than in the component: `<bech32>` is a NIP-89
     // detail, and the widget's job is to draw a link, not to know the spec.
     openUrl: args2.webTemplate?.replace("<bech32>", naddr),
@@ -20249,7 +20234,8 @@ function buildChildObject(args2) {
     // should be able to trust.
     parentRef: parentRefOf(manifest, root.kind, root, folded),
     ...parentFieldsOf(manifest, root.kind),
-    folder: tagValue2(root, "h"),
+    folder: writeFolderOf(root),
+    scopedTo: tagValue2(root, "h"),
     /*
           `<bech32>` is whichever form this object actually has.
     
@@ -20505,7 +20491,11 @@ function buildOneActionEvent(args2) {
       ...replyTo ? [
         ["e", replyTo.id],
         ["k", String(replyTo.kind)],
-        ["p", replyTo.author]
+        ["p", replyTo.author],
+        // Only a `kind:1111` has a place (§13.6): a Ship `kind:9` parent's `block` means nothing.
+        // conversation's `placeOf` filter, inline so interop's conversation floor stays where it is.
+        // One of each, the first, as readers read it: a stranger's extra tags are not copied under the replier's key.
+        ...replyTo.kind === KIND_COMMENT2 ? ["block", "quote"].map((name) => replyTo.place?.find((t) => t[0] === name)).filter((t) => !!t).map((t) => [...t]) : []
       ] : [
         ["a", address],
         ["k", String(kind)],
@@ -22572,7 +22562,8 @@ Pass an address to say which.`
         if (!title) throw new BadRequest("create-issue needs --title.");
         const state = await loadWorkspace(context2);
         const project = findProject(state.projects, projectRef);
-        const listed = (await readFolders(context2)).find((folder) => folder.addresses?.includes(project.addr))?.id;
+        const folder = project.contentFolder || (await readFolders(context2)).find((listing) => listing.addresses?.includes(project.addr))?.id;
+        if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no Folder, and no Folder lists it, so a new issue has nowhere to be filed. Nothing was published.`);
         const id = randomUUID();
         const description = flagValue(args2, "description");
         const body = description ? describe2("", void 0, description) : void 0;
@@ -22583,7 +22574,7 @@ Pass an address to say which.`
         const [result] = await act(
           context2,
           state,
-          { addr: project.addr, author: project.author, folder: listed ?? project.contentFolder },
+          { addr: project.addr, author: project.author, folder },
           "add-issue",
           { title, ...body ? { description: body.value } : {}, ...route === "seed" ? { summary } : {} },
           [KIND2.ISSUE],
@@ -22591,7 +22582,7 @@ Pass an address to say which.`
         );
         const created = { result, id, addr: addr2 };
         published(created.result, `a new issue in ${project.title}`);
-        const summarized = route === "change" ? await setField(context2, state, { addr: addr2, author: context2.signer.pubkey, folder: listed ?? project.contentFolder }, "summary", summary, "Summary") : void 0;
+        const summarized = route === "change" ? await setField(context2, state, { addr: addr2, author: context2.signer.pubkey, folder }, "summary", summary, "Summary") : void 0;
         if (summarized) published(summarized, `the summary of "${title}" \u2014 the issue itself was created, ${addr2}, without one`);
         return {
           state: issueLine({ ref: NO_REF, id: created.id, status: state.vocab.issue.fallback, comments: [] }, void 0),
