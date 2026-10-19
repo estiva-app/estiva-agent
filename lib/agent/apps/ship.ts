@@ -2393,9 +2393,9 @@ export const shipApp: AgentApp = {
           short id printed below is how to name it.
         */
 
-        // Filed in the project's own Folder, never the one that lists it, so the
-        // issue has the project's readers — as Ship's `workFolder` does. The
-        // Folder that lists it only for a record that names none.
+        // Filed in the project's own Folder, not the one that lists it, so the
+        // issue has the project's readers — as Ship's `workFolder` does. Only a
+        // record that names no Folder falls back to the one that lists it.
         // why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/what-belongs-to-a-file-is-stored-with-it.md
         const folder = project.contentFolder || (await readFolders(context)).find((listing) => listing.addresses?.includes(project.addr))?.id
         if (!folder) throw new BadRequest(`“${project.title}” names no Folder, and no Folder lists it, so a new issue has nowhere to be filed. Nothing was published.`)

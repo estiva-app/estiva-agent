@@ -116,6 +116,36 @@ console.log('\n— Ship: writing —')
   ])
   await run(shipApp, 'create-issue', context, [], { project: PROJECT, title: 'New' })
   check('create-issue files a moved project’s issue in the project’s own Folder, not the one listing it', tag(published[0], 'h') === FOLDER, JSON.stringify(published[0]?.tags))
+
+  // The same with a summary written as a change after the issue: both in the project's Folder.
+  const changeOnly = structuredClone(withWriters)
+  delete (changeOnly.actions as Action[]).find((action) => action.id === 'add-issue')?.input?.properties?.summary
+  const moved = ship(changeOnly, [
+    event(39000, [['d', TEAM], ['name', 'Team']], '', RELAY_KEY),
+    event(30890, [['d', TEAM], ['a', PROJECT]], '', RELAY_KEY),
+  ])
+  await run(shipApp, 'create-issue', moved.context, [], { project: PROJECT, title: 'New', summary: 'A line.' })
+  check(
+    '…and its summary, written after it as a 1851, goes to the same Folder',
+    moved.published.length === 2 && moved.published.every((e) => tag(e, 'h') === FOLDER),
+    JSON.stringify(moved.published.map((e) => [e.kind, tag(e, 'h')])),
+  )
+}
+{
+  // A project record naming no Folder: the Folder that lists it, else a refusal with nothing published.
+  const BARE = `30850:${SELF}:p2`
+  const TEAM = '99999999-8888-7777-6666-555555555555'
+  const listed = ship(withWriters, [
+    event(30850, [['d', 'p2'], ['name', 'No Folder']]),
+    event(39000, [['d', TEAM], ['name', 'Team']], '', RELAY_KEY),
+    event(30890, [['d', TEAM], ['a', BARE]], '', RELAY_KEY),
+  ])
+  await run(shipApp, 'create-issue', listed.context, [], { project: BARE, title: 'New' })
+  check('create-issue on a project naming no Folder files it in the Folder that lists it', tag(listed.published[0], 'h') === TEAM, JSON.stringify(listed.published[0]?.tags))
+
+  const unlisted = ship(withWriters, [event(30850, [['d', 'p2'], ['name', 'No Folder']])])
+  const refused = await refusal(run(shipApp, 'create-issue', unlisted.context, [], { project: BARE, title: 'New' }))
+  check('…and with no Folder listing it either, refuses with nothing published', unlisted.published.length === 0 && /nowhere to be filed/.test(refused), refused || `${unlisted.published.length} published`)
 }
 {
   const { context, published } = ship(withWriters)
