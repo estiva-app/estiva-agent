@@ -17643,7 +17643,9 @@ async function clientCredentialsToken({
     let detail = text2.slice(0, 200);
     try {
       const body = JSON.parse(text2);
-      if (body.error) detail = [body.error, body.error_description].filter(Boolean).join(": ");
+      if (typeof body.error === "string")
+        detail = [body.error, body.error_description].filter(Boolean).join(": ");
+      else detail = body.error?.message ?? detail;
     } catch {
     }
     throw new Error(`POST /token \u2192 ${response.status} ${detail}`);

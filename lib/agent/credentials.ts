@@ -147,9 +147,15 @@ export async function clientCredentialsToken({
   if (!response.ok) {
     let detail = text.slice(0, 200)
     try {
-      // RFC 6749 §5.2: `{ error: 'invalid_client', error_description? }`.
-      const body = JSON.parse(text) as { error?: string; error_description?: string }
-      if (body.error) detail = [body.error, body.error_description].filter(Boolean).join(': ')
+      // RFC 6749 §5.2 (`{ error: 'invalid_client', error_description? }`), or
+      // the service's own shape for anything else, a 500 included.
+      const body = JSON.parse(text) as {
+        error?: string | { message?: string }
+        error_description?: string
+      }
+      if (typeof body.error === 'string')
+        detail = [body.error, body.error_description].filter(Boolean).join(': ')
+      else detail = body.error?.message ?? detail
     } catch {
       // keep the raw text
     }
