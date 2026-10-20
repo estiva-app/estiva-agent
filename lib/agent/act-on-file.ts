@@ -7,7 +7,7 @@
  * the manifest and the file itself; nothing here names a kind or a tag. `pick`
  * chooses the action from the manifest — by id for `comment`, by what it emits
  * for a summary (§7.3). `replyTo` makes a comment NIP-22's reply to another,
- * built by the runtime too (PRO-20). `signs` is the one kind the command writes:
+ * built by the runtime too (PRO-20), in its comment's place on the page. `signs` is the one kind the command writes:
  * a manifest is anybody's event, so one declaring the action as anything else is
  * refused, as `ship`'s `act` refuses one.
  */
@@ -37,9 +37,12 @@ export async function actOnFile(
   pick: (manifest: ResolvedManifest['manifest'], kind: number) => string | undefined,
   value: string,
   signs: number,
-  replyTo?: { id: string; kind: number; author: string },
+  /** The comment answered; its `place` (block and quote tags) is copied onto the reply (§13.6). */
+  replyTo?: { id: string; kind: number; author: string; place?: readonly string[][] },
   /** Refuses a built event whose tags are not the ones the caller means to sign, naming why. */
   shape?: (tags: string[][], folder: string) => string | undefined,
+  /** The value's content model when it is not marker text; only one the action declares is accepted. */
+  contentFormat?: string,
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
   const query = relayQuery(context)
   const pointer = pointerOf(file.address)
@@ -62,6 +65,7 @@ export async function actOnFile(
     actionId,
     value,
     replyTo,
+    contentFormat,
     pubkey: context.signer.pubkey,
     createdAtMs: Date.now(),
   })

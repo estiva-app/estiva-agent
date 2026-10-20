@@ -17,7 +17,19 @@
  */
 import { decodeNpub, encodeNpub } from '@estiva-app/protocol'
 import { mentionTagsFor } from '@estiva-app/conversation'
-import { BadRequest } from './cli'
+import { BadRequest, type AgentContext } from './cli'
+
+/**
+ * Every relay member's key, from the relay's own member list (NIP-43
+ * `kind:13534`, one `["member", <pubkey>, <role>]` per member). Only the relay
+ * can publish that kind (buzz `is_relay_only_kind`), so the newest one is the
+ * roster. Empty when the relay publishes none.
+ */
+export async function relayMembers(context: AgentContext): Promise<string[]> {
+  const [list] = await context.relay.queryAll([{ kinds: [KIND_RELAY_MEMBERS], limit: 1 }] as never)
+  return list ? list.tags.filter((tag) => tag[0] === 'member' && tag[1]).map((tag) => tag[1]) : []
+}
+const KIND_RELAY_MEMBERS = 13534
 
 const HEX_KEY = /^[0-9a-f]{64}$/i
 /** NIP-05's local part: `a-z0-9-_.`, case-insensitive. */

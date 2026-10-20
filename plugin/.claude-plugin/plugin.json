@@ -1,7 +1,7 @@
 {
   "name": "estiva",
   "description": "Read and act on the Estiva workspace — Ship issues and Peek topics — as your own service identity.",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "author": {
     "name": "Estiva",
     "url": "https://github.com/estiva-app"
