@@ -34,6 +34,8 @@ import {
 import {
   addrToNaddr,
   CONTENT_FORMAT_TAG,
+  attachmentsInDocument,
+  imetaTag,
   inlineTextOf,
   KIND,
   resolveCommentAnchor,
@@ -42,6 +44,7 @@ import {
 } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
 import { actOnFile, pointerOf, published, relayQuery } from '../act-on-file'
+import { placeFiles, uploadFiles } from '../attachments'
 import { BadRequest, flagValue, refuseUnsignable, type AgentApp, type AgentContext } from '../cli'
 import { edited, findThread, readConversation, replyToOf, type Conversation } from '../conversation'
 import { describe, descriptionText, formatName } from '../descriptions'
@@ -90,7 +93,10 @@ function changeShape(address: string, field: string, value: string, extra: Recor
       const found = tags.filter((tag) => tag[0] === name)
       if (found.length !== 1 || found[0][1] !== wanted) return `with ${name} not "${wanted.slice(0, 60)}"`
     }
-    const stray = names.find((name) => !(name in expected) && name !== 'ts')
+    // A block document names each file it places in `imeta`, as the relay requires (§13.3) — those, and no others.
+    const files = JSON.stringify(attachmentsInDocument(value, extra[CONTENT_FORMAT_TAG]).map(imetaTag))
+    if (JSON.stringify(tags.filter((tag) => tag[0] === 'imeta')) !== files) return `with imeta tags that are not the files its text places`
+    const stray = names.find((name) => !(name in expected) && name !== 'ts' && name !== 'imeta')
     return stray ? `with a "${stray}" tag a ${field} change does not carry` : undefined
   }
 }
@@ -260,7 +266,7 @@ export const fileApp: AgentApp = {
         }
         const route = summary ? summaryRoute(resolved.manifest, actionId, kind) : undefined
         if (summary && !route) throw new BadRequest(`A ${type} takes no summary yet, so --summary has nowhere to go. Nothing was published.`)
-        const body = description ? describe('', undefined, description) : undefined
+        const body = description ? describe('', undefined, description, await placeFiles(context, description)) : undefined
         if (body && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`)
 
         const built = buildActionEvents({
@@ -363,7 +369,7 @@ export const fileApp: AgentApp = {
               'Read it again with `file show` and make your change on what it says now. Nothing was published.',
           )
         }
-        const next = describe(before.value, before.format, text)
+        const next = describe(before.value, before.format, text, await placeFiles(context, text))
         const result = await actOnFile(context, { address, title }, describeAction, next.value, KIND_CHANGE, undefined, changeShape(address, 'description', next.value, formatTag(next.contentFormat)), next.contentFormat)
         published(result, `the text of ${title}`)
 
@@ -388,7 +394,7 @@ export const fileApp: AgentApp = {
       name: 'comment',
       signs: [KIND.COMMENT],
       summary: 'comment on any file by its address, or reply in one of its threads, in that thread’s place',
-      usage: 'comment <kind:pubkey:d> --body "..." [--reply <comment id|phrase>] [--mention <key|npub|handle>[,…]]',
+      usage: 'comment <kind:pubkey:d> --body "..." [--reply <comment id|phrase>] [--mention <key|npub|handle>[,…]] [--attach <path>[,…]]',
       async run(context, args) {
         const address = addressArg(args, 'comment')
         const text = flagValue(args, 'body')
@@ -417,7 +423,10 @@ export const fileApp: AgentApp = {
           the page if that comment is deleted. Leaf's and Peek's panes read one
           level, so a reply to a reply would be on no page.
         */
-        const result = await actOnFile(context, { address, title }, commentAction, body, KIND.COMMENT, thread ? replyToOf(thread.root) : undefined)
+        // Uploaded before the comment names them: the relay refuses a comment naming a file it does not hold.
+        const attach = flagValue(args, 'attach')
+        const files = attach === undefined ? [] : await uploadFiles(context, attach)
+        const result = await actOnFile(context, { address, title }, commentAction, body, KIND.COMMENT, thread ? replyToOf(thread.root) : undefined, undefined, undefined, files)
         published(result, thread ? `a reply on ${title}` : `a comment on ${title}`)
         return {
           [thread ? 'repliedTo' : 'commented']: {
@@ -427,6 +436,7 @@ export const fileApp: AgentApp = {
           },
           eventId: result.eventId,
           ...(mentioned.length ? { mentioned } : {}),
+          ...(files.length ? { attached: files.map((file) => ({ filename: file.filename, url: file.url, x: file.x })) } : {}),
         }
       },
     },

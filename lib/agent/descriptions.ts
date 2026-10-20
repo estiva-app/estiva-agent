@@ -53,6 +53,7 @@ import {
   blockDocumentToMarkerText,
   descriptionTextToBlockDocument,
   inlineTextOf,
+  newBlockId,
   parseBlockDocument,
   serializeBlockDocument,
   tableToDescriptionText,
@@ -61,6 +62,7 @@ import {
   type BlockDocument,
   type ContentFormat,
 } from '@estiva-app/protocol'
+import type { PlacedFiles } from './attachments'
 import { BadRequest } from './cli'
 
 const doc = (content: Block[]): BlockDocument => ({ type: 'doc', content })
@@ -131,6 +133,47 @@ function reparse(text: string, previous: Block[]): Block[] {
     const kept: Block = { ...beforeShape, ...(updated.content !== undefined ? { content: updated.content } : {}) }
     return protocolText(kept) === protocolText(updated) ? kept : updated
   })
+}
+
+/**
+ * A stretch of new text as blocks, with each picture line the agent placed
+ * (`![alt](./shot.png)`, uploaded by `placeFiles`) as the attachment block for
+ * its file, and the text between them re-parsed as {@link reparse} does. Each
+ * stretch of text is offered only the old blocks no earlier one took, so no id
+ * is used twice. Image syntax anywhere else is refused: protocol reads it as
+ * plain text, and the picture would silently never appear.
+ */
+function readStretch(text: string, previous: Block[], files: PlacedFiles | undefined): Block[] {
+  const out: Block[] = []
+  let remaining = previous
+  let pending = ''
+  let fenced = false
+  const flush = () => {
+    if (pending.trim()) {
+      if (/!\[[^\]\n]*\]\([^)\n]+\)/.test(pending.replace(/^```[\s\S]*?^```/gm, ''))) {
+        throw new BadRequest(
+          'The new description has a picture (`![…](…)`) inside other text. A picture goes on a line of its own, with a blank line before and after it. Nothing was published.',
+        )
+      }
+      const blocks = reparse(pending, remaining)
+      const taken = new Set(blocks.map((block) => block.id))
+      remaining = remaining.filter((block) => !taken.has(block.id))
+      out.push(...blocks)
+    }
+    pending = ''
+  }
+  for (const part of text.split(/(\n[ \t]*\n)/)) {
+    const attrs = !fenced && files?.get(part.trim())
+    if (attrs) {
+      flush()
+      out.push({ id: newBlockId(), type: 'attachment', attrs } as Block)
+    } else {
+      pending += part
+    }
+    if ((part.match(/^```/gm)?.length ?? 0) % 2 === 1) fenced = !fenced
+  }
+  flush()
+  return out
 }
 
 /** A block as text, when text has a syntax for it. */
@@ -339,7 +382,7 @@ export interface BlockEdit {
  * The new text of a block document, applied to the old one so every block the
  * text did not change keeps its id and its exact content.
  */
-export function editBlockDocument(previous: string, text: string): BlockEdit {
+export function editBlockDocument(previous: string, text: string, files?: PlacedFiles): BlockEdit {
   const before = parseBlockDocument(previous).content
   const chunks = before.map(blockText)
 
@@ -381,7 +424,7 @@ export function editBlockDocument(previous: string, text: string): BlockEdit {
       )
     }
     const ids = new Set(replaces.map((block) => block.id))
-    for (const block of reparse(stretch, replaces)) {
+    for (const block of readStretch(stretch, replaces, files)) {
       out.push(block)
       if (ids.has(block.id)) edited++
       else added++
@@ -420,13 +463,15 @@ export function describe(
   previous: string,
   format: ContentFormat | undefined,
   text: string,
+  /** The pictures the text places, already uploaded (`placeFiles`). */
+  files?: PlacedFiles,
 ): { value: string; contentFormat?: string; blocks?: Omit<BlockEdit, 'value'> } {
   if (format === 'unknown') {
     throw new BadRequest('This description is in a content format this version does not read, so it cannot be edited without losing it. Nothing was published.')
   }
   if (format !== 'blocks') {
     if (!text.trim()) return { value: text }
-    const blocks = descriptionTextToBlockDocument(text).content
+    const blocks = readStretch(text, [], files)
     return { value: serialized(blocks), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks.length, removed: [] } }
   }
   try {
@@ -434,6 +479,6 @@ export function describe(
   } catch {
     throw new BadRequest('This description is tagged as a block document but does not parse as one, so it cannot be edited safely. Nothing was published.')
   }
-  const { value, ...blocks } = editBlockDocument(previous, text)
+  const { value, ...blocks } = editBlockDocument(previous, text, files)
   return { value, contentFormat: BLOCK_DOCUMENT_FORMAT, blocks }
 }
