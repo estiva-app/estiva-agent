@@ -1,0 +1,32 @@
+{
+  "recordedAt": "2026-10-20T14:42:51.670Z",
+  "note": "Leaf's kind:31990 as published on production: the newest claim on kind 30842. scripts/file.test.ts creates, describes and comments on a document through it.",
+  "event": {
+    "content": "{\"name\":\"Leaf\",\"about\":\"Documents in your Folders, written together by everyone in the Folder.\",\"aspect\":\"document\",\"records\":{\"changeKind\":1851,\"targetTag\":\"a\",\"fieldTag\":\"field\",\"valueTag\":\"value\",\"order\":[\"ts\",\"created_at\",\"id\"],\"rule\":\"last-write-wins-per-field\",\"hiddenWhen\":{\"field\":\"archived\",\"equals\":\"true\"}},\"projections\":{\"30842\":{\"widget\":\"card\",\"noun\":\"document\",\"slots\":{\"title\":{\"tag\":\"title\",\"fold\":\"title\"},\"body\":{\"fold\":\"description\",\"field\":\"content\"},\"list\":{\"children\":{\"kind\":30842,\"via\":\"a\",\"limit\":200,\"movedBy\":\"parent\",\"anyParent\":true}}}}},\"actions\":[{\"id\":\"add-document\",\"label\":\"New document\",\"description\":\"Start a document in a Folder: a title and, if you like, a one- or two-sentence summary. Everyone who can read the Folder can read and change it, and the Folder lists it straight away. Write its text afterwards with describe.\",\"effect\":\"writes\",\"appliesTo\":\"39000\",\"emits\":{\"kind\":30842,\"placement\":\"h\",\"listed\":true},\"input\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":\"string\"},\"summary\":{\"type\":\"string\"}},\"required\":[\"title\"]}},{\"id\":\"comment\",\"label\":\"Comment\",\"description\":\"Say something about this document. Every reader of the document sees it beside it.\",\"effect\":\"writes\",\"appliesTo\":[\"30842\"],\"emits\":{\"kind\":1111,\"scope\":\"address\"},\"input\":{\"type\":\"string\"}},{\"id\":\"rename\",\"label\":\"Rename\",\"description\":\"Give this document a new title. A change, so anyone in its Folder may.\",\"effect\":\"writes\",\"appliesTo\":[\"30842\"],\"emits\":{\"kind\":1851,\"field\":\"title\"},\"input\":{\"type\":\"string\"}},{\"id\":\"describe\",\"label\":\"Edit\",\"description\":\"Replace this document's text with new text, as a whole block document. A change, so anyone in its Folder may; the later save wins. Save when the person leaves the text, never per keystroke.\",\"effect\":\"writes\",\"appliesTo\":[\"30842\"],\"emits\":{\"kind\":1851,\"field\":\"description\"},\"input\":{\"type\":\"string\",\"format\":\"estiva-blocks-1\"}},{\"id\":\"summarize\",\"label\":\"Edit summary\",\"description\":\"Set the one- or two-sentence summary shown under this document's title, in lists and on cards, about 240 characters of plain text; an empty value clears it. A change, so anyone in its Folder may.\",\"effect\":\"writes\",\"appliesTo\":[\"30842\"],\"emits\":{\"kind\":1851,\"field\":\"summary\"},\"input\":{\"type\":\"string\"}},{\"id\":\"move\",\"label\":\"Move\",\"description\":\"Put this document under another file in the same Folder, or back at the top. Who can read it does not change.\",\"effect\":\"writes\",\"appliesTo\":[\"30842\"],\"emits\":{\"kind\":1851,\"field\":\"parent\"},\"input\":{\"type\":\"string\"}},{\"id\":\"archive\",\"label\":\"Archive\",\"description\":\"Take this document out of every list, or bring it back: `true` archives, an empty value restores.\",\"effect\":\"writes\",\"appliesTo\":[\"30842\"],\"emits\":{\"kind\":1851,\"field\":\"archived\"},\"input\":{\"type\":\"string\",\"enum\":\"archived\"}},{\"id\":\"delete\",\"label\":\"Delete\",\"description\":\"Ask the relay to delete this document. Only its author may; its comments stay as separate events.\",\"effect\":\"destructive\",\"appliesTo\":[\"30842\"],\"emits\":{\"kind\":5,\"listed\":true}}],\"vocabularies\":{\"archived\":[{\"value\":\"\",\"label\":\"Active\",\"colour\":\"neutral\"},{\"value\":\"true\",\"label\":\"Archived\",\"colour\":\"muted\"}]}}",
+    "created_at": 1792437907,
+    "id": "4041cb40a3814547c294a6b449f5057f3a67a06100a7ba410c3634a11962b70b",
+    "kind": 31990,
+    "pubkey": "9b0ff001e909e0c6eb9165b81118b0c580db2584c87e1c794a2ec9339f7541ec",
+    "sig": "8db54bb702c3a590ec66438f97eae7490f98a179a71f91824412246d9e9004ad72551383cd90407e9b8da4e8c45c568f611c1abc3955b06a6c118ab85c0767c3",
+    "tags": [
+      [
+        "d",
+        "estiva-leaf"
+      ],
+      [
+        "k",
+        "30842"
+      ],
+      [
+        "web",
+        "https://leaf.estiva.app/f/<bech32>",
+        "naddr"
+      ],
+      [
+        "urls",
+        "https://leaf.estiva.app/document/<slug>-<d>#block-<block>",
+        "30842"
+      ]
+    ]
+  }
+}

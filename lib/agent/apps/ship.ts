@@ -16,7 +16,7 @@
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
 import { describe, descriptionText, formatName } from '../descriptions'
-import { mentionedKeys, withMentions } from '../mentions'
+import { mentionedKeys, relayMembers, withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
 import { SUMMARY_LENGTH, summaryRoute, summaryText, summaryWarning } from '../summary'
@@ -1237,17 +1237,6 @@ async function showProject(context: AgentContext, state: Workspace, project: Pro
   }
 }
 
-/**
- * Every relay member's key, from the relay's own member list (NIP-43
- * `kind:13534`, one `["member", <pubkey>, <role>]` per member). Only the relay
- * can publish that kind (buzz `is_relay_only_kind`), so the newest one is the
- * roster. Empty when the relay publishes none.
- */
-async function relayMembers(context: AgentContext): Promise<string[]> {
-  const [list] = await context.relay.queryAll([{ kinds: [KIND_RELAY_MEMBERS], limit: 1 }] as never)
-  return list ? list.tags.filter((tag) => tag[0] === 'member' && tag[1]).map((tag) => tag[1]) : []
-}
-const KIND_RELAY_MEMBERS = 13534
 
 /** What one key has been seen doing, which is the only evidence this list has. */
 export interface Participant {

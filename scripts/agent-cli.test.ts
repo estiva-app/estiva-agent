@@ -21,8 +21,8 @@ import { archivable, archivedRemoved, assigneeFor, clip, findIssue, findProject,
 import { peekApp } from '../lib/agent/apps/peek'
 import { cascadeArchives, type Issue, type Project, type Vocabulary } from '../lib/agent/apps/ship-workspace'
 import { buildActionEvent, buildActionEvents, topLevelFolders, type FolderSummary } from '@estiva-app/interop'
-import { findTopic, replyToOf, type Topic } from '../lib/agent/apps/peek'
-import { edited, findMessage } from '../lib/agent/conversation'
+import { findTopic, type Topic } from '../lib/agent/apps/peek'
+import { edited, findMessage, replyToOf } from '../lib/agent/conversation'
 import { KIND_EDIT, foldEdits } from '@estiva-app/conversation'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { Directory } from '../lib/agent/profiles'
@@ -631,7 +631,7 @@ console.log('— where a Peek write lands (AGE-1) —')
     (a Ship reply's is 9) and its author — and `buildActionEvent` turns that
     into NIP-22's shape. Wrong fields here and it lands as a second root.
   */
-  const opening = { id: 'comment-id', author: 'someone', body: 'hi', createdAt: 0, kind: 9, folder: 'folder' }
+  const opening = { id: 'comment-id', author: 'someone', body: 'hi', createdAt: 0, kind: 9, folder: 'folder', tags: [] }
   const reply = buildActionEvent({
     manifest: { actions: [{ id: 'comment', label: 'Comment', appliesTo: '30840', emits: { kind: 1111 } }], records: { targetTag: 'a', fieldTag: 'field', valueTag: 'value' } } as never,
     kind: 30840,
