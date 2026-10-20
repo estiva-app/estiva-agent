@@ -23,6 +23,7 @@ import {
   createProjectionCache,
   KIND_CHANNEL_METADATA,
   listFolders,
+  resolveActingManifest,
   resolveForeignObject,
   resolveManifest,
   type FolderSummary,
@@ -38,7 +39,6 @@ import {
   resolveCommentAnchor,
   type Block,
   type ContentFormat,
-  type SignedEvent,
 } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
 import { actOnFile, pointerOf, published, relayQuery } from '../act-on-file'
@@ -170,36 +170,36 @@ function findFolder(folders: FolderSummary[], reference: string): FolderSummary 
 }
 
 /**
- * The app action that starts a file of this type in a Folder: one declared on the Folder record
- * (`appliesTo` 39000) emitting a kind whose projection calls it `type` (§7.2's `noun`). Read off every
- * published manifest, so a new app's type is creatable with nothing added here.
+ * The app action that starts a file of this type in a Folder: a creation the Folder offers, as Leaf's
+ * and Peek's "New" menus read it — interop resolves the Folder and sweeps the manifests declaring a
+ * creation on it, with whatever filter on their signer it applies, and `resolveActingManifest` hands
+ * back only a manifest that sweep found. The type is the noun that manifest's projection gives the
+ * emitted kind (§7.2), so a new app's type is creatable with nothing added here.
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/claude-learns-each-app-from-its-manifest.md
  */
-async function creatorOf(context: AgentContext, type: string): Promise<{ kind: number; actionId: string }> {
-  const manifests: SignedEvent[] = await relayQuery(context)([{ kinds: [31990], limit: 500 }])
+async function creatorOf(context: AgentContext, channel: string, type: string, cache: ProjectionCache) {
+  const query = relayQuery(context)
+  const pointer = pointerOf(channel)
+  const folder = await resolveForeignObject(addrToNaddr(channel), query, async () => ({}), undefined, cache)
   const nouns = new Set<string>()
-  const found = new Map<number, string>()
-  for (const event of manifests) {
-    let manifest: Manifest
-    try {
-      manifest = JSON.parse(event.content)
-    } catch {
-      continue
-    }
-    for (const action of manifest.actions ?? []) {
-      const kind = action.emits?.kind
-      if (kind === undefined || !appliesTo(action, KIND_CHANNEL_METADATA) || !action.emits?.listed) continue
-      const noun = (manifest.projections as Record<string, { noun?: string }> | undefined)?.[kind]?.noun
-      if (!noun) continue
-      nouns.add(noun)
-      if (noun.toLowerCase() === type.toLowerCase() && !found.has(kind)) found.set(kind, action.id)
-    }
+  const found = new Map<number, { actionId: string; manifest: Manifest }>()
+  for (const offered of folder?.actions ?? []) {
+    if (offered.control !== 'form' || !offered.declaredBy) continue
+    const acting = await resolveActingManifest(pointer, offered.declaredBy.address, query, cache)
+    const action = acting?.manifest.actions?.find((candidate) => candidate.id === offered.id)
+    const kind = action?.emits?.kind
+    if (!acting || kind === undefined || !action?.emits?.listed) continue
+    const noun = (acting.manifest.projections as Record<string, { noun?: string }> | undefined)?.[kind]?.noun
+    if (!noun) continue
+    nouns.add(noun)
+    if (noun.toLowerCase() === type.toLowerCase() && !found.has(kind)) found.set(kind, { actionId: offered.id, manifest: acting.manifest })
   }
   if (found.size === 0) {
-    throw new BadRequest(`No app declares a way to start a "${type}" in a Folder. The types that can be: ${[...nouns].sort().join(', ') || 'none'}.`)
+    throw new BadRequest(`No app offers a way to start a "${type}" in this Folder. The types that can be: ${[...nouns].sort().join(', ') || 'none'}. Nothing was published.`)
   }
   if (found.size > 1) throw new BadRequest(`More than one kind of file is called "${type}" (${[...found.keys()].join(', ')}), so which one is meant is unclear. Nothing was published.`)
-  const [[kind, actionId]] = [...found]
-  return { kind, actionId }
+  const [[kind, creator]] = [...found]
+  return { kind, ...creator }
 }
 
 /** A file's conversation, printed as Leaf's comments column draws it: by thread, each with its place. */
@@ -249,7 +249,8 @@ export const fileApp: AgentApp = {
         // A group with no relay-signed state is a conversation space; an `add` there would publish state listing nothing (peek#192).
         if (!folder.hasState) throw new BadRequest(`${folder.name ?? folder.id} is not a Folder that lists files, so nothing can be started in it. Nothing was published.`)
 
-        const { kind, actionId } = await creatorOf(context, type)
+        const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`
+        const { kind, actionId, manifest: creator } = await creatorOf(context, channel, type, createProjectionCache())
         const id = randomUUID()
         const address = `${kind}:${context.signer.pubkey}:${id}`
         // The manifest that will fold the new file — the one its address resolves to, as `ship create-project` acts with.
@@ -262,9 +263,8 @@ export const fileApp: AgentApp = {
         const body = description ? describe('', undefined, description) : undefined
         if (body && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`)
 
-        const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`
         const built = buildActionEvents({
-          manifest: resolved.manifest,
+          manifest: creator,
           kind: KIND_CHANNEL_METADATA,
           address: channel,
           objectAuthor: pointerOf(channel).pubkey,

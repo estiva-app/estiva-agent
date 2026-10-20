@@ -149,7 +149,7 @@ const fixture = () => {
   const [title, why, questions] = doc.content
   const comment = event(
     1111,
-    [['A', created!.address], ['K', '30842'], ['P', SELF], ['a', created!.address], ['k', '30842'], ['p', SELF], ['h', FOLDER], blockRunTag([why.id])],
+    [['A', created!.address], ['K', '30842'], ['P', SELF], ['a', created!.address], ['k', '30842'], ['p', SELF], ['h', FOLDER], blockRunTag([why.id]), ['quote', 'doing this']],
     'Why is the agent opening it?',
     QA2,
     1_900_000_000,
@@ -169,6 +169,18 @@ const fixture = () => {
     JSON.stringify(out.comments),
   )
   check('…and a version to pass back to describe', /^[0-9a-f]{12}$/.test(out.version ?? ''), String(out.version))
+  check('…and the words the comment quotes', thread?.quote === 'doing this', JSON.stringify(thread))
+}
+{
+  // QA-2 resolves the thread, then reopens it: show follows the newest, as Leaf's column does.
+  const { context, events, comment } = fixture()
+  const resolution = (action: string, at: number) => event(9101, [['t', 'resolution'], ['action', action], ['e', comment.id], ['h', FOLDER]], '', QA2, at)
+  events.push(resolution('resolved', 1_900_000_010))
+  const resolved = await run('show', context, [created!.address], {})
+  check('a resolved thread shows as resolved', resolved.comments?.[0]?.resolved === true, JSON.stringify(resolved.comments?.[0]))
+  events.push(resolution('reopened', 1_900_000_020))
+  const reopened = await run('show', context, [created!.address], {})
+  check('…and once reopened, as open again', !reopened.comments?.[0]?.resolved, JSON.stringify(reopened.comments?.[0]))
 }
 
 console.log('\n— Changing one section —')
@@ -187,6 +199,7 @@ console.log('\n— Changing one section —')
   check('the block the comment is on keeps its id and text', after.content.some((block) => block.id === why.id), JSON.stringify(out.blocks))
   const reread = await run('show', context, [created!.address], {})
   check('…so show still finds the comment on that block', reread.comments?.[0]?.on === 'blocks' && reread.comments?.[0]?.blocks?.[0]?.id === why.id, JSON.stringify(reread.comments?.[0]))
+  check('…and the version describe answers is the one show reads next, so a second change is not refused', out.changed?.version === reread.version, `${out.changed?.version} vs ${reread.version}`)
   check('…and nothing is reported detached', out.detached === undefined, JSON.stringify(out.detached))
 }
 {
@@ -223,8 +236,8 @@ console.log('\n— Replying —')
     published.length === 1 && reply?.kind === 1111 && tag(reply, 'e') === comment.id && tag(reply, 'A') === created!.address && tag(reply, 'h') === FOLDER && tag(reply, 'p') === QA2,
     JSON.stringify(reply?.tags),
   )
-  check('…and copies the comment’s place, so the reply sits at the same block', tag(reply, 'block') === why.id, JSON.stringify(reply?.tags))
-  check('…and says which comment and where', out.repliedTo?.comment === comment.id && out.repliedTo?.on === 'blocks', JSON.stringify(out.repliedTo))
+  check('…and copies the comment’s place, so the reply sits at the same block and words', tag(reply, 'block') === why.id && tag(reply, 'quote') === 'doing this', JSON.stringify(reply?.tags))
+  check('…and says which comment and where', out.repliedTo?.comment === comment.id && out.repliedTo?.on === 'blocks' && out.repliedTo?.quote === 'doing this',JSON.stringify(out.repliedTo))
   const reread = await run('show', context, [created!.address], {})
   check('show lists the reply under that comment', reread.comments?.length === 1 && reread.comments[0].messages?.length === 2, JSON.stringify(reread.comments?.[0]?.messages))
 }

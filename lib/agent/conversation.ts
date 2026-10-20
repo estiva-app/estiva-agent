@@ -204,6 +204,6 @@ export function findThread<T extends { id: string; opening: string }>(threads: T
     exact: (thread) => [thread.id],
     text: (thread) => `${thread.id} ${thread.opening}`,
     label: (thread) => `${thread.id.slice(0, 12)}… — ${thread.opening.slice(0, 60)}`,
-    hint: 'Pass a conversation id, or a distinctive phrase from its first message.',
+    hint: 'Pass a conversation id from `peek topic` or `file show`, or a distinctive phrase from its first message.',
   })
 }

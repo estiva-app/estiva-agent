@@ -20832,7 +20832,7 @@ function findThread(threads, reference) {
     exact: (thread) => [thread.id],
     text: (thread) => `${thread.id} ${thread.opening}`,
     label: (thread) => `${thread.id.slice(0, 12)}\u2026 \u2014 ${thread.opening.slice(0, 60)}`,
-    hint: "Pass a conversation id, or a distinctive phrase from its first message."
+    hint: "Pass a conversation id from `peek topic` or `file show`, or a distinctive phrase from its first message."
   });
 }
 
@@ -23264,32 +23264,29 @@ function findFolder2(folders, reference) {
     hint: "Pass a Folder name or id."
   });
 }
-async function creatorOf(context2, type) {
-  const manifests = await relayQuery(context2)([{ kinds: [31990], limit: 500 }]);
+async function creatorOf(context2, channel, type, cache) {
+  const query = relayQuery(context2);
+  const pointer = pointerOf(channel);
+  const folder = await resolveForeignObject(addrToNaddr(channel), query, async () => ({}), void 0, cache);
   const nouns = /* @__PURE__ */ new Set();
   const found = /* @__PURE__ */ new Map();
-  for (const event of manifests) {
-    let manifest;
-    try {
-      manifest = JSON.parse(event.content);
-    } catch {
-      continue;
-    }
-    for (const action of manifest.actions ?? []) {
-      const kind2 = action.emits?.kind;
-      if (kind2 === void 0 || !appliesTo2(action, KIND_CHANNEL_METADATA) || !action.emits?.listed) continue;
-      const noun = manifest.projections?.[kind2]?.noun;
-      if (!noun) continue;
-      nouns.add(noun);
-      if (noun.toLowerCase() === type.toLowerCase() && !found.has(kind2)) found.set(kind2, action.id);
-    }
+  for (const offered of folder?.actions ?? []) {
+    if (offered.control !== "form" || !offered.declaredBy) continue;
+    const acting = await resolveActingManifest(pointer, offered.declaredBy.address, query, cache);
+    const action = acting?.manifest.actions?.find((candidate) => candidate.id === offered.id);
+    const kind2 = action?.emits?.kind;
+    if (!acting || kind2 === void 0 || !action?.emits?.listed) continue;
+    const noun = acting.manifest.projections?.[kind2]?.noun;
+    if (!noun) continue;
+    nouns.add(noun);
+    if (noun.toLowerCase() === type.toLowerCase() && !found.has(kind2)) found.set(kind2, { actionId: offered.id, manifest: acting.manifest });
   }
   if (found.size === 0) {
-    throw new BadRequest(`No app declares a way to start a "${type}" in a Folder. The types that can be: ${[...nouns].sort().join(", ") || "none"}.`);
+    throw new BadRequest(`No app offers a way to start a "${type}" in this Folder. The types that can be: ${[...nouns].sort().join(", ") || "none"}. Nothing was published.`);
   }
   if (found.size > 1) throw new BadRequest(`More than one kind of file is called "${type}" (${[...found.keys()].join(", ")}), so which one is meant is unclear. Nothing was published.`);
-  const [[kind, actionId]] = [...found];
-  return { kind, actionId };
+  const [[kind, creator]] = [...found];
+  return { kind, ...creator };
 }
 async function printedComments(context2, file, address, cache, text2) {
   const { conversations, edits, resolved } = await readConversation(context2, { object: file, address }, cache);
@@ -23333,7 +23330,8 @@ var fileApp = {
         const query = relayQuery(context2);
         const folder = findFolder2(await listFolders(query), folderRef);
         if (!folder.hasState) throw new BadRequest(`${folder.name ?? folder.id} is not a Folder that lists files, so nothing can be started in it. Nothing was published.`);
-        const { kind, actionId } = await creatorOf(context2, type);
+        const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`;
+        const { kind, actionId, manifest: creator } = await creatorOf(context2, channel, type, createProjectionCache());
         const id = randomUUID2();
         const address = `${kind}:${context2.signer.pubkey}:${id}`;
         const resolved = await resolveManifest(pointerOf(address), query);
@@ -23344,9 +23342,8 @@ var fileApp = {
         if (summary && !route) throw new BadRequest(`A ${type} takes no summary yet, so --summary has nowhere to go. Nothing was published.`);
         const body = description ? describe2("", void 0, description) : void 0;
         if (body && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`);
-        const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`;
         const built = buildActionEvents({
-          manifest: resolved.manifest,
+          manifest: creator,
           kind: KIND_CHANNEL_METADATA,
           address: channel,
           objectAuthor: pointerOf(channel).pubkey,
