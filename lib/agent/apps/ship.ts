@@ -13,7 +13,7 @@
  * issue, an issue moved between projects — live in one place, and if this CLI
  * and `ship.estiva.app` disagree, the manifest is what is wrong.
  */
-import { placeFiles, uploadFiles, type PlacedFiles } from '../attachments'
+import { describePlacing, placeFiles, uploadFiles, type PlacedFiles } from '../attachments'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
 import { describe, descriptionText, formatName } from '../descriptions'
@@ -374,13 +374,22 @@ function descriptionEdit(subject: Pick<Project, 'description' | 'descriptionForm
 }
 
 /**
- * The pictures a `--description` places (`![alt](./shot.png)` on a line of its
- * own), uploaded before anything is written (d273d4f5). Undefined when there
- * is no description to place them in.
+ * The pictures a `--description` places (`![alt](/abs/path/shot.png)` on a
+ * line of its own), uploaded before anything is written (d273d4f5), and only
+ * once the text has been read against the subject's description without
+ * refusal. Undefined when there is no description to place them in.
  */
-async function filesIn(context: AgentContext, args: ParsedArgs): Promise<PlacedFiles | undefined> {
+async function filesIn(
+  context: AgentContext,
+  args: ParsedArgs,
+  subject: Pick<Project, 'description' | 'descriptionFormat'>,
+): Promise<PlacedFiles | undefined> {
   const description = flagValue(args, 'description')
-  return description === undefined ? undefined : placeFiles(context, description)
+  if (description === undefined) return undefined
+  return placeFiles(context, description, {
+    previous: descriptionText(subject.description, subject.descriptionFormat),
+    check: (placeholders) => describe(subject.description, subject.descriptionFormat, description, placeholders),
+  })
 }
 
 /** One landed edit as a write reports it: the text asked for, and for a block document what became of its blocks. */
@@ -1956,7 +1965,7 @@ export const shipApp: AgentApp = {
 
         const state = await loadWorkspace(context)
         const issue = findIssue(state.issues, reference)
-        const edits = issueEdits(issue, args, state.projects, await filesIn(context, args))
+        const edits = issueEdits(issue, args, state.projects, await filesIn(context, args, issue))
 
         /*
           An issue's changes carry the issue's own Folder — not its project's,
@@ -2016,7 +2025,7 @@ export const shipApp: AgentApp = {
 
         const state = await loadWorkspace(context)
         const project = findProject(state.projects, reference)
-        const edits = projectEdits(project, args, context.signer.pubkey, state.vocab.project, await filesIn(context, args))
+        const edits = projectEdits(project, args, context.signer.pubkey, state.vocab.project, await filesIn(context, args, project))
 
         /*
           A change to the project *record* carries the Folder that record
@@ -2328,7 +2337,7 @@ export const shipApp: AgentApp = {
         }
         const id = randomUUID()
         const description = flagValue(args, 'description')
-        const body = description ? describe('', undefined, description, await placeFiles(context, description)) : undefined
+        const body = description ? await describePlacing(context, '', undefined, description) : undefined
         const manifest = state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`)
         // Seeded on the record when the manifest takes it, and then readable by
         // the whole workspace as the project's name is (SPEC §6.12; Miky, 2026-10-15).
@@ -2409,8 +2418,8 @@ export const shipApp: AgentApp = {
         const id = randomUUID()
         // A block document (RIC-20), which Ship's `add-issue` declares for its description.
         const description = flagValue(args, 'description')
-        const body = description ? describe('', undefined, description, await placeFiles(context, description)) : undefined
-        const addr = `${KIND.ISSUE}:${context.signer.pubkey}:${id}`
+        const body = description ? await describePlacing(context, '', undefined, description) : undefined
+        const addr =`${KIND.ISSUE}:${context.signer.pubkey}:${id}`
         const summary = summaryText(flagValue(args, 'summary') ?? '')
         const route = summary ? summaryRoute(state.manifestFor(project.addr)?.manifest, 'add-issue', KIND.ISSUE) : undefined
         if (summary && !route) throw new BadRequest(`Ship's manifest declares no summary for an issue yet, so --summary has nowhere to go. Nothing was published.`)

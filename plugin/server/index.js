@@ -18353,8 +18353,287 @@ async function connectionStatus(app, { client } = {}) {
 }
 
 // lib/agent/attachments.ts
-import { readFile } from "node:fs/promises";
-import { basename, extname, resolve as resolve2 } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { basename, extname, isAbsolute, resolve as resolve2 } from "node:path";
+
+// lib/agent/descriptions.ts
+var doc2 = (content) => ({ type: "doc", content });
+var childBlocks2 = (block) => Array.isArray(block.content) && block.content.length > 0 && block.content.every((node) => typeof node.id === "string") ? block.content : void 0;
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value).filter(([, v]) => v !== void 0);
+    return `{${entries.sort(([a], [b]) => a < b ? -1 : 1).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+var protocolText = (block) => blockDocumentToMarkerText(doc2([trimRuns(block)]), DESCRIPTION2);
+var DESCRIPTION2 = { description: true };
+function trimRuns(block) {
+  const children = childBlocks2(block);
+  if (children) return { ...block, content: children.map(trimRuns) };
+  if (!Array.isArray(block.content) || block.content.length === 0) return block;
+  const run = [...block.content];
+  while (run.length) {
+    const last = run[run.length - 1];
+    if (last.type !== "text" || typeof last.text !== "string") break;
+    const trimmedText = last.text.replace(/\s+$/, "");
+    if (trimmedText) {
+      run[run.length - 1] = { ...last, text: trimmedText };
+      break;
+    }
+    run.pop();
+  }
+  return { ...block, content: run };
+}
+function reparse(text2, previous) {
+  const old = new Map(previous.filter((block) => block.id).map((block) => [block.id, block]));
+  return descriptionTextToBlockDocument(text2, doc2(previous)).content.map((fresh) => {
+    const before = old.get(fresh.id);
+    if (!before) return fresh;
+    const children = carryChildIds(childBlocks2(before) ?? [], childBlocks2(fresh));
+    const updated = { ...fresh, ...children ? { content: children } : {} };
+    if (readsTheSame(before, updated)) return before;
+    const { content: _content, ...beforeShape } = before;
+    const kept = { ...beforeShape, ...updated.content !== void 0 ? { content: updated.content } : {} };
+    return protocolText(kept) === protocolText(updated) ? kept : updated;
+  });
+}
+function readStretch(text2, previous, files) {
+  const out = [];
+  let remaining = previous;
+  let pending2 = "";
+  let fenced = false;
+  const flush = () => {
+    if (pending2.trim()) {
+      const fresh = pending2.split(/\n[ \t]*\n/).filter((chunk) => files?.get(chunk.trim()) !== null).join("\n\n");
+      if (/!\[[^\]\n]*\]\([^)\n]+\)/.test(fresh.replace(/^```[\s\S]*?^```/gm, ""))) {
+        throw new BadRequest(
+          "The new description has a picture (`![\u2026](\u2026)`) inside other text. A picture goes on a line of its own, with a blank line before and after it. Nothing was published."
+        );
+      }
+      const blocks = reparse(pending2, remaining);
+      const taken = new Set(blocks.map((block) => block.id));
+      remaining = remaining.filter((block) => !taken.has(block.id));
+      out.push(...blocks);
+    }
+    pending2 = "";
+  };
+  for (const part of text2.split(/(\n[ \t]*\n)/)) {
+    const attrs = !fenced && files?.get(part.trim());
+    if (attrs) {
+      flush();
+      out.push({ id: newBlockId(), type: "attachment", attrs });
+    } else {
+      pending2 += part;
+    }
+    if ((part.match(/^```/gm)?.length ?? 0) % 2 === 1) fenced = !fenced;
+  }
+  flush();
+  return out;
+}
+var printable = (block) => block.type === "table" ? tableToDescriptionText(block) : protocolText(block);
+function carryChildIds(before, after) {
+  if (!after) return void 0;
+  const used = /* @__PURE__ */ new Set();
+  const waiting = /* @__PURE__ */ new Map();
+  before.forEach((candidate, j) => waiting.set(screenKey(candidate), [...waiting.get(screenKey(candidate)) ?? [], j]));
+  const unchanged = after.map((child) => {
+    const i = waiting.get(screenKey(child))?.shift();
+    if (i === void 0) return void 0;
+    used.add(i);
+    return i;
+  });
+  return after.map((child, i) => {
+    if (unchanged[i] !== void 0) return before[unchanged[i]];
+    const candidate = before[i];
+    if (!candidate || used.has(i) || candidate.type !== child.type) return child;
+    used.add(i);
+    const { content: _content, attrs, ...shape } = candidate;
+    const { checked: was, indent: _indent, ...rest } = attrs ?? {};
+    const checked = child.attrs?.checked ?? (typeof was === "boolean" ? void 0 : was);
+    const indent = child.attrs?.indent;
+    const merged = { ...rest, ...indent !== void 0 ? { indent } : {}, ...checked !== void 0 ? { checked } : {} };
+    return { ...shape, ...Object.keys(merged).length ? { attrs: merged } : {}, ...child.content !== void 0 ? { content: child.content } : {} };
+  });
+}
+var readsTheSame = (a, b) => screenKey(a) === screenKey(b);
+var screenKey = (block) => canonical(visible({ ...block, id: "" }));
+function spellable(block) {
+  const text2 = printable(block);
+  if (!text2?.trim()) return false;
+  const back = reparse(text2, [block]);
+  return back.length === 1 && canonical(visible(back[0])) === canonical(visible(block));
+}
+function visible(block) {
+  const children = childBlocks2(block);
+  if (children) return { ...block, content: children.map(visible) };
+  if (!Array.isArray(block.content)) return block;
+  const characters = [];
+  for (const node of block.content) {
+    if (node.type !== "text" || typeof node.text !== "string") {
+      characters.push(["", canonical(node)]);
+      continue;
+    }
+    const { text: text2, type: _type, ...rest } = node;
+    const marks = canonical(rest);
+    for (const character of text2) characters.push([character, /\s/.test(character) ? "" : marks]);
+  }
+  while (characters.length && characters[characters.length - 1][0] !== "" && /\s/.test(characters[characters.length - 1][0])) characters.pop();
+  return { ...block, content: characters.map(([character, marks]) => character + "\0" + marks).join("") };
+}
+function standIn(block) {
+  const attrs = block.attrs ?? {};
+  if (block.type === "table") {
+    const rows = childBlocks2(block) ?? [];
+    return rows.map((row) => `| ${(childBlocks2(row) ?? []).map((cell) => cellText(cell)).join(" | ")} |`).join("\n");
+  }
+  if (block.type === "attachment") {
+    const name = typeof attrs.filename === "string" && attrs.filename ? attrs.filename : typeof attrs.url === "string" ? attrs.url : block.id;
+    return `[attachment: ${name}]`;
+  }
+  const text2 = protocolText(block);
+  return text2.trim() ? text2 : `[${block.type}: ${block.id}]`;
+}
+var cellText = (cell) => (childBlocks2(cell) ?? []).map((child) => childBlocks2(child) ? cellText(child) : inlineTextOf(child)).join(" ").replace(/\s+/g, " ").trim();
+var blockText = (block) => {
+  let text2 = printed.get(block);
+  if (text2 === void 0) printed.set(block, text2 = spellable(block) ? printable(block) : standIn(block));
+  return text2;
+};
+var printed = /* @__PURE__ */ new WeakMap();
+function descriptionText(value, format) {
+  if (format !== "blocks") return value;
+  try {
+    return parseBlockDocument(value).content.map(blockText).join("\n\n");
+  } catch {
+    return value;
+  }
+}
+var formatName = (format) => format === "blocks" ? BLOCK_DOCUMENT_FORMAT : format === "unknown" ? "unknown" : "marker";
+function chunkPositions(text2, chunk, fences) {
+  const lead = text2.length - text2.trimStart().length;
+  const tail = text2.trimEnd().length;
+  const positions = [];
+  for (let at = text2.indexOf(chunk); at >= 0; at = text2.indexOf(chunk, at + 1)) {
+    const end = at + chunk.length;
+    const opensBlock = at <= lead || text2[at - 1] === "\n" && text2[at - 2] === "\n";
+    const closesBlock = end >= tail || text2[end] === "\n" && text2[end + 1] === "\n";
+    const fenced = fences.filter((fence) => fence < at).length % 2 === 1;
+    if (opensBlock && closesBlock && !fenced) positions.push(at);
+    if (positions.length > MAX_MATCHES) break;
+  }
+  return positions;
+}
+var MAX_MATCHES = 4e3;
+function unchangedBlocks(text2, chunks) {
+  const fences = [...text2.matchAll(/^```/gm)].map((fence) => fence.index);
+  if (fences.length % 2 === 1) fences.pop();
+  const matches = [];
+  chunks.forEach((chunk, i) => {
+    if (!chunk.trim()) return;
+    for (const at of chunkPositions(text2, chunk, fences)) matches.push({ i, at, end: at + chunk.length });
+    if (matches.length > MAX_MATCHES) {
+      throw new BadRequest("This description repeats the same block too often for its blocks to be matched safely. Nothing was published.");
+    }
+  });
+  matches.sort((a, b) => a.at - b.at || a.i - b.i);
+  const length = matches.map(() => 1);
+  const previous = matches.map(() => -1);
+  matches.forEach((match, c) => {
+    for (let d = 0; d < c; d++) {
+      if (matches[d].i < match.i && matches[d].end <= match.at && length[d] + 1 > length[c]) {
+        length[c] = length[d] + 1;
+        previous[c] = d;
+      }
+    }
+  });
+  let last = -1;
+  length.forEach((n, c) => {
+    if (last < 0 || n > length[last]) last = c;
+  });
+  const chain = [];
+  for (let c = last; c >= 0; c = previous[c]) chain.unshift(matches[c]);
+  return chain;
+}
+function editBlockDocument(previous, text2, files) {
+  const before = parseBlockDocument(previous).content;
+  const chunks = before.map(blockText);
+  const pieces = [];
+  let cursor = 0;
+  let next = 0;
+  for (const { i, at, end } of unchangedBlocks(text2, chunks)) {
+    pieces.push({ text: text2.slice(cursor, at), replaces: before.slice(next, i) }, { keep: before[i] });
+    cursor = end;
+    next = i + 1;
+  }
+  pieces.push({ text: text2.slice(cursor), replaces: before.slice(next) });
+  const out = [];
+  let kept = 0;
+  let edited2 = 0;
+  let added = 0;
+  for (const piece of pieces) {
+    if ("keep" in piece) {
+      out.push(piece.keep);
+      kept++;
+      continue;
+    }
+    const { text: stretch, replaces } = piece;
+    if (stretch.trim() === replaces.map(blockText).join("\n\n").trim()) {
+      out.push(...replaces);
+      kept += replaces.length;
+      continue;
+    }
+    if (stretch.trim() === "") continue;
+    const fixed = replaces.find((block) => !spellable(block));
+    if (fixed) {
+      throw new BadRequest(
+        `The new description changes the text around a ${fixed.type} block (${JSON.stringify(blockText(fixed).slice(0, 60))}), and text cannot carry that block: writing it would replace it with plain text. The block is matched only when its lines are exactly as \`show\` printed them with a blank line on each side; its content can be changed only in Ship. Nothing was published.`
+      );
+    }
+    const ids = new Set(replaces.map((block) => block.id));
+    for (const block of readStretch(stretch, replaces, files)) {
+      out.push(block);
+      if (ids.has(block.id)) edited2++;
+      else added++;
+    }
+  }
+  const present = new Set(allIds(out));
+  return {
+    value: serialized(out),
+    kept,
+    edited: edited2,
+    added,
+    removed: allIds(before).filter((id) => !present.has(id))
+  };
+}
+function serialized(blocks) {
+  const problems = validateBlockDocument(doc2(blocks));
+  if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join("; ")}. Nothing was published.`);
+  return serializeBlockDocument(doc2(blocks));
+}
+function allIds(blocks) {
+  return blocks.flatMap((block) => [block.id, ...allIds(childBlocks2(block) ?? [])]).filter(Boolean);
+}
+function describe2(previous, format, text2, files) {
+  if (format === "unknown") {
+    throw new BadRequest("This description is in a content format this version does not read, so it cannot be edited without losing it. Nothing was published.");
+  }
+  if (format !== "blocks") {
+    if (!text2.trim()) return { value: text2 };
+    const blocks2 = readStretch(text2, [], files);
+    return { value: serialized(blocks2), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks2.length, removed: [] } };
+  }
+  try {
+    parseBlockDocument(previous);
+  } catch {
+    throw new BadRequest("This description is tagged as a block document but does not parse as one, so it cannot be edited safely. Nothing was published.");
+  }
+  const { value, ...blocks } = editBlockDocument(previous, text2, files);
+  return { value, contentFormat: BLOCK_DOCUMENT_FORMAT, blocks };
+}
+
+// lib/agent/attachments.ts
 var CONTENT_TYPES = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -18363,21 +18642,46 @@ var CONTENT_TYPES = {
   ".webp": "image/webp",
   ".pdf": "application/pdf"
 };
-async function uploadFile(context2, path) {
+function startsWith(bytes, at, signature) {
+  const wanted = typeof signature === "string" ? Buffer.from(signature, "latin1") : Buffer.from(signature);
+  return wanted.equals(bytes.subarray(at, at + wanted.length));
+}
+var SIGNATURES = {
+  "image/png": (bytes) => startsWith(bytes, 0, [137, 80, 78, 71, 13, 10, 26, 10]),
+  "image/jpeg": (bytes) => startsWith(bytes, 0, [255, 216, 255]),
+  "image/gif": (bytes) => startsWith(bytes, 0, "GIF8"),
+  "image/webp": (bytes) => startsWith(bytes, 0, "RIFF") && startsWith(bytes, 8, "WEBP"),
+  "application/pdf": (bytes) => startsWith(bytes, 0, "%PDF-")
+};
+var MAX_BYTES = 100 * 1024 * 1024;
+async function readLocal(path) {
+  if (!isAbsolute(path)) throw new BadRequest(`${path} is not an absolute path. Give the file's full path. Nothing was published.`);
   const full = resolve2(path);
   const filename = basename(full);
+  const contentType = CONTENT_TYPES[extname(full).toLowerCase()];
+  if (!contentType) {
+    throw new BadRequest(`${filename} is not a picture or a PDF (${Object.keys(CONTENT_TYPES).join(", ")}). Nothing was published.`);
+  }
   let bytes;
   try {
+    const info = await stat(full);
+    if (!info.isFile()) throw new BadRequest(`${path} is not a file. Nothing was published.`);
+    if (info.size > MAX_BYTES) throw new BadRequest(`${filename} is larger than the relay takes (100 MB). Nothing was published.`);
     bytes = await readFile(full);
   } catch (error2) {
+    if (error2 instanceof BadRequest) throw error2;
     const code = error2.code;
     throw new BadRequest(`${code === "ENOENT" ? "There is no file" : "The file cannot be read"} at ${path}. Nothing was published.`);
   }
+  if (!SIGNATURES[contentType](bytes)) throw new BadRequest(`${filename} is not the ${contentType} its name says. Nothing was published.`);
+  return { filename, contentType, bytes };
+}
+async function upload(context2, { filename, contentType, bytes }) {
   try {
     const blob = await uploadBlob({
       relayUrl: context2.relayUrl,
       bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-      contentType: CONTENT_TYPES[extname(full).toLowerCase()],
+      contentType,
       filename,
       sign: (unsigned) => context2.signer.sign(unsigned),
       pubkey: context2.signer.pubkey
@@ -18390,8 +18694,10 @@ async function uploadFile(context2, path) {
 async function uploadFiles(context2, list) {
   const paths = list.split(",").map((path) => path.trim()).filter(Boolean);
   if (!paths.length) throw new BadRequest("--attach needs a path, or several separated by commas.");
+  const local = [];
+  for (const path of paths) local.push(await readLocal(path));
   const files = [];
-  for (const path of paths) files.push(await uploadFile(context2, path));
+  for (const file of local) files.push(await upload(context2, file));
   return files;
 }
 var IMAGE_LINE = /^!\[([^\]\n]*)\]\(([^)\n]+)\)$/;
@@ -18406,17 +18712,28 @@ function imageLines(text2) {
   }
   return found;
 }
-async function placeFiles(context2, text2) {
-  const placed = /* @__PURE__ */ new Map();
-  for (const { line, alt, path } of imageLines(text2)) {
-    if (placed.has(line)) continue;
+async function placeFiles(context2, text2, { previous = "", check } = {}) {
+  const already = new Set(imageLines(previous).map(({ line }) => line));
+  const lines = imageLines(text2).filter(({ line }) => !already.has(line));
+  for (const { line, path } of lines) {
     if (/^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("/media/")) {
       throw new BadRequest(`${line} names a URL. A picture is added from a file on this machine: save it and give its path. Nothing was published.`);
     }
-    const meta2 = await uploadFile(context2, path);
-    placed.set(line, { ...meta2, ...alt ? { alt } : {} });
   }
+  const kept = new Map([...already].map((line) => [line, null]));
+  check?.(new Map([...kept, ...lines.map(({ line, path }) => [line, { filename: basename(path) }])]));
+  const local = /* @__PURE__ */ new Map();
+  for (const { path } of lines) if (!local.has(path)) local.set(path, await readLocal(path));
+  const uploaded = /* @__PURE__ */ new Map();
+  for (const [path, file] of local) uploaded.set(path, await upload(context2, file));
+  const placed = kept;
+  for (const { line, alt, path } of lines) placed.set(line, { ...uploaded.get(path), ...alt ? { alt } : {} });
   return placed;
+}
+async function describePlacing(context2, previous, format, text2) {
+  const check = (placeholders) => describe2(previous, format, text2, placeholders);
+  const files = await placeFiles(context2, text2, { previous: previous ? descriptionText(previous, format) : "", check });
+  return describe2(previous, format, text2, files);
 }
 
 // node_modules/@estiva-app/conversation/dist/kinds.js
@@ -21121,282 +21438,6 @@ function findThread(threads, reference) {
   });
 }
 
-// lib/agent/descriptions.ts
-var doc2 = (content) => ({ type: "doc", content });
-var childBlocks2 = (block) => Array.isArray(block.content) && block.content.length > 0 && block.content.every((node) => typeof node.id === "string") ? block.content : void 0;
-function canonical(value) {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value).filter(([, v]) => v !== void 0);
-    return `{${entries.sort(([a], [b]) => a < b ? -1 : 1).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-var protocolText = (block) => blockDocumentToMarkerText(doc2([trimRuns(block)]), DESCRIPTION2);
-var DESCRIPTION2 = { description: true };
-function trimRuns(block) {
-  const children = childBlocks2(block);
-  if (children) return { ...block, content: children.map(trimRuns) };
-  if (!Array.isArray(block.content) || block.content.length === 0) return block;
-  const run = [...block.content];
-  while (run.length) {
-    const last = run[run.length - 1];
-    if (last.type !== "text" || typeof last.text !== "string") break;
-    const trimmedText = last.text.replace(/\s+$/, "");
-    if (trimmedText) {
-      run[run.length - 1] = { ...last, text: trimmedText };
-      break;
-    }
-    run.pop();
-  }
-  return { ...block, content: run };
-}
-function reparse(text2, previous) {
-  const old = new Map(previous.filter((block) => block.id).map((block) => [block.id, block]));
-  return descriptionTextToBlockDocument(text2, doc2(previous)).content.map((fresh) => {
-    const before = old.get(fresh.id);
-    if (!before) return fresh;
-    const children = carryChildIds(childBlocks2(before) ?? [], childBlocks2(fresh));
-    const updated = { ...fresh, ...children ? { content: children } : {} };
-    if (readsTheSame(before, updated)) return before;
-    const { content: _content, ...beforeShape } = before;
-    const kept = { ...beforeShape, ...updated.content !== void 0 ? { content: updated.content } : {} };
-    return protocolText(kept) === protocolText(updated) ? kept : updated;
-  });
-}
-function readStretch(text2, previous, files) {
-  const out = [];
-  let remaining = previous;
-  let pending2 = "";
-  let fenced = false;
-  const flush = () => {
-    if (pending2.trim()) {
-      if (/!\[[^\]\n]*\]\([^)\n]+\)/.test(pending2.replace(/^```[\s\S]*?^```/gm, ""))) {
-        throw new BadRequest(
-          "The new description has a picture (`![\u2026](\u2026)`) inside other text. A picture goes on a line of its own, with a blank line before and after it. Nothing was published."
-        );
-      }
-      const blocks = reparse(pending2, remaining);
-      const taken = new Set(blocks.map((block) => block.id));
-      remaining = remaining.filter((block) => !taken.has(block.id));
-      out.push(...blocks);
-    }
-    pending2 = "";
-  };
-  for (const part of text2.split(/(\n[ \t]*\n)/)) {
-    const attrs = !fenced && files?.get(part.trim());
-    if (attrs) {
-      flush();
-      out.push({ id: newBlockId(), type: "attachment", attrs });
-    } else {
-      pending2 += part;
-    }
-    if ((part.match(/^```/gm)?.length ?? 0) % 2 === 1) fenced = !fenced;
-  }
-  flush();
-  return out;
-}
-var printable = (block) => block.type === "table" ? tableToDescriptionText(block) : protocolText(block);
-function carryChildIds(before, after) {
-  if (!after) return void 0;
-  const used = /* @__PURE__ */ new Set();
-  const waiting = /* @__PURE__ */ new Map();
-  before.forEach((candidate, j) => waiting.set(screenKey(candidate), [...waiting.get(screenKey(candidate)) ?? [], j]));
-  const unchanged = after.map((child) => {
-    const i = waiting.get(screenKey(child))?.shift();
-    if (i === void 0) return void 0;
-    used.add(i);
-    return i;
-  });
-  return after.map((child, i) => {
-    if (unchanged[i] !== void 0) return before[unchanged[i]];
-    const candidate = before[i];
-    if (!candidate || used.has(i) || candidate.type !== child.type) return child;
-    used.add(i);
-    const { content: _content, attrs, ...shape } = candidate;
-    const { checked: was, indent: _indent, ...rest } = attrs ?? {};
-    const checked = child.attrs?.checked ?? (typeof was === "boolean" ? void 0 : was);
-    const indent = child.attrs?.indent;
-    const merged = { ...rest, ...indent !== void 0 ? { indent } : {}, ...checked !== void 0 ? { checked } : {} };
-    return { ...shape, ...Object.keys(merged).length ? { attrs: merged } : {}, ...child.content !== void 0 ? { content: child.content } : {} };
-  });
-}
-var readsTheSame = (a, b) => screenKey(a) === screenKey(b);
-var screenKey = (block) => canonical(visible({ ...block, id: "" }));
-function spellable(block) {
-  const text2 = printable(block);
-  if (!text2?.trim()) return false;
-  const back = reparse(text2, [block]);
-  return back.length === 1 && canonical(visible(back[0])) === canonical(visible(block));
-}
-function visible(block) {
-  const children = childBlocks2(block);
-  if (children) return { ...block, content: children.map(visible) };
-  if (!Array.isArray(block.content)) return block;
-  const characters = [];
-  for (const node of block.content) {
-    if (node.type !== "text" || typeof node.text !== "string") {
-      characters.push(["", canonical(node)]);
-      continue;
-    }
-    const { text: text2, type: _type, ...rest } = node;
-    const marks = canonical(rest);
-    for (const character of text2) characters.push([character, /\s/.test(character) ? "" : marks]);
-  }
-  while (characters.length && characters[characters.length - 1][0] !== "" && /\s/.test(characters[characters.length - 1][0])) characters.pop();
-  return { ...block, content: characters.map(([character, marks]) => character + "\0" + marks).join("") };
-}
-function standIn(block) {
-  const attrs = block.attrs ?? {};
-  if (block.type === "table") {
-    const rows = childBlocks2(block) ?? [];
-    return rows.map((row) => `| ${(childBlocks2(row) ?? []).map((cell) => cellText(cell)).join(" | ")} |`).join("\n");
-  }
-  if (block.type === "attachment") {
-    const name = typeof attrs.filename === "string" && attrs.filename ? attrs.filename : typeof attrs.url === "string" ? attrs.url : block.id;
-    return `[attachment: ${name}]`;
-  }
-  const text2 = protocolText(block);
-  return text2.trim() ? text2 : `[${block.type}: ${block.id}]`;
-}
-var cellText = (cell) => (childBlocks2(cell) ?? []).map((child) => childBlocks2(child) ? cellText(child) : inlineTextOf(child)).join(" ").replace(/\s+/g, " ").trim();
-var blockText = (block) => {
-  let text2 = printed.get(block);
-  if (text2 === void 0) printed.set(block, text2 = spellable(block) ? printable(block) : standIn(block));
-  return text2;
-};
-var printed = /* @__PURE__ */ new WeakMap();
-function descriptionText(value, format) {
-  if (format !== "blocks") return value;
-  try {
-    return parseBlockDocument(value).content.map(blockText).join("\n\n");
-  } catch {
-    return value;
-  }
-}
-var formatName = (format) => format === "blocks" ? BLOCK_DOCUMENT_FORMAT : format === "unknown" ? "unknown" : "marker";
-function chunkPositions(text2, chunk, fences) {
-  const lead = text2.length - text2.trimStart().length;
-  const tail = text2.trimEnd().length;
-  const positions = [];
-  for (let at = text2.indexOf(chunk); at >= 0; at = text2.indexOf(chunk, at + 1)) {
-    const end = at + chunk.length;
-    const opensBlock = at <= lead || text2[at - 1] === "\n" && text2[at - 2] === "\n";
-    const closesBlock = end >= tail || text2[end] === "\n" && text2[end + 1] === "\n";
-    const fenced = fences.filter((fence) => fence < at).length % 2 === 1;
-    if (opensBlock && closesBlock && !fenced) positions.push(at);
-    if (positions.length > MAX_MATCHES) break;
-  }
-  return positions;
-}
-var MAX_MATCHES = 4e3;
-function unchangedBlocks(text2, chunks) {
-  const fences = [...text2.matchAll(/^```/gm)].map((fence) => fence.index);
-  if (fences.length % 2 === 1) fences.pop();
-  const matches = [];
-  chunks.forEach((chunk, i) => {
-    if (!chunk.trim()) return;
-    for (const at of chunkPositions(text2, chunk, fences)) matches.push({ i, at, end: at + chunk.length });
-    if (matches.length > MAX_MATCHES) {
-      throw new BadRequest("This description repeats the same block too often for its blocks to be matched safely. Nothing was published.");
-    }
-  });
-  matches.sort((a, b) => a.at - b.at || a.i - b.i);
-  const length = matches.map(() => 1);
-  const previous = matches.map(() => -1);
-  matches.forEach((match, c) => {
-    for (let d = 0; d < c; d++) {
-      if (matches[d].i < match.i && matches[d].end <= match.at && length[d] + 1 > length[c]) {
-        length[c] = length[d] + 1;
-        previous[c] = d;
-      }
-    }
-  });
-  let last = -1;
-  length.forEach((n, c) => {
-    if (last < 0 || n > length[last]) last = c;
-  });
-  const chain = [];
-  for (let c = last; c >= 0; c = previous[c]) chain.unshift(matches[c]);
-  return chain;
-}
-function editBlockDocument(previous, text2, files) {
-  const before = parseBlockDocument(previous).content;
-  const chunks = before.map(blockText);
-  const pieces = [];
-  let cursor = 0;
-  let next = 0;
-  for (const { i, at, end } of unchangedBlocks(text2, chunks)) {
-    pieces.push({ text: text2.slice(cursor, at), replaces: before.slice(next, i) }, { keep: before[i] });
-    cursor = end;
-    next = i + 1;
-  }
-  pieces.push({ text: text2.slice(cursor), replaces: before.slice(next) });
-  const out = [];
-  let kept = 0;
-  let edited2 = 0;
-  let added = 0;
-  for (const piece of pieces) {
-    if ("keep" in piece) {
-      out.push(piece.keep);
-      kept++;
-      continue;
-    }
-    const { text: stretch, replaces } = piece;
-    if (stretch.trim() === replaces.map(blockText).join("\n\n").trim()) {
-      out.push(...replaces);
-      kept += replaces.length;
-      continue;
-    }
-    if (stretch.trim() === "") continue;
-    const fixed = replaces.find((block) => !spellable(block));
-    if (fixed) {
-      throw new BadRequest(
-        `The new description changes the text around a ${fixed.type} block (${JSON.stringify(blockText(fixed).slice(0, 60))}), and text cannot carry that block: writing it would replace it with plain text. The block is matched only when its lines are exactly as \`show\` printed them with a blank line on each side; its content can be changed only in Ship. Nothing was published.`
-      );
-    }
-    const ids = new Set(replaces.map((block) => block.id));
-    for (const block of readStretch(stretch, replaces, files)) {
-      out.push(block);
-      if (ids.has(block.id)) edited2++;
-      else added++;
-    }
-  }
-  const present = new Set(allIds(out));
-  return {
-    value: serialized(out),
-    kept,
-    edited: edited2,
-    added,
-    removed: allIds(before).filter((id) => !present.has(id))
-  };
-}
-function serialized(blocks) {
-  const problems = validateBlockDocument(doc2(blocks));
-  if (problems.length) throw new BadRequest(`The new description is not a valid block document: ${problems.join("; ")}. Nothing was published.`);
-  return serializeBlockDocument(doc2(blocks));
-}
-function allIds(blocks) {
-  return blocks.flatMap((block) => [block.id, ...allIds(childBlocks2(block) ?? [])]).filter(Boolean);
-}
-function describe2(previous, format, text2, files) {
-  if (format === "unknown") {
-    throw new BadRequest("This description is in a content format this version does not read, so it cannot be edited without losing it. Nothing was published.");
-  }
-  if (format !== "blocks") {
-    if (!text2.trim()) return { value: text2 };
-    const blocks2 = readStretch(text2, [], files);
-    return { value: serialized(blocks2), contentFormat: BLOCK_DOCUMENT_FORMAT, blocks: { kept: 0, edited: 0, added: blocks2.length, removed: [] } };
-  }
-  try {
-    parseBlockDocument(previous);
-  } catch {
-    throw new BadRequest("This description is tagged as a block document but does not parse as one, so it cannot be edited safely. Nothing was published.");
-  }
-  const { value, ...blocks } = editBlockDocument(previous, text2, files);
-  return { value, contentFormat: BLOCK_DOCUMENT_FORMAT, blocks };
-}
-
 // lib/agent/mentions.ts
 async function relayMembers(context2) {
   const [list] = await context2.relay.queryAll([{ kinds: [KIND_RELAY_MEMBERS], limit: 1 }]);
@@ -21888,9 +21929,13 @@ function descriptionEdit(subject, text2, files) {
     ...contentFormat ? { contentFormat, text: text2, blocks } : {}
   };
 }
-async function filesIn(context2, args2) {
+async function filesIn(context2, args2, subject) {
   const description = flagValue(args2, "description");
-  return description === void 0 ? void 0 : placeFiles(context2, description);
+  if (description === void 0) return void 0;
+  return placeFiles(context2, description, {
+    previous: descriptionText(subject.description, subject.descriptionFormat),
+    check: (placeholders) => describe2(subject.description, subject.descriptionFormat, description, placeholders)
+  });
 }
 function appliedEdit(edit, eventId) {
   return {
@@ -22844,7 +22889,7 @@ Pass an address to say which.`
         if (!reference) throw new BadRequest("edit-issue needs an issue reference.");
         const state = await loadWorkspace(context2);
         const issue2 = findIssue(state.issues, reference);
-        const edits = issueEdits(issue2, args2, state.projects, await filesIn(context2, args2));
+        const edits = issueEdits(issue2, args2, state.projects, await filesIn(context2, args2, issue2));
         const folder = issue2.folder;
         if (!folder) {
           throw new BadRequest(
@@ -22881,7 +22926,7 @@ Pass an address to say which.`
         if (!reference) throw new BadRequest("edit-project needs a project reference.");
         const state = await loadWorkspace(context2);
         const project = findProject(state.projects, reference);
-        const edits = projectEdits(project, args2, context2.signer.pubkey, state.vocab.project, await filesIn(context2, args2));
+        const edits = projectEdits(project, args2, context2.signer.pubkey, state.vocab.project, await filesIn(context2, args2, project));
         const folder = project.contentFolder;
         if (!folder) {
           throw new BadRequest(
@@ -23103,7 +23148,7 @@ Pass an address to say which.`
         }
         const id = randomUUID();
         const description = flagValue(args2, "description");
-        const body = description ? describe2("", void 0, description, await placeFiles(context2, description)) : void 0;
+        const body = description ? await describePlacing(context2, "", void 0, description) : void 0;
         const manifest = state.manifestFor(`${KIND2.PROJECT}:${context2.signer.pubkey}:${id}`);
         const summary = summaryText(flagValue(args2, "summary") ?? "");
         const route = summary ? summaryRoute(manifest?.manifest, "add-project", KIND2.PROJECT) : void 0;
@@ -23157,7 +23202,7 @@ Pass an address to say which.`
         if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no Folder of its own, so a new issue has nowhere to be filed. Nothing was published.`);
         const id = randomUUID();
         const description = flagValue(args2, "description");
-        const body = description ? describe2("", void 0, description, await placeFiles(context2, description)) : void 0;
+        const body = description ? await describePlacing(context2, "", void 0, description) : void 0;
         const addr2 = `${KIND2.ISSUE}:${context2.signer.pubkey}:${id}`;
         const summary = summaryText(flagValue(args2, "summary") ?? "");
         const route = summary ? summaryRoute(state.manifestFor(project.addr)?.manifest, "add-issue", KIND2.ISSUE) : void 0;
@@ -23667,8 +23712,8 @@ var fileApp = {
         }
         const route = summary ? summaryRoute(resolved.manifest, actionId, kind) : void 0;
         if (summary && !route) throw new BadRequest(`A ${type} takes no summary yet, so --summary has nowhere to go. Nothing was published.`);
-        const body = description ? describe2("", void 0, description, await placeFiles(context2, description)) : void 0;
-        if (body && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`);
+        if (description && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`);
+        const body = description ? await describePlacing(context2, "", void 0, description) : void 0;
         const built = buildActionEvents({
           manifest: creator,
           kind: KIND_CHANNEL_METADATA,
@@ -23763,7 +23808,7 @@ var fileApp = {
             `The text of ${title} changed since you read it (version ${version2}, now ${versionOf(before)}): somebody saved an edit in between. Read it again with \`file show\` and make your change on what it says now. Nothing was published.`
           );
         }
-        const next = describe2(before.value, before.format, text2, await placeFiles(context2, text2));
+        const next = await describePlacing(context2, before.value, before.format, text2);
         const result = await actOnFile(context2, { address, title }, describeAction, next.value, KIND_CHANGE, void 0, changeShape(address, "description", next.value, formatTag(next.contentFormat)), next.contentFormat);
         published(result, `the text of ${title}`);
         const detached = next.blocks?.removed.length ? detachedBy((await readConversation(context2, { object: file, address }, cache)).conversations, before, next.value) : [];

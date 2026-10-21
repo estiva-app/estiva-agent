@@ -44,10 +44,10 @@ import {
 } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
 import { actOnFile, pointerOf, published, relayQuery } from '../act-on-file'
-import { placeFiles, uploadFiles } from '../attachments'
+import { describePlacing, uploadFiles } from '../attachments'
 import { BadRequest, flagValue, refuseUnsignable, type AgentApp, type AgentContext } from '../cli'
 import { edited, findThread, readConversation, replyToOf, type Conversation } from '../conversation'
-import { describe, descriptionText, formatName } from '../descriptions'
+import { descriptionText, formatName } from '../descriptions'
 import { mentionedKeys, relayMembers, withMentions } from '../mentions'
 import { profilesOf } from '../profiles'
 import { resolveOne } from '../resolve'
@@ -266,8 +266,8 @@ export const fileApp: AgentApp = {
         }
         const route = summary ? summaryRoute(resolved.manifest, actionId, kind) : undefined
         if (summary && !route) throw new BadRequest(`A ${type} takes no summary yet, so --summary has nowhere to go. Nothing was published.`)
-        const body = description ? describe('', undefined, description, await placeFiles(context, description)) : undefined
-        if (body && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`)
+        if (description && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`)
+        const body = description ? await describePlacing(context, '', undefined, description) : undefined
 
         const built = buildActionEvents({
           manifest: creator,
@@ -369,7 +369,7 @@ export const fileApp: AgentApp = {
               'Read it again with `file show` and make your change on what it says now. Nothing was published.',
           )
         }
-        const next = describe(before.value, before.format, text, await placeFiles(context, text))
+        const next = await describePlacing(context, before.value, before.format, text)
         const result = await actOnFile(context, { address, title }, describeAction, next.value, KIND_CHANGE, undefined, changeShape(address, 'description', next.value, formatTag(next.contentFormat)), next.contentFormat)
         published(result, `the text of ${title}`)
 

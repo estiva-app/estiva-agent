@@ -137,7 +137,7 @@ function reparse(text: string, previous: Block[]): Block[] {
 
 /**
  * A stretch of new text as blocks, with each picture line the agent placed
- * (`![alt](./shot.png)`, uploaded by `placeFiles`) as the attachment block for
+ * (`![alt](/abs/path/shot.png)`, uploaded by `placeFiles`) as the attachment block for
  * its file, and the text between them re-parsed as {@link reparse} does. Each
  * stretch of text is offered only the old blocks no earlier one took, so no id
  * is used twice. Image syntax anywhere else is refused: protocol reads it as
@@ -150,7 +150,12 @@ function readStretch(text: string, previous: Block[], files: PlacedFiles | undef
   let fenced = false
   const flush = () => {
     if (pending.trim()) {
-      if (/!\[[^\]\n]*\]\([^)\n]+\)/.test(pending.replace(/^```[\s\S]*?^```/gm, ''))) {
+      // A line that was already in the text stays words (`placeFiles`), so only new picture syntax is refused.
+      const fresh = pending
+        .split(/\n[ \t]*\n/)
+        .filter((chunk) => files?.get(chunk.trim()) !== null)
+        .join('\n\n')
+      if (/!\[[^\]\n]*\]\([^)\n]+\)/.test(fresh.replace(/^```[\s\S]*?^```/gm, ''))) {
         throw new BadRequest(
           'The new description has a picture (`![…](…)`) inside other text. A picture goes on a line of its own, with a blank line before and after it. Nothing was published.',
         )

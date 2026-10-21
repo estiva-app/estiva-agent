@@ -7,14 +7,14 @@
  * published, and `fetch` answers `/upload` as Buzz does, recording each PUT.
  */
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { crc32, deflateSync } from 'node:zlib'
 import type { Block, SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
-import { describe, descriptionText } from '../lib/agent/descriptions'
+import { descriptionText } from '../lib/agent/descriptions'
 import { fileApp } from '../lib/agent/apps/file'
 import { shipApp } from '../lib/agent/apps/ship'
 
@@ -237,15 +237,59 @@ console.log('— Ship: a comment on an issue, and an issue’s description —')
     JSON.stringify(comment?.tags),
   )
 
-  // edit-issue's description path: the text applied to the issue's description with the placed picture.
-  const placed = new Map([[`![Before](${SHOT})`, { url: 'https://estiva.example/media/x.png', m: 'image/png', x: 'f'.repeat(64), size: 10, filename: 'shot.png', alt: 'Before' }]])
-  const edit = describe('', undefined, `Text.\n\n![Before](${SHOT})`, placed)
+  /*
+    The issue's author wrote, in a marker description from before RIC-20, a
+    paragraph that reads as a picture line naming a file on the agent's machine.
+    Passed back unchanged, as `show` printed it, it must stay words: uploading
+    it would publish whatever file a workspace member names.
+  */
+  const folder = fixture.events.find((e) => e.kind === 1851 && e.tags.some((t) => t[0] === 'a' && t[1] === issueAddress))!.tags.find((t) => t[0] === 'h')![1]
+  const personLine = `![x](${OTHER})`
+  ship.relay.publish({
+    ...event(1851, [['a', issueAddress], ['field', 'description'], ['value', `Intro.\n\n${personLine}`], ['h', folder], ['ts', '1790000000000']], '', issue.pubkey),
+    created_at: 1_790_000_000,
+  })
+  steps = []
+  await run(shipApp as typeof fileApp, 'edit-issue', ship, [issueAddress], { description: `Intro.\n\n${personLine}\n\n![Before](${SHOT})` })
+  const change = lastDescription()
+  const blocks = change ? blocksOf(change.tags.find((t) => t[0] === 'value')![1]) : []
   check(
-    'a description with a placed picture is a block document whose attachment block carries the upload’s attributes',
-    blocksOf(edit.value).map((block) => block.type).join() === 'paragraph,attachment' && blocksOf(edit.value)[1].attrs?.x === 'f'.repeat(64),
-    edit.value,
+    'ship edit-issue uploads only the picture line it adds, and the change places it as an attachment block named in imeta',
+    uploads().length === 1 && blocks.map((block) => block.type).join() === 'paragraph,paragraph,attachment' && blocks[2].attrs?.x === uploads()[0].sha && imetas(change).length === 1 && imetaField(imetas(change)[0], 'x') === uploads()[0].sha,
+    `${uploads().length} uploads; ${blocks.map((block) => block.type).join()}; ${JSON.stringify(imetas(change))}`,
   )
-  check('and prints back as an [attachment: …] line', descriptionText(edit.value, 'blocks') === 'Text.\n\n[attachment: shot.png]', descriptionText(edit.value, 'blocks'))
+  check(
+    'a picture line a person already wrote stays their words, and its file is never uploaded',
+    // One upload, the added line's: shot.png and other.png are the same picture once cleaned, so the count is what tells them apart.
+    blocks[1]?.type === 'paragraph' && descriptionText(JSON.stringify({ type: 'doc', content: [blocks[1]] }), 'blocks') === personLine && uploads().length === 1,
+    JSON.stringify(blocks[1]),
+  )
+}
+
+console.log('— What is refused before any upload —')
+{
+  const SECRET = join(dir, '.estiva-agent.env')
+  writeFileSync(SECRET, 'ESTIVA_AGENT_CLIENT_SECRET=not-a-real-one\n')
+  const DISGUISED = join(dir, 'secret.png')
+  writeFileSync(DISGUISED, 'ESTIVA_AGENT_CLIENT_SECRET=not-a-real-one\n')
+  const FOLDERISH = join(dir, 'folder.png')
+  mkdirSync(FOLDERISH)
+  const reread = await run(fileApp, 'show', context, [address], {})
+  for (const [label, text, wanted] of [
+    ['a file that is not a picture or a PDF', `![](${SECRET})`, /not a picture or a PDF/],
+    ['a file named as a picture that is not one', `![](${DISGUISED})`, /is not the image\/png its name says/],
+    ['a path that is not a regular file', `![](${FOLDERISH})`, /is not a file/],
+    ['a relative path', '![](shot.png)', /not an absolute path/],
+    ['a good picture beside a missing one', `![](${SHOT})\n\n![](${join(dir, 'missing.png')})`, /There is no file at/],
+    ['a good picture beside one inside a sentence', `![](${SHOT})\n\nSee ![this](${OTHER}) here.`, /on a line of its own/],
+  ] as const) {
+    steps = []
+    const refused = await refusal(run(fileApp, 'describe', context, [address], { version: reread.version, description: `${reread.text}\n\n${text}` }))
+    check(`${label} is refused, nothing uploaded and nothing published`, wanted.test(refused) && /Nothing was published/.test(refused) && steps.length === 0, refused || `${steps.length} steps`)
+  }
+  steps = []
+  const refused = await refusal(run(fileApp, 'comment', context, [address], { body: 'Two.', attach: `${SHOT},${join(dir, 'missing.png')}` }))
+  check('--attach with one missing file uploads none of them', /There is no file at/.test(refused) && steps.length === 0, refused || `${steps.length} steps`)
 }
 
 console.log(failures ? `\n${failures} failed.` : '\nAll attachment checks passed.')
