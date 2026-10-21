@@ -25,6 +25,10 @@ function check(label: string, condition: boolean, detail = '') {
 }
 
 check('Cursor MCP config is committed', existsSync(configPath))
+if (!existsSync(configPath)) {
+  console.log(`\ncursor: ${failures} failing`)
+  process.exit(1)
+}
 
 const mcp = JSON.parse(readFileSync(configPath, 'utf8'))
 const servers = mcp.mcpServers ?? {}
@@ -66,10 +70,9 @@ const replies = await new Promise<Rpc[]>((resolve) => {
   const child = spawn(server.command, resolvedArgs, {
     cwd: root,
     env: {
-      ...process.env,
+      PATH: process.env.PATH,
       HOME: join(root, '.no-credentials-here'),
       ESTIVA_AGENT_DEV: '1',
-      ESTIVA_AGENT_SOURCE: 'dev',
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
