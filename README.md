@@ -11,9 +11,11 @@ npm run probe:agent          # four hops: token → sign → header → query
 ```
 
 Setting this up for a person is
-[`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md) for Claude Desktop
-and [`docs/claude-code-setup.md`](docs/claude-code-setup.md) for Claude Code —
-including the VS Code and JetBrains extensions, which run the same CLI.
+[`docs/claude-desktop-setup.md`](docs/claude-desktop-setup.md) for Claude Desktop,
+[`docs/claude-code-setup.md`](docs/claude-code-setup.md) for Claude Code (including
+the VS Code and JetBrains extensions, which run the same CLI), and
+[`docs/cursor-setup.md`](docs/cursor-setup.md) for Cursor (MCP via
+`.cursor/mcp.json` — no separate marketplace plugin).
 
 Both install **the same server**. `plugin/server/index.js` is the one built file
 this repository commits, because a Claude Code plugin runs no install step, and

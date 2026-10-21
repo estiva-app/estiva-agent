@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "estiva": {
+      "type": "stdio",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/mcp-server.sh"],
+      "envFile": "${userHome}/.estiva-agent.env"
+    }
+  }
+}
