@@ -153,6 +153,22 @@ heading or a line break in a cell) prints as `| … |` lines, and an
 `[attachment: …]` line likewise — leave those as printed: changing the text
 around one is refused, because text cannot carry it.
 
+**A picture goes in as a line of its own** (d273d4f5): `![alt](/abs/path/shot.png)`
+with a blank line before and after, in any `--description` (`create-*`,
+`edit-*`, `file create`, `file describe`). The file is uploaded to the relay
+first, the way Ship's `/ File` does it (protocol's `uploadBlob`, which strips the
+metadata the relay refuses), and the line becomes an `attachment` block with the
+relay's answers as its attributes and an `imeta` tag naming it. It draws as a
+person's upload does. Read back, it prints as `[attachment: shot.png]`; leave
+that line as printed and the block is kept. A path is relative to the
+command's working directory, so give an absolute one. A URL, a missing file, or
+`![…](…)` inside other text is refused with nothing published. Comments take
+files with `--attach <path>[,<path>…]` (`ship comment`, `file comment`): they
+are uploaded before the comment and named in its `imeta`, as every comment box
+does. Use a picture where it helps a reader see the point: a before/after of a
+UI change, a prototype's screenshot, a diagram. It is not a rule for every
+ticket (Miky, 2026-10-20).
+
 A nested list, a checklist and a callout are text like any other block
 (d98a5636, SPEC §13.3 "A description as text"): an indented item prints two
 spaces a level and is read relative to the item above, a checklist item as

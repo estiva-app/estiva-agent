@@ -13,6 +13,7 @@
  * issue, an issue moved between projects — live in one place, and if this CLI
  * and `ship.estiva.app` disagree, the manifest is what is wrong.
  */
+import { describePlacing, placeFiles, uploadFiles, type PlacedFiles } from '../attachments'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
 import { describe, descriptionText, formatName } from '../descriptions'
@@ -33,7 +34,7 @@ import {
   type Workspace,
 } from './ship-workspace'
 import { randomUUID } from 'node:crypto'
-import { KIND as PROTOCOL_KIND } from '@estiva-app/protocol'
+import { KIND as PROTOCOL_KIND, imetaTag, type Imeta } from '@estiva-app/protocol'
 import { KIND_CHANGE, KIND_COMMENT, KIND_DELETION, KIND_EDIT } from '@estiva-app/conversation'
 import {
   KIND_CHANNEL_METADATA,
@@ -361,8 +362,8 @@ export type ProjectEdit = FieldEdit
  * read from the text, tables included (RIC-20). `lib/agent/descriptions.ts`
  * has the matching rule.
  */
-function descriptionEdit(subject: Pick<Project, 'description' | 'descriptionFormat'>, text: string): FieldEdit {
-  const { value, contentFormat, blocks } = describe(subject.description, subject.descriptionFormat, text)
+function descriptionEdit(subject: Pick<Project, 'description' | 'descriptionFormat'>, text: string, files?: PlacedFiles): FieldEdit {
+  const { value, contentFormat, blocks } = describe(subject.description, subject.descriptionFormat, text, files)
   return {
     field: 'description',
     from: descriptionText(subject.description, subject.descriptionFormat),
@@ -370,6 +371,25 @@ function descriptionEdit(subject: Pick<Project, 'description' | 'descriptionForm
     note: 'Description',
     ...(contentFormat ? { contentFormat, text, blocks } : {}),
   }
+}
+
+/**
+ * The pictures a `--description` places (`![alt](/abs/path/shot.png)` on a
+ * line of its own), uploaded before anything is written (d273d4f5), and only
+ * once the text has been read against the subject's description without
+ * refusal. Undefined when there is no description to place them in.
+ */
+async function filesIn(
+  context: AgentContext,
+  args: ParsedArgs,
+  subject: Pick<Project, 'description' | 'descriptionFormat'>,
+): Promise<PlacedFiles | undefined> {
+  const description = flagValue(args, 'description')
+  if (description === undefined) return undefined
+  return placeFiles(context, description, {
+    previous: descriptionText(subject.description, subject.descriptionFormat),
+    check: (placeholders) => describe(subject.description, subject.descriptionFormat, description, placeholders),
+  })
 }
 
 /** One landed edit as a write reports it: the text asked for, and for a block document what became of its blocks. */
@@ -400,7 +420,7 @@ function appliedEdit(edit: FieldEdit, eventId?: string) {
  * change stream itself, so an edit made here and one made in the app have to
  * read as the same act rather than as two dialects.
  */
-export function projectEdits(project: Project, args: ParsedArgs, self: string, vocab: Vocabulary): FieldEdit[] {
+export function projectEdits(project: Project, args: ParsedArgs, self: string, vocab: Vocabulary, files?: PlacedFiles): FieldEdit[] {
   const edits: FieldEdit[] = []
 
   const title = flagValue(args, 'title')
@@ -410,7 +430,7 @@ export function projectEdits(project: Project, args: ParsedArgs, self: string, v
   }
 
   const description = flagValue(args, 'description')
-  if (description !== undefined) edits.push(descriptionEdit(project, description))
+  if (description !== undefined) edits.push(descriptionEdit(project, description, files))
 
   const summary = flagValue(args, 'summary')
   if (summary !== undefined) edits.push(summaryEdit(project, summary))
@@ -549,7 +569,7 @@ export function assigneeFor(who: string, self: string): string {
   return wanted.toLowerCase()
 }
 
-export function issueEdits(issue: Issue, args: ParsedArgs, projects: Project[]): FieldEdit[] {
+export function issueEdits(issue: Issue, args: ParsedArgs, projects: Project[], files?: PlacedFiles): FieldEdit[] {
   const edits: FieldEdit[] = []
 
   const title = flagValue(args, 'title')
@@ -559,7 +579,7 @@ export function issueEdits(issue: Issue, args: ParsedArgs, projects: Project[]):
   }
 
   const description = flagValue(args, 'description')
-  if (description !== undefined) edits.push(descriptionEdit(issue, description))
+  if (description !== undefined) edits.push(descriptionEdit(issue, description, files))
 
   const summary = flagValue(args, 'summary')
   if (summary !== undefined) edits.push(summaryEdit(issue, summary))
@@ -841,6 +861,8 @@ async function act(
     manifest?: ResolvedManifest
     /** The value's content model, when it is not marker text — only one the action declares is accepted. */
     contentFormat?: string
+    /** Files already on the relay, named by the first event's `imeta` — a comment's attachments, as every comment box sends them. */
+    files?: readonly Imeta[]
   } = {},
 ): Promise<PublishOutcome[]> {
   const resolved = extra.manifest ?? workspace.manifestFor(target.addr)
@@ -871,7 +893,8 @@ async function act(
   }
   const outcomes: PublishOutcome[] = []
   for (const [i, unsigned] of built.entries()) {
-    const event = i === 0 && extra.reason && unsigned.kind === KIND_DELETION ? { ...unsigned, content: extra.reason } : unsigned
+    const withReason = i === 0 && extra.reason && unsigned.kind === KIND_DELETION ? { ...unsigned, content: extra.reason } : unsigned
+    const event = i === 0 && extra.files?.length ? { ...withReason, tags: [...withReason.tags, ...extra.files.map(imetaTag)] } : withReason
     const signed = await context.signer.sign(event)
     const result = await context.relay.publish(signed)
     outcomes.push({ ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id })
@@ -1725,7 +1748,7 @@ export const shipApp: AgentApp = {
       name: 'comment',
       signs: [KIND_COMMENT],
       summary: 'add a comment to one issue',
-      usage: 'comment <ref> --body "..." [--mention <key|npub|handle>[,…]]',
+      usage: 'comment <ref> --body "..." [--mention <key|npub|handle>[,…]] [--attach <path>[,…]]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('comment needs an issue reference.')
@@ -1737,13 +1760,16 @@ export const shipApp: AgentApp = {
         const body = withMentions(text, mentioned)
 
         const { state, issue } = await resolveIssueFor(context, reference)
+        // Uploaded before the comment names them: the relay refuses a comment naming a file it does not hold.
+        const attach = flagValue(args, 'attach')
+        const files = attach === undefined ? [] : await uploadFiles(context, attach)
         /*
           Ship's declared `comment` action: a NIP-22 comment on the issue's
           address, in the issue's own Folder, so it lands where Ship and Peek
           both show the conversation. Each `nostr:npub…` in the body earns its
           `p` in interop, which is what makes it a mention in Peek (§11.8).
         */
-        const [result] = await act(context, state, issueTarget(issue), 'comment', body, [KIND_COMMENT])
+        const [result] = await act(context, state, issueTarget(issue), 'comment', body, [KIND_COMMENT], { files })
         published(result, `a comment on ${issue.ref ?? issue.addr}`)
 
         // The eventId is kept because it is what `edit-comment --message` takes.
@@ -1751,6 +1777,7 @@ export const shipApp: AgentApp = {
           state: await stateAfter(context, state, issue, { comment: body, commentId: result.eventId }),
           eventId: result.eventId,
           ...(mentioned.length > 0 && { mentioned }),
+          ...(files.length > 0 && { attached: files.map((file) => ({ filename: file.filename, url: file.url, x: file.x })) }),
         }
       },
     },
@@ -1938,7 +1965,7 @@ export const shipApp: AgentApp = {
 
         const state = await loadWorkspace(context)
         const issue = findIssue(state.issues, reference)
-        const edits = issueEdits(issue, args, state.projects)
+        const edits = issueEdits(issue, args, state.projects, await filesIn(context, args, issue))
 
         /*
           An issue's changes carry the issue's own Folder — not its project's,
@@ -1998,7 +2025,7 @@ export const shipApp: AgentApp = {
 
         const state = await loadWorkspace(context)
         const project = findProject(state.projects, reference)
-        const edits = projectEdits(project, args, context.signer.pubkey, state.vocab.project)
+        const edits = projectEdits(project, args, context.signer.pubkey, state.vocab.project, await filesIn(context, args, project))
 
         /*
           A change to the project *record* carries the Folder that record
@@ -2310,7 +2337,7 @@ export const shipApp: AgentApp = {
         }
         const id = randomUUID()
         const description = flagValue(args, 'description')
-        const body = description ? describe('', undefined, description) : undefined
+        const body = description ? await describePlacing(context, '', undefined, description) : undefined
         const manifest = state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`)
         // Seeded on the record when the manifest takes it, and then readable by
         // the whole workspace as the project's name is (SPEC §6.12; Miky, 2026-10-15).
@@ -2391,8 +2418,8 @@ export const shipApp: AgentApp = {
         const id = randomUUID()
         // A block document (RIC-20), which Ship's `add-issue` declares for its description.
         const description = flagValue(args, 'description')
-        const body = description ? describe('', undefined, description) : undefined
-        const addr = `${KIND.ISSUE}:${context.signer.pubkey}:${id}`
+        const body = description ? await describePlacing(context, '', undefined, description) : undefined
+        const addr =`${KIND.ISSUE}:${context.signer.pubkey}:${id}`
         const summary = summaryText(flagValue(args, 'summary') ?? '')
         const route = summary ? summaryRoute(state.manifestFor(project.addr)?.manifest, 'add-issue', KIND.ISSUE) : undefined
         if (summary && !route) throw new BadRequest(`Ship's manifest declares no summary for an issue yet, so --summary has nowhere to go. Nothing was published.`)

@@ -12,6 +12,7 @@
  * refused, as `ship`'s `act` refuses one.
  */
 import { buildActionEvent, folderOf, resolveManifest, type QueryFn, type ResolvedManifest } from '@estiva-app/interop'
+import { imetaTag, type Imeta } from '@estiva-app/protocol'
 import { BadRequest, type AgentContext } from './cli'
 
 /** A `d` may itself hold a colon, so everything after the pubkey is the identifier. */
@@ -43,6 +44,8 @@ export async function actOnFile(
   shape?: (tags: string[][], folder: string) => string | undefined,
   /** The value's content model when it is not marker text; only one the action declares is accepted. */
   contentFormat?: string,
+  /** Files already on the relay, named in `imeta` — a comment's attachments, as every comment box sends them. */
+  files: readonly Imeta[] = [],
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
   const query = relayQuery(context)
   const pointer = pointerOf(file.address)
@@ -75,7 +78,7 @@ export async function actOnFile(
   }
   const wrong = shape?.(built.tags, folder)
   if (wrong) throw new BadRequest(`The manifest read for ${file.title} builds "${actionId}" ${wrong}. Nothing was published.`)
-  const signed = await context.signer.sign(built)
+  const signed = await context.signer.sign(files.length ? { ...built, tags: [...built.tags, ...files.map(imetaTag)] } : built)
   const result = await context.relay.publish(signed)
   return { ...result, eventId: result.eventId ?? signed.id }
 }
