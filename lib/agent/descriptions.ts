@@ -285,7 +285,7 @@ function linksOnWordsIn(text: string, rest: { marks?: unknown[] }): [string, { m
   return parts
 }
 
-/** `[words](url)` (groups 1 and 2), or a bare URL that swallows any `[` in it so the scan stays linear — protocol's grammar for both. */
+/** `[words](url)` (groups 1 and 2), or a bare URL that swallows any `[` in it so the scan stays linear — protocol's `LINK_ON_WORDS`, which it does not export. */
 const LINK_OR_URL = /(\[[^[\]\n]+\]\(((?:https?:\/\/|mailto:)[^\s)]+)\))|(?:https?:\/\/|mailto:)[^\s)]+/g
 
 /** A line for a block text cannot carry — readable, and unique enough to be matched when it comes back unchanged. */

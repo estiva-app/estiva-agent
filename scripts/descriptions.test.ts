@@ -409,6 +409,16 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
     added = String(error)
   }
   check('a list holding a link written as words can still take a new item, its old items kept', added.startsWith('{') && JSON.stringify(blocksOf(added)[0].content).includes('"id":"i1"') && (blocksOf(added)[0].content as object[]).length === 3, added.slice(0, 300))
+
+  // The same with one character after the link, the way a sentence ends.
+  const oldStop = JSON.stringify({ type: 'doc', content: [{ type: 'bulletList', id: 'b2', content: [item('j1', text('PR: [estiva-agent#91](https://github.com/estiva-app/estiva-agent/pull/91).')), item('j2', text('Kickoff done.'))] }] })
+  let addedStop = ''
+  try {
+    addedStop = editBlockDocument(oldStop, `${descriptionText(oldStop, 'blocks')}\n- Merged.`).value
+  } catch (error) {
+    addedStop = String(error)
+  }
+  check('…and when a full stop follows the link, that item is kept as it was', addedStop.startsWith('{') && JSON.stringify((blocksOf(addedStop)[0].content as object[])[0]) === JSON.stringify(item('j1', text('PR: [estiva-agent#91](https://github.com/estiva-app/estiva-agent/pull/91).'))), addedStop.slice(0, 300))
 }
 
 if (failures) {

@@ -182,7 +182,7 @@ function detachedBy(conversations: Conversation[], before: { value: string; form
   })
 }
 
-/** A Folder by name or id, among every Folder this key can read, as Leaf's tree lists them. */
+/** A Folder by name or id, among every Folder record this key can read — archived and nested ones included, so a shared name is refused as ambiguous. */
 function findFolder(folders: FolderRecord[], reference: string): FolderRecord {
   return resolveOne(folders, reference, {
     noun: 'Folder',
