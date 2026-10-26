@@ -61,6 +61,9 @@ import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../sum
 /** A listing names nobody, so it asks the relay for nobody's profile. */
 const noPeople: PeopleFn = async () => ({})
 
+/** What Peek's tree draws in a Folder: topics, and the Folders it descends into. */
+const TOPIC_TREE_KINDS = [KIND_BARE_FILE, KIND_CHANNEL_METADATA]
+
 export interface Topic {
   /** `30840:<pubkey>:<d>` — what its comments carry as `a`. */
   address: string
@@ -88,16 +91,20 @@ export interface Topic {
  * those cost ~150 requests per listing against a key metered at 300 a minute,
  * and Peek draws a project as its issues, not as a Folder of topics.
  * Sequential through one cache so the manifest discovery warms once.
+ *
+ * Only topics and Folders are read, and no record's channel: every other file
+ * comes with its whole change history, and Peek's tree on production took
+ * 3 min 19 s that way, past the MCP client's 60 s (43e9a775).
  */
 async function loadTopics(context: AgentContext, cache: ProjectionCache, folderRef?: string): Promise<Topic[]> {
   const query = relayQuery(context)
-  const all = await listFolders(query)
+  const all = await listFolders(query, { recordChannels: false })
   const queue = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all)
   const byId = new Map(all.map((folder) => [folder.id, folder]))
   const visited = new Set(queue.map((folder) => folder.id))
   const topics = new Map<string, Topic>()
   for (let folder = queue.shift(); folder; folder = queue.shift()) {
-    const content = await resolveFolderContents(folder.id, query, noPeople, cache)
+    const content = await resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS })
     for (const file of content.files) {
       if (!file.address) continue
       if (file.kind === KIND_CHANNEL_METADATA) {
@@ -443,7 +450,7 @@ export const peekApp: AgentApp = {
         // Folder that exists but no drawn Folder lists would take the topic
         // somewhere nobody can reach — this ticket's bug again.
         const query = relayQuery(context)
-        const folder = findFolder(topLevelFolders(await listFolders(query)), folderRef)
+        const folder = findFolder(topLevelFolders(await listFolders(query, { recordChannels: false })), folderRef)
 
         /*
           The Folder's built-in `create-file` (SPEC §3.2), as Peek's launcher

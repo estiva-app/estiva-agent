@@ -20956,7 +20956,7 @@ async function walkArchivedAbove(starts, query, cache) {
     walking = next;
   }
 }
-var ARCHIVE_READ_GROUP = 25;
+var ARCHIVE_READ_GROUP = 10;
 var PARENT_ROOT_GROUP = 100;
 function archiveFilters(addresses, rules = [ARCHIVE_RULE], groupSize = ARCHIVE_READ_GROUP) {
   const shapes = new Map(rules.map((rule) => [`${rule.changeKind}:${rule.targetTag}`, rule]));
@@ -21607,7 +21607,7 @@ function folderArchiveOf(changes, folder) {
 function topLevelFolders(folders) {
   return folders.filter((folder) => folder.hasState && !folder.listedIn?.length && !folder.archived);
 }
-async function listFolders(query) {
+async function listFolders(query, options = {}) {
   const { events, byId } = await readFolderRecords(query);
   const listedIn = /* @__PURE__ */ new Map();
   for (const event of events) {
@@ -21628,7 +21628,11 @@ async function listFolders(query) {
       listedIn.set(identifier, containers);
     }
   }
-  const { recordsOf, archives, rootOf: rootOf2 } = await placeRecordChannels(events, byId, listedIn, query);
+  const { recordsOf, archives, rootOf: rootOf2 } = options.recordChannels === false ? {
+    recordsOf: /* @__PURE__ */ new Map(),
+    archives: await readArchiveChanges([...byId.values()].flatMap((folder) => folder.channel ? [folder.channel] : []), query),
+    rootOf: /* @__PURE__ */ new Map()
+  } : await placeRecordChannels(events, byId, listedIn, query);
   for (const [id, containers] of listedIn) {
     const folder = byId.get(id);
     if (folder)
@@ -21800,7 +21804,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
     ...channelAddress ? { channel: channelAddress } : {},
     ...state ? { address: pointerToAddress({ kind: state.kind, pubkey: state.pubkey, identifier: folder, relays: [] }) } : {}
   };
-  const { addresses, placed } = state ? (
+  const { addresses: everyAddress, placed } = state ? (
     // §5.2: one tag type lists every file, topics included, with no special
     //  case. The order is the folder's, so it is preserved rather than sorted.
     {
@@ -21808,6 +21812,8 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
       placed: /* @__PURE__ */ new Map()
     }
   ) : options.listedOnly ? { addresses: [], placed: /* @__PURE__ */ new Map() } : await addressesByContainment(folder, query);
+  const { kinds } = options;
+  const addresses = kinds ? everyAddress.filter((address) => kinds.includes(addressPointerOf(address)?.kind ?? NaN)) : everyAddress;
   if (addresses.length === 0) {
     const archived = channelAddress ? folderArchiveOf(await readArchiveChanges([channelAddress], query), summary) : void 0;
     return { ...summary, ...archived ? { archived } : {}, files: [], source: state ? "state" : "channel" };
@@ -21844,22 +21850,21 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
     ])
   ];
   const nestedFolderIds = pointers.filter(({ pointer }) => pointer.kind === KIND_CHANNEL).map(({ pointer }) => pointer.identifier);
-  const events = await query([
+  const otherChangeKinds = changeKinds.filter((kind) => kind !== ARCHIVE_RULE.changeKind);
+  const events = await queryChunked([
     ...[...groups.values()].map(({ pointer, addresses: group }) => ({
       kinds: [pointer.kind],
       authors: [pointer.pubkey],
       "#d": group.map((a) => referenceToPointer(a).identifier),
       limit: group.length
     })),
-    { kinds: changeKinds, "#a": addresses, limit: 500 },
-    // The archives again, in groups small enough that a busy Folder's other
-    // changes cannot push them off the page — the filter above holds 500
-    // changes for every file together, and one Folder has already had 688.
-    // Same request.
+    ...otherChangeKinds.length ? [{ kinds: otherChangeKinds, "#a": addresses, limit: 500 }] : [],
+    // Every change, in groups small enough that a busy Folder's changes cannot
+    // push one file's off the page — one Folder has already had 688. Same request.
     ...archiveFilters(channelAddress ? [...addresses, channelAddress] : addresses),
     // A Folder listed here counts its archive only from its own admins (§3.2). Same request.
     ...nestedFolderIds.length ? [{ kinds: [KIND_CHANNEL_ADMINS], "#d": nestedFolderIds, limit: nestedFolderIds.length }] : []
-  ]);
+  ], query);
   const ownArchive = folderArchiveOf(events, summary);
   if (ownArchive)
     summary.archived = ownArchive;
@@ -24314,15 +24319,16 @@ Pass an address to say which.`
 
 // lib/agent/apps/peek.ts
 var noPeople2 = async () => ({});
+var TOPIC_TREE_KINDS = [KIND_BARE_FILE, KIND_CHANNEL_METADATA];
 async function loadTopics(context2, cache, folderRef) {
   const query = relayQuery(context2);
-  const all = await listFolders(query);
+  const all = await listFolders(query, { recordChannels: false });
   const queue = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all);
   const byId = new Map(all.map((folder) => [folder.id, folder]));
   const visited = new Set(queue.map((folder) => folder.id));
   const topics = /* @__PURE__ */ new Map();
   for (let folder = queue.shift(); folder; folder = queue.shift()) {
-    const content = await resolveFolderContents(folder.id, query, noPeople2, cache);
+    const content = await resolveFolderContents(folder.id, query, noPeople2, cache, { kinds: TOPIC_TREE_KINDS });
     for (const file of content.files) {
       if (!file.address) continue;
       if (file.kind === KIND_CHANNEL_METADATA) {
@@ -24573,7 +24579,7 @@ var peekApp = {
         if (!title) throw new BadRequest("create-topic needs --title.");
         const summary = summaryText(flagValue(args2, "summary") ?? "");
         const query = relayQuery(context2);
-        const folder = findFolder(topLevelFolders(await listFolders(query)), folderRef);
+        const folder = findFolder(topLevelFolders(await listFolders(query, { recordChannels: false })), folderRef);
         const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`;
         const pointer = pointerOf(channel);
         const creator = await resolveActingManifest(pointer, FOLDER_ACTIONS_ADDRESS, query);

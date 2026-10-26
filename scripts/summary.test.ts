@@ -211,6 +211,26 @@ console.log('\n— Peek —')
   const listed = (await run(peekApp, 'topics', context, [], {})) as { topics: { title: string; summary?: string }[] }
   check('peek topics lists a topic’s summary', listed.topics[0]?.summary === 'What we call the launch.', JSON.stringify(listed.topics[0]))
 }
+{
+  // A project listed beside the topic: its changes are what made the listing
+  // take 3 min 19 s on production and time out over MCP (43e9a775).
+  const { context } = relay([
+    event(39000, [['d', FOLDER], ['name', 'HQ']], '', RELAY_KEY),
+    event(30890, [['d', FOLDER], ['a', `30840:${SELF}:t1`], ['a', PROJECT]], '', RELAY_KEY),
+    event(30840, [['d', 't1'], ['title', 'Launch'], ['h', FOLDER]]),
+    event(30850, [['d', 'p1'], ['name', 'Summaries'], ['buzz-channel', FOLDER]]),
+    event(1851, [['a', PROJECT], ['field', 'description'], ['value', 'A long description'], ['h', FOLDER]]),
+  ])
+  const named: string[] = []
+  const queryAll = context.relay.queryAll
+  context.relay.queryAll = (async (filters: Record<string, unknown>[]) => {
+    for (const filter of filters) for (const [key, values] of Object.entries(filter)) if (key.startsWith('#')) named.push(...(values as string[]))
+    return queryAll(filters as never)
+  }) as typeof queryAll
+  const listed = (await run(peekApp, 'topics', context, [], {})) as { topics: { title: string }[] }
+  check('peek topics lists the topic beside a project', listed.topics.map((t) => t.title).join() === 'Launch', JSON.stringify(listed.topics))
+  check('peek topics never asks for a project’s changes', !named.includes(PROJECT), named.join(' '))
+}
 for (const claimed of [false, true]) {
   const { context, published } = peek(claimed)
   const when = claimed ? ' (Peek’s old k 39000 claim still published)' : ''
