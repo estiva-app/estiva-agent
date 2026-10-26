@@ -17,7 +17,8 @@ import { describePlacing, placeFiles, uploadFiles, type PlacedFiles } from '../a
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
 import { describe, descriptionText, formatName } from '../descriptions'
-import { mentionedKeys, relayMembers, withMentions } from '../mentions'
+import { printedLinks } from '../links'
+import { askedToMention, fileText, mentionAdds, mentionedKeys, publishMentionAdds, relayMembers, withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
 import { SUMMARY_LENGTH, summaryRoute, summaryText, summaryWarning } from '../summary'
@@ -371,6 +372,39 @@ function descriptionEdit(subject: Pick<Project, 'description' | 'descriptionForm
     note: 'Description',
     ...(contentFormat ? { contentFormat, text, blocks } : {}),
   }
+}
+
+/** The people `--mention` names for a `--description`, resolved before anything is read; refused without one. */
+async function descriptionMentions(context: AgentContext, args: ParsedArgs): Promise<string[]> {
+  const mention = flagValue(args, 'mention')
+  if (mention !== undefined && flagValue(args, 'description') === undefined) {
+    throw new BadRequest('--mention goes with --description: it names the people the new text mentions. Nothing was published.')
+  }
+  return askedToMention(context, mention)
+}
+
+/**
+ * The Adds a description edit writes beside itself (SPEC §11.8, WBD-9): one
+ * per person the new text names and the one it replaces did not. Built before
+ * anything is published, so a mention `--mention` does not name is refused
+ * with nothing written.
+ */
+function addsFor(
+  context: AgentContext,
+  target: { addr: string; folder: string },
+  subject: Pick<Project, 'description' | 'descriptionFormat'> | undefined,
+  edits: readonly FieldEdit[],
+  asked: readonly string[],
+) {
+  const edit = edits.find((candidate) => candidate.field === 'description')
+  if (!edit) return []
+  return mentionAdds(context.signer.pubkey, {
+    file: target.addr,
+    folder: target.folder,
+    saved: fileText(edit.value, edit.contentFormat),
+    editedFrom: subject ? fileText(subject.description, subject.descriptionFormat) : null,
+    asked,
+  })
 }
 
 /**
@@ -1230,6 +1264,16 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
   }
 }
 
+/**
+ * How each link in a description draws, beside the text `show` prints (WBD-9):
+ * the text gives a card no spelling and a link on words prints as its words.
+ * Titled from the workspace already read.
+ */
+function descriptionLinks(context: AgentContext, state: Workspace, subject: Pick<Project, 'description' | 'descriptionFormat'>) {
+  const titles = new Map<string, string>([...state.issues, ...state.projects].map((file) => [file.addr, file.title]))
+  return printedLinks(context, subject.description, subject.descriptionFormat, (value) => titles.get(value))
+}
+
 async function showProject(context: AgentContext, state: Workspace, project: Project) {
   const issues = state.issues.filter((issue) => issue.projectAddr === project.addr)
   const { directory, history, conversation } = await timelineFor(context, state, project.addr, [
@@ -1252,6 +1296,7 @@ async function showProject(context: AgentContext, state: Workspace, project: Pro
     archived: archiveSummary(directory, project.archive),
     description: descriptionText(project.description, project.descriptionFormat),
     descriptionFormat: formatName(project.descriptionFormat),
+    links: await descriptionLinks(context, state, project),
     createdAt: new Date(project.createdAt * 1000).toISOString(),
     folder: project.contentFolder,
     issues: issues.map((issue) => issueSummary(issue, directory, state.vocab.issue)),
@@ -1676,6 +1721,8 @@ export const shipApp: AgentApp = {
           */
           description: descriptionText(issue.description, issue.descriptionFormat),
           descriptionFormat: formatName(issue.descriptionFormat),
+          // How each link in it draws — chip, row, card or a link on words — which the text cannot say (WBD-9).
+          links: await descriptionLinks(context, state, issue),
           createdAt: new Date(issue.createdAt * 1000).toISOString(),
           folder: issue.folder,
           /*
@@ -1958,10 +2005,11 @@ export const shipApp: AgentApp = {
       name: 'edit-issue',
       signs: [KIND_CHANGE],
       summary: 'change an issue’s title, summary, description, or which project it is in',
-      usage: 'edit-issue <ref> [--title "..."] [--summary "..."] [--description "..."] [--project <ref|none>]',
+      usage: 'edit-issue <ref> [--title "..."] [--summary "..."] [--description "..."] [--mention <key|npub|handle>[,…]] [--project <ref|none>]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('edit-issue needs an issue reference.')
+        const asked = await descriptionMentions(context, args)
 
         const state = await loadWorkspace(context)
         const issue = findIssue(state.issues, reference)
@@ -1981,6 +2029,8 @@ export const shipApp: AgentApp = {
           )
         }
 
+        const adds = addsFor(context, { addr: issue.addr, folder }, issue, edits, asked)
+
         const applied: ReturnType<typeof appliedEdit>[] = []
         for (const edit of edits) {
           const result = await setField(context, state, { addr: issue.addr, author: issue.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat)
@@ -1992,6 +2042,7 @@ export const shipApp: AgentApp = {
           }
           applied.push(appliedEdit(edit, result.eventId))
         }
+        const mentioned = await publishMentionAdds(context, adds, `The description of ${issue.ref ?? issue.addr}`)
 
         /*
           A move re-parents the issue and moves nothing else. The issue event's
@@ -2010,6 +2061,7 @@ export const shipApp: AgentApp = {
         return {
           changed: { ref: issue.ref, addr: issue.addr, title: issue.title, folder },
           applied,
+          ...(mentioned.length ? { mentioned } : {}),
           ...(conversationStaysBehind ? { note: conversationStaysBehind } : {}),
         }
       },
@@ -2018,10 +2070,11 @@ export const shipApp: AgentApp = {
       name: 'edit-project',
       signs: [KIND_CHANGE],
       summary: 'change a project’s title, summary, description, status or lead',
-      usage: 'edit-project <ref> [--title "..."] [--summary "..."] [--description "..."] [--status <s>] [--lead <key|me|none>]',
+      usage: 'edit-project <ref> [--title "..."] [--summary "..."] [--description "..."] [--mention <key|npub|handle>[,…]] [--status <s>] [--lead <key|me|none>]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('edit-project needs a project reference.')
+        const asked = await descriptionMentions(context, args)
 
         const state = await loadWorkspace(context)
         const project = findProject(state.projects, reference)
@@ -2066,6 +2119,7 @@ export const shipApp: AgentApp = {
           answer names the ones that landed rather than reporting the whole call
           as failed and leaving a person guessing about half of it.
         */
+        const adds = addsFor(context, { addr: project.addr, folder }, project, edits, asked)
         const applied: ReturnType<typeof appliedEdit>[] = []
         for (const edit of edits) {
           const result = await setField(context, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat)
@@ -2077,8 +2131,9 @@ export const shipApp: AgentApp = {
           }
           applied.push(appliedEdit(edit, result.eventId))
         }
+        const mentioned = await publishMentionAdds(context, adds, `The description of “${project.title}”`)
 
-        return { changed: { title: project.title, addr: project.addr, folder }, applied }
+        return { changed: { title: project.title, addr: project.addr, folder }, applied, ...(mentioned.length ? { mentioned } : {}) }
       },
     },
     {
@@ -2307,7 +2362,7 @@ export const shipApp: AgentApp = {
       */
       signs: [KIND.PROJECT, PROTOCOL_KIND.FOLDER_COMMAND, KIND_CHANGE],
       summary: 'start a new project in a team',
-      usage: 'create-project --team <name|folder> --title "..." [--summary "..."] [--description "..."] [--key ABC]',
+      usage: 'create-project --team <name|folder> --title "..." [--summary "..."] [--description "..."] [--mention <key|npub|handle>[,…]] [--key ABC]',
       async run(context, args) {
         const title = flagValue(args, 'title')
         if (!title) throw new BadRequest('create-project needs --title.')
@@ -2315,6 +2370,7 @@ export const shipApp: AgentApp = {
         if (!reference) throw new BadRequest('create-project needs --team: the team the project is filed into.')
         const key = flagValue(args, 'key')
         if (key !== undefined && !/^[A-Z]{3,6}$/.test(key)) throw new BadRequest('--key is 3–6 capital letters A to Z, the prefix of the project\'s refs.')
+        const asked = await descriptionMentions(context, args)
 
         // Resolved against the Folders that have state, so `hasState` is the read's answer.
         const team = await resolveTeam(context, reference)
@@ -2338,6 +2394,9 @@ export const shipApp: AgentApp = {
         const id = randomUUID()
         const description = flagValue(args, 'description')
         const body = description ? await describePlacing(context, '', undefined, description) : undefined
+        const adds = body
+          ? mentionAdds(context.signer.pubkey, { file: `${KIND.PROJECT}:${context.signer.pubkey}:${id}`, folder: team.id, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked })
+          : []
         const manifest = state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`)
         // Seeded on the record when the manifest takes it, and then readable by
         // the whole workspace as the project's name is (SPEC §6.12; Miky, 2026-10-15).
@@ -2369,10 +2428,12 @@ export const shipApp: AgentApp = {
             ? await setField(context, state, { addr: created.addr, author: context.signer.pubkey, folder: team.id }, 'summary', summary, 'Summary')
             : undefined
         if (summarized) published(summarized, `the summary of "${title}" — the project itself was created, ${created.addr}, without one`)
+        const mentioned = await publishMentionAdds(context, adds, `The project "${title}" (${created.addr})`)
 
         return {
           created: { title, ...(summary ? { summary } : {}), ...(key ? { key } : {}), addr: created.addr, team: { id: team.id, name: team.name } },
           eventId: created.result.eventId,
+          ...(mentioned.length ? { mentioned } : {}),
           ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
           /*
             Apart from the record, as Ship reports it: a refused listing is a
@@ -2391,12 +2452,13 @@ export const shipApp: AgentApp = {
       // The change only when a manifest takes no summary on the record (`summaryRoute`).
       signs: [KIND.ISSUE, KIND_CHANGE],
       summary: 'file one new issue in a project',
-      usage: 'create-issue --project <ref> --title "..." [--summary "..."] [--description "..."]',
+      usage: 'create-issue --project <ref> --title "..." [--summary "..."] [--description "..."] [--mention <key|npub|handle>[,…]]',
       async run(context, args) {
         const projectRef = flagValue(args, 'project')
         const title = flagValue(args, 'title')
         if (!projectRef) throw new BadRequest('create-issue needs --project.')
         if (!title) throw new BadRequest('create-issue needs --title.')
+        const asked = await descriptionMentions(context, args)
 
         const state = await loadWorkspace(context)
         const project = findProject(state.projects, projectRef)
@@ -2420,6 +2482,8 @@ export const shipApp: AgentApp = {
         const description = flagValue(args, 'description')
         const body = description ? await describePlacing(context, '', undefined, description) : undefined
         const addr =`${KIND.ISSUE}:${context.signer.pubkey}:${id}`
+        // A mention in the new text adds the person beside it (§11.8); built now, so a refusal publishes nothing.
+        const adds = body ? mentionAdds(context.signer.pubkey, { file: addr, folder, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : []
         const summary = summaryText(flagValue(args, 'summary') ?? '')
         const route = summary ? summaryRoute(state.manifestFor(project.addr)?.manifest, 'add-issue', KIND.ISSUE) : undefined
         if (summary && !route) throw new BadRequest(`Ship's manifest declares no summary for an issue yet, so --summary has nowhere to go. Nothing was published.`)
@@ -2439,6 +2503,7 @@ export const shipApp: AgentApp = {
             ? await setField(context, state, { addr, author: context.signer.pubkey, folder }, 'summary', summary, 'Summary')
             : undefined
         if (summarized) published(summarized, `the summary of "${title}" — the issue itself was created, ${addr}, without one`)
+        const mentioned = await publishMentionAdds(context, adds, `The issue "${title}" (${addr})`)
 
         // The same line every other write echoes, so the short id the next
         // command needs is on screen without a `show` (MAK-2).
@@ -2446,6 +2511,7 @@ export const shipApp: AgentApp = {
           state: issueLine({ ref: NO_REF, id: created.id, status: state.vocab.issue.fallback, comments: [] }, undefined),
           created: { short: short(created.id), addr: created.addr, title, ...(summary ? { summary } : {}), project: project.title },
           eventId: created.result.eventId,
+          ...(mentioned.length ? { mentioned } : {}),
           ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
         }
       },

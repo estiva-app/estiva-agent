@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { blockRunTag, calloutTone, listItemChecked, parseBlockDocument, type Block, type SignedEvent } from '@estiva-app/protocol'
+import { addrToNaddr, blockRunTag, calloutTone, encodeNpub, listItemChecked, parseBlockDocument, type Block, type SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
 import { fileApp } from '../lib/agent/apps/file'
 import { describe as describeText } from '../lib/agent/descriptions'
@@ -28,7 +28,8 @@ function check(label: string, condition: boolean, detail = '') {
 const SELF = 'a'.repeat(64)
 const RELAY_KEY = 'b'.repeat(64)
 const QA2 = 'c'.repeat(64)
-const FOLDER = '11111111-2222-3333-4444-555555555555'
+// A UUID v4, as every Folder id is: a membership change refuses any other (§11.8).
+const FOLDER = '11111111-2222-4333-8444-555555555555'
 const BARE = '99999999-2222-3333-4444-555555555555'
 const tag = (event: SignedEvent | undefined, name: string) => event?.tags.find((t) => t[0] === name)?.[1]
 const tags = (event: SignedEvent | undefined, name: string) => event?.tags.filter((t) => t[0] === name).map((t) => t[1]) ?? []
@@ -246,6 +247,82 @@ console.log('\n— Replying —')
   await run('comment', context, [created!.address], { body: 'A new thread.' })
   const top = published[0]
   check('file comment without --reply starts a thread on the whole document', top?.kind === 1111 && tag(top, 'a') === created!.address && tag(top, 'block') === undefined && tag(top, 'e') === undefined, JSON.stringify(top?.tags))
+}
+
+console.log('\n— A mention in the text adds the person (WBD-9) —')
+const QA2_NPUB = encodeNpub(QA2)
+/** The membership change that adds `person` to `file`, as the Add button writes it (§11.8). */
+const addOf = (published: SignedEvent[], person: string) =>
+  published.find((e) => e.kind === 1851 && tag(e, 'field') === `member:${person}` && tag(e, 'value') === 'true')
+{
+  const { context, published } = fixture()
+  const before = await run('show', context, [created!.address], {})
+  const out = await run('describe', context, [created!.address], { version: before.version, description: `${TEXT}\n\nAsk nostr:${QA2_NPUB} about it.`, mention: QA2_NPUB })
+  const [save] = published
+  const add = addOf(published, QA2)
+  check(
+    'file describe naming QA-2 anew writes the save, then the Add for QA-2 in the file’s Folder',
+    published.length === 2 && tag(save, 'field') === 'description' && tag(add, 'a') === created!.address && tag(add, 'h') === FOLDER && tag(add, 'p') === QA2 && add?.pubkey === SELF,
+    JSON.stringify(published.map((e) => e.tags)),
+  )
+  check('…the save itself tags nobody it names', !tags(save, 'p').includes(QA2), JSON.stringify(save?.tags))
+  check('…and says who was added', out.mentioned?.[0]?.added === `nostr:${QA2_NPUB}`, JSON.stringify(out.mentioned))
+
+  // A typo fix in a text that still names QA-2: no Add, so someone who left stays out.
+  const again = await run('show', context, [created!.address], {})
+  published.length = 0
+  const typo = await run('describe', context, [created!.address], { version: again.version, description: again.text.replace('Why we are', 'Why we’re') })
+  check('a later save that still names QA-2 writes only the save, no Add', published.length === 1 && !addOf(published, QA2) && typo.mentioned === undefined, `${published.length} published`)
+}
+{
+  const { context, published } = fixture()
+  const before = await run('show', context, [created!.address], {})
+  const refused = await refusal(run('describe', context, [created!.address], { version: before.version, description: `${TEXT}\n\nAsk nostr:${QA2_NPUB}.` }))
+  check(
+    'a mention --mention does not name is refused with nothing published — an npub copied from somebody’s text adds nobody',
+    published.length === 0 && /--mention does not name/.test(refused),
+    refused || `${published.length} published`,
+  )
+  const absent = await refusal(run('describe', context, [created!.address], { version: before.version, description: `${TEXT}\n\nNobody named.`, mention: QA2_NPUB }))
+  check('…and so is a --mention the text does not name', published.length === 0 && /does not mention/.test(absent), absent || `${published.length} published`)
+}
+{
+  const { context, published } = workspace()
+  await run('create', context, [], { folder: 'QA', type: 'document', title: 'Mentioning', description: `For nostr:${QA2_NPUB}.`, mention: QA2_NPUB })
+  const root = published[0]
+  const add = addOf(published, QA2)
+  check('file create whose text names QA-2 adds QA-2 to the new file', tag(add, 'a') === `30842:${SELF}:${tag(root, 'd')}` && tag(add, 'h') === FOLDER, JSON.stringify(published.map((e) => e.kind)))
+}
+
+console.log('\n— How each link draws (WBD-9) —')
+{
+  // Leaf's page, read the way Ship's and Leaf's editors save one: a chip, a row, a card, a link on words, and an app URL alone.
+  const target = created!.address
+  const naddr = `nostr:${addrToNaddr(target)}`
+  const reference = (embed?: string) => ({ type: 'text', text: naddr, marks: [{ type: 'reference', attrs: { uri: naddr, ...(embed ? { embed } : {}) } }] })
+  const paragraph = (id: string, content: unknown[]) => ({ type: 'paragraph', id, content })
+  const url = `https://leaf.estiva.app/document/shaping-${target.split(':')[2]}`
+  const doc = {
+    type: 'doc',
+    content: [
+      paragraph('p1', [{ type: 'text', text: 'See ' }, reference(), { type: 'text', text: ' first.' }]),
+      paragraph('p2', [reference()]),
+      paragraph('p3', [reference('detailed')]),
+      paragraph('p4', [{ type: 'text', text: 'Read ' }, { type: 'text', text: 'the plan', marks: [{ type: 'link', attrs: { href: url } }] }, { type: 'text', text: '.' }]),
+      paragraph('p5', [{ type: 'text', text: url }]),
+    ],
+  }
+  const page = event(30842, [['d', 'links-page'], ['title', 'Links'], ['h', FOLDER]])
+  const text = event(1851, [['a', `30842:${SELF}:links-page`], ['field', 'description'], ['value', JSON.stringify(doc)], ['content-format', 'estiva-blocks-1'], ['h', FOLDER]])
+  const { context } = relay([...created!.events, page, text])
+  const out = await run('show', context, [`30842:${SELF}:links-page`], {})
+  const drawn = (out.links ?? []).map((link: Record<string, string>) => `${link.draws}:${link.to === target ? 'page' : link.to}${link.words ? `:${link.words}` : ''}`)
+  check(
+    'file show lists each link as it draws: chip in a sentence, row alone, card when chosen, a link on words, an app URL alone as its row',
+    JSON.stringify(drawn) === JSON.stringify(['chip:page', 'row:page', 'card:page', `link:${url}:the plan`, 'row:page']),
+    JSON.stringify(drawn),
+  )
+  check('…and the text it prints is unchanged, so describe takes it back as before', out.text.split('\n\n').length === 5, JSON.stringify(out.text))
 }
 
 console.log(failures ? `\n${failures} failed.` : '\nAll file checks passed.')

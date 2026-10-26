@@ -43,12 +43,13 @@ import {
   type ContentFormat,
 } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
-import { actOnFile, pointerOf, published, relayQuery } from '../act-on-file'
+import { actOnFile, folderOfFile, pointerOf, published, relayQuery } from '../act-on-file'
 import { describePlacing, uploadFiles } from '../attachments'
 import { BadRequest, flagValue, refuseUnsignable, type AgentApp, type AgentContext } from '../cli'
 import { edited, findThread, readConversation, replyToOf, type Conversation } from '../conversation'
 import { descriptionText, formatName } from '../descriptions'
-import { mentionedKeys, relayMembers, withMentions } from '../mentions'
+import { printedLinks } from '../links'
+import { askedToMention, fileText, mentionAdds, mentionedKeys, publishMentionAdds, relayMembers, withMentions } from '../mentions'
 import { profilesOf } from '../profiles'
 import { resolveOne } from '../resolve'
 import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../summary'
@@ -239,7 +240,7 @@ export const fileApp: AgentApp = {
       // The file's own kind is the manifest's, so it is checked once the action is built.
       signs: [KIND.FOLDER_COMMAND],
       summary: 'start a file of any app’s type in a Folder — a Leaf document included',
-      usage: 'create --folder <name|id> --type <noun> --title "..." [--summary "..."] [--description "..."]',
+      usage: 'create --folder <name|id> --type <noun> --title "..." [--summary "..."] [--description "..."] [--mention <key|npub|handle>[,…]]',
       async run(context, args) {
         const folderRef = flagValue(args, 'folder')
         if (!folderRef) throw new BadRequest('create needs --folder: the Folder the file goes in.')
@@ -249,6 +250,10 @@ export const fileApp: AgentApp = {
         if (!title) throw new BadRequest('create needs --title.')
         const summary = summaryText(flagValue(args, 'summary') ?? '')
         const description = flagValue(args, 'description')
+        if (flagValue(args, 'mention') !== undefined && description === undefined) {
+          throw new BadRequest('--mention goes with --description: it names the people the new text mentions. Nothing was published.')
+        }
+        const asked = await askedToMention(context, flagValue(args, 'mention'))
 
         const query = relayQuery(context)
         const folder = findFolder(await listFolders(query), folderRef)
@@ -268,6 +273,8 @@ export const fileApp: AgentApp = {
         if (summary && !route) throw new BadRequest(`A ${type} takes no summary yet, so --summary has nowhere to go. Nothing was published.`)
         if (description && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`)
         const body = description ? await describePlacing(context, '', undefined, description) : undefined
+        // A mention in the new text adds the person beside it (§11.8); built now, so a refusal publishes nothing.
+        const adds = body ? mentionAdds(context.signer.pubkey, { file: address, folder: folder.id, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : []
 
         const built = buildActionEvents({
           manifest: creator,
@@ -310,12 +317,14 @@ export const fileApp: AgentApp = {
           const result = await actOnFile(context, named, describeAction, body.value, KIND_CHANGE, undefined, changeShape(address, 'description', body.value, formatTag(body.contentFormat)), body.contentFormat)
           published(result, `the text of "${title}" — the file itself was created, ${address}, without it`)
         }
+        const mentioned = await publishMentionAdds(context, adds, `The text of "${title}" (${address})`)
 
         const file = await resolveForeignObject(addrToNaddr(address), query, async () => ({}))
         return {
           created: { title, type, address, folder: folder.name ?? folder.id, ...(summary ? { summary } : {}), url: file?.openUrl },
           eventId: signed.id,
           ...(body?.blocks ? { blocks: body.blocks.added } : {}),
+          ...(mentioned.length ? { mentioned } : {}),
           ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
         }
       },
@@ -342,6 +351,8 @@ export const fileApp: AgentApp = {
           format: formatName(text.format),
           version: versionOf(text),
           text: descriptionText(text.value, text.format),
+          // How each link in it draws — chip, row, card or a link on words — which the text cannot say (WBD-9).
+          links: await printedLinks(context, text.value, text.format),
           comments: await printedComments(context, file, address, cache, text),
         }
       },
@@ -350,13 +361,14 @@ export const fileApp: AgentApp = {
       name: 'describe',
       signs: [KIND_CHANGE],
       summary: 'change a file’s text by its address, keeping every block the new text leaves unchanged',
-      usage: 'describe <kind:pubkey:d> --version <from show> --description "..."',
+      usage: 'describe <kind:pubkey:d> --version <from show> --description "..." [--mention <key|npub|handle>[,…]]',
       async run(context, args) {
         const address = addressArg(args, 'describe')
         const version = flagValue(args, 'version')
         if (!version) throw new BadRequest('describe needs --version, as `file show` printed it, so a change saved since you read the text is not overwritten.')
         const text = flagValue(args, 'description')
         if (text === undefined) throw new BadRequest('describe needs --description: the whole text, as `file show` printed it, with your change.')
+        const asked = await askedToMention(context, flagValue(args, 'mention'))
 
         // Read again now, just before writing: the version is checked against the text as it stands.
         const cache = createProjectionCache()
@@ -370,8 +382,13 @@ export const fileApp: AgentApp = {
           )
         }
         const next = await describePlacing(context, before.value, before.format, text)
+        // A mention in the new text adds the person beside the save (§11.8); built first, so a refusal publishes nothing.
+        const folder = await folderOfFile(context, address)
+        if (!folder) throw new BadRequest(`${title} has no Folder on the relay, so there is nowhere to write. Nothing was published.`)
+        const adds = mentionAdds(context.signer.pubkey, { file: address, folder, saved: fileText(next.value, next.contentFormat), editedFrom: fileText(before.value, before.format), asked })
         const result = await actOnFile(context, { address, title }, describeAction, next.value, KIND_CHANGE, undefined, changeShape(address, 'description', next.value, formatTag(next.contentFormat)), next.contentFormat)
         published(result, `the text of ${title}`)
+        const mentioned = await publishMentionAdds(context, adds, `The text of ${title}`)
 
         // Which comments now sit on blocks that are gone, so whoever wrote them can be told (§13.6).
         const detached = next.blocks?.removed.length
@@ -381,6 +398,7 @@ export const fileApp: AgentApp = {
           changed: { file: title, address, url: file.openUrl, version: versionOf({ value: next.value, format: next.contentFormat ? 'blocks' : before.format }) },
           ...(next.blocks ? { blocks: next.blocks } : {}),
           eventId: result.eventId,
+          ...(mentioned.length ? { mentioned } : {}),
           ...(detached.length
             ? {
                 detached: detached.map((thread) => ({ id: thread.root.id, opening: thread.root.body.slice(0, 80) })),

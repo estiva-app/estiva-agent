@@ -32,6 +32,13 @@ export function relayQuery(context: AgentContext): QueryFn {
   return (filters) => context.relay.queryAll(filters as never)
 }
 
+/** The Folder a file's root names — where a change to it is published — or undefined when there is none or it is unreadable. */
+export async function folderOfFile(context: AgentContext, address: string): Promise<string | undefined> {
+  const pointer = pointerOf(address)
+  const [root] = await relayQuery(context)([{ kinds: [pointer.kind], authors: [pointer.pubkey], '#d': [pointer.identifier], limit: 1 }])
+  return (root && folderOf(root)) || undefined
+}
+
 export async function actOnFile(
   context: AgentContext,
   file: { address: string; title: string },
