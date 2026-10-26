@@ -387,8 +387,13 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
   const saved = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph', id: 'l1', content: [text('Read '), { type: 'text', text: 'the plan', marks: [link] }, text('.')] }, { type: 'paragraph', id: 'l2', content: [text('Other.')] }] })
   const shownLink = descriptionText(saved, 'blocks')
   check('a link on words an editor saved prints as `[words](url)`', shownLink.startsWith('Read [the plan](https://leaf.estiva.app/document/plan-1).'), shownLink)
-  const relinked = editBlockDocument(saved, shownLink.replace('the plan', 'the new plan'))
-  check('editing its words keeps the link and the block’s id', JSON.stringify(byId(relinked.value, 'l1')) === JSON.stringify({ type: 'paragraph', id: 'l1', content: [text('Read '), { type: 'text', text: 'the new plan', marks: [link] }, text('.')] }), relinked.value)
+  let relinked = ''
+  try {
+    relinked = editBlockDocument(saved, shownLink.replace('the plan', 'the new plan')).value
+  } catch (error) {
+    relinked = String(error)
+  }
+  check('editing its words keeps the link and the block’s id', relinked.startsWith('{') && JSON.stringify(byId(relinked, 'l1')) === JSON.stringify({ type: 'paragraph', id: 'l1', content: [text('Read '), { type: 'text', text: 'the new plan', marks: [link] }, text('.')] }), relinked.slice(0, 300))
 
   const boldLink = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph', id: 'm1', content: [{ type: 'text', text: 'plan', marks: [link, { type: 'bold' }] }] }, { type: 'paragraph', id: 'm2', content: [text('Other.')] }] })
   let boldEdited = ''
