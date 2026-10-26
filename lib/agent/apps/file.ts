@@ -362,6 +362,8 @@ export const fileApp: AgentApp = {
           title: file.slots.title?.value ?? address,
           summary: file.slots.subtitle?.value,
           folder: folder?.name ?? folderId,
+          // `file create --folder` takes it, where two Folders can share a name.
+          folderId,
           address,
           url: file.openUrl,
           /*

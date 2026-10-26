@@ -703,12 +703,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'file_create',
       description:
-        'Start a file in a Folder, of any type an app offers there (`document`: a Leaf page). Text takes headings, lists, checklists (`- [ ]`), GFM tables and links on words; the title draws above it, so do not repeat it. ' +
+        'Start a file in a Folder, of any type an app offers there (`document`: a Leaf page). Text takes headings, lists, checklists (`- [ ]`) and GFM tables; the title draws above it, so do not repeat it. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
         properties: {
-          folder: { type: 'string', description: 'Folder name or id.' },
+          folder: { type: 'string', description: 'Folder name, or `folderId` from `file_show`.' },
           type: { type: 'string', description: 'What its app calls the type: `document` for a Leaf page.' },
           title: { type: 'string' },
           summary: { type: 'string', description: SUMMARY_NOTE },

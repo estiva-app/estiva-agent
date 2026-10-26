@@ -97,10 +97,14 @@ async function namesUnder(context: Pick<AgentContext, 'relay'>, url: string, sha
   const hit = matchObjectUrl(url, shapes)
   if (!hit) return []
   if (hit.by === 'id') return EVENT_ID.test(hit.identifier) ? [hit.identifier.toLowerCase()] : []
-  // A path on another app's host can read as several kinds (§7.7, LTX-6): ask under each.
-  const kinds = hit.kinds ?? (hit.kind === undefined ? undefined : [hit.kind])
+  // A path on another app's host can read as several kinds (§7.7, LTX-6): ask under each — only
+  // addressable ones, where a `d` is one file per author; a manifest anyone can publish names them.
+  const kinds = (hit.kinds ?? (hit.kind === undefined ? undefined : [hit.kind]))?.filter((kind) => kind >= 30000 && kind < 40000)
+  if (kinds?.length === 0) return []
   const found = await context.relay.queryAll([{ '#d': [hit.identifier], limit, ...(kinds ? { kinds } : {}) }] as never)
-  return [...new Set(found.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))]
+  const names = [...new Set(found.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))]
+  // A full page can hide another holder behind newer events of one author: then it names none.
+  return found.length >= limit && names.length === 1 ? [] : names
 }
 /** NIP-89's handler information, where an app publishes its manifest and `urls` (§7.2). */
 const KIND_APP_HANDLER = 31990

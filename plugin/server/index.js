@@ -22258,9 +22258,11 @@ async function namesUnder(context2, url, shapes, limit) {
   const hit = matchObjectUrl(url, shapes);
   if (!hit) return [];
   if (hit.by === "id") return EVENT_ID2.test(hit.identifier) ? [hit.identifier.toLowerCase()] : [];
-  const kinds = hit.kinds ?? (hit.kind === void 0 ? void 0 : [hit.kind]);
+  const kinds = (hit.kinds ?? (hit.kind === void 0 ? void 0 : [hit.kind]))?.filter((kind) => kind >= 3e4 && kind < 4e4);
+  if (kinds?.length === 0) return [];
   const found = await context2.relay.queryAll([{ "#d": [hit.identifier], limit, ...kinds ? { kinds } : {} }]);
-  return [...new Set(found.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))];
+  const names = [...new Set(found.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))];
+  return found.length >= limit && names.length === 1 ? [] : names;
 }
 var KIND_APP_HANDLER = 31990;
 function firstWords(block) {
@@ -24756,6 +24758,8 @@ var fileApp = {
           title: file.slots.title?.value ?? address,
           summary: file.slots.subtitle?.value,
           folder: folder?.name ?? folderId,
+          // `file create --folder` takes it, where two Folders can share a name.
+          folderId,
           address,
           url: file.openUrl,
           /*
@@ -25401,11 +25405,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "file_create",
-      description: "Start a file in a Folder, of any type an app offers there (`document`: a Leaf page). Text takes headings, lists, checklists (`- [ ]`), GFM tables and links on words; the title draws above it, so do not repeat it. " + WRITE_NOTE,
+      description: "Start a file in a Folder, of any type an app offers there (`document`: a Leaf page). Text takes headings, lists, checklists (`- [ ]`) and GFM tables; the title draws above it, so do not repeat it. " + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
-          folder: { type: "string", description: "Folder name or id." },
+          folder: { type: "string", description: "Folder name, or `folderId` from `file_show`." },
           type: { type: "string", description: "What its app calls the type: `document` for a Leaf page." },
           title: { type: "string" },
           summary: { type: "string", description: SUMMARY_NOTE },
