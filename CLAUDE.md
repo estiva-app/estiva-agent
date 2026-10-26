@@ -212,7 +212,7 @@ manifest (§7.3), so `--summary` on an app that declares none yet is refused
 with nothing published.
 
 `file summarize <kind:pubkey:d> --summary "…"` (MCP `file_summarize`) does
-the same for any file by its address, whichever app it belongs to — the only
+the same for any file by its address, whichever app it belongs to — the
 way to write a Leaf page's summary (SUM-8). It reads the file's own manifest,
 so it names no app, and it costs a few requests where `edit-issue` reloads
 all of Ship.
@@ -221,7 +221,7 @@ all of Ship.
 
 ```bash
 npx tsx scripts/agent.ts file create --folder "Estiva HQ" --type document --title "..." --summary "..." --description "$(cat body.md)"
-npx tsx scripts/agent.ts file show <kind:pubkey:d>
+npx tsx scripts/agent.ts file show <kind:pubkey:d | app link>
 npx tsx scripts/agent.ts file describe <kind:pubkey:d> --version <from show> --description "$(cat body.md)"
 npx tsx scripts/agent.ts file comment <kind:pubkey:d> --body "..." [--reply <comment id|phrase>] [--mention miky]
 ```
@@ -231,9 +231,15 @@ These are how the agent writes a Leaf document and follows the comments on it
 no app: `create --type` takes the noun the app's manifest gives the type
 (`document`), and any type an app declares a Folder action for can be started.
 Leaf draws the title and the summary above the text, so do not open the text
-with the title again as a heading.
+with the title again as a heading. Claude Desktop and the plugin reach them as
+`file_show`, `file_create`, `file_describe` and `file_comment` (e0e3e907).
 
-- **`show`** prints the text one chunk per block, exactly as `describe` takes
+- **`show`** takes the file's link as well as its address — a Leaf
+  `/document/<slug>-<d>` link, or any app's, read as `links` reads one: the
+  host and type against the published manifests' `urls` (§7.7,
+  `addressesOfUrl` in `lib/agent/links.ts`), so no app's route is known here.
+  A link no manifest declares, or one nothing readable holds, is refused. It
+  prints the file's Folder too. `show` prints the text one chunk per block, exactly as `describe` takes
   it back (the same round-trip as `ship edit-*`), and every comment thread with
   the blocks it is on, by id and first words, or `blocks no longer in the
   text` when they were deleted — never as a remark about the whole file.

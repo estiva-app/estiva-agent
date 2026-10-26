@@ -173,6 +173,31 @@ const fixture = () => {
   check('…and the words the comment quotes', thread?.quote === 'doing this', JSON.stringify(thread))
 }
 {
+  // A Leaf link as Miky pastes one: host and type from the manifests' `urls` (§7.7), the block anchor ignored.
+  const { context } = fixture()
+  const d = created!.address.split(':')[2]
+  const out = await run('show', context, [`https://leaf.estiva.app/document/shaping-the-agent-${d}#block-abc`], {}).catch((error: Error) => ({ error: error.message }) as Record<string, any>)
+  check('file show opens a file by its Leaf link, and names its Folder', out.address === created!.address && out.folder === 'QA', out.error ?? `${out.address} ${out.folder}`)
+  const elsewhere = await refusal(run('show', context, [`https://example.com/document/shaping-${d}`], {}))
+  check('…but not by a link on a host no app declares', elsewhere.includes('not a link to a file'), elsewhere)
+}
+{
+  // Somebody else publishing the same id: the link names neither file, as `links` reads it.
+  const { context, events } = fixture()
+  const d = created!.address.split(':')[2]
+  events.push(event(30842, [['d', d], ['h', FOLDER]], '', QA2))
+  const refused = await refusal(run('show', context, [`https://leaf.estiva.app/document/x-${d}`], {}))
+  check('…and refuses a link two authors hold, naming both', refused.includes('more than one file') && refused.includes(`30842:${QA2}:${d}`), refused)
+}
+{
+  // Ten newer events of one author under that id push the real file off the page: the link names none, never theirs.
+  const { context, events } = fixture()
+  const d = created!.address.split(':')[2]
+  for (let i = 0; i < 10; i++) events.push(event(30842, [['d', d], ['h', FOLDER]], '', QA2, 1_950_000_000 + i))
+  const out = await run('show', context, [`https://leaf.estiva.app/document/x-${d}`], {}).catch((error: Error) => ({ error: error.message }) as Record<string, any>)
+  check('…and a full page of one author’s events never opens theirs', out.address === undefined && String(out.error).includes('not a link to a file'), out.error ?? out.address)
+}
+{
   // QA-2 resolves the thread, then reopens it: show follows the newest, as Leaf's column does.
   const { context, events, comment } = fixture()
   const resolution = (action: string, at: number) => event(9101, [['t', 'resolution'], ['action', action], ['e', comment.id], ['h', FOLDER]], '', QA2, at)
