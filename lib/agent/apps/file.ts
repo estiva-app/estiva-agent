@@ -22,11 +22,11 @@ import {
   buildActionEvents,
   createProjectionCache,
   KIND_CHANNEL_METADATA,
-  listFolders,
+  listFolderRecords,
   resolveActingManifest,
   resolveForeignObject,
   resolveManifest,
-  type FolderSummary,
+  type FolderRecord,
   type ForeignObject,
   type ProjectionCache,
   type ResolvedManifest,
@@ -183,7 +183,7 @@ function detachedBy(conversations: Conversation[], before: { value: string; form
 }
 
 /** A Folder by name or id, among every Folder this key can read, as Leaf's tree lists them. */
-function findFolder(folders: FolderSummary[], reference: string): FolderSummary {
+function findFolder(folders: FolderRecord[], reference: string): FolderRecord {
   return resolveOne(folders, reference, {
     noun: 'Folder',
     exact: (folder) => [folder.id, folder.name ?? ''],
@@ -273,7 +273,8 @@ export const fileApp: AgentApp = {
         const asked = await askedToMention(context, flagValue(args, 'mention'))
 
         const query = relayQuery(context)
-        const folder = findFolder(await listFolders(query), folderRef)
+        // The Folders' own records: `listFolders` also reads every listed file's change history, ~100 s on production (e0e3e907).
+        const folder = findFolder(await listFolderRecords(query), folderRef)
         // A group with no relay-signed state is a conversation space; an `add` there would publish state listing nothing (peek#192).
         if (!folder.hasState) throw new BadRequest(`${folder.name ?? folder.id} is not a Folder that lists files, so nothing can be started in it. Nothing was published.`)
 

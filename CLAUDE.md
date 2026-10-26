@@ -173,11 +173,15 @@ ticket (Miky, 2026-10-20).
 entry per link in order — the block's first words, and `chip` (in a sentence),
 `row` (alone on its line), `card` (alone, with the card chosen) or `link` (a
 link on words, with its `words`, or a URL no app claims), what it names (`to`)
-and its title when the workspace holds it. The text cannot say this: a card
-prints as its bare link, as a row does, and a link on words as its words
-(SPEC §13.3 gives neither a spelling). `file show` lists them too. A block
-holding a card or a link on words is kept while its chunk comes back
-unchanged, and refused when it does not.
+and its title when the workspace holds it. The text cannot say this for a
+card, which prints as its bare link, as a row does (SPEC §13.3 gives it no
+spelling). `file show` lists them too. A block holding a card is kept while
+its chunk comes back unchanged, and refused when it does not.
+
+**A link on words is `[words](url)`** (e0e3e907, protocol 0.43): it prints so
+and is read back as the words marked with the link, as an editor saves one, so
+write links in any `--description` that way. A link whose words hold a bracket
+prints as its words, and its block is kept but refused when edited.
 
 **A mention in a description adds the person** (WBD-9, SPEC §11.8): when the
 new text names somebody by `nostr:npub…` whom the text it replaces did not,

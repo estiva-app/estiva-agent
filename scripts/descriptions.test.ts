@@ -376,6 +376,41 @@ refuses('a body tagged blocks that does not parse is refused', () => describe('n
   check('three backticks that never close fence nothing: a table after them is matched and kept', lines % 2 === 1 && JSON.stringify(byId(result.startsWith('{') ? result : '{"content":[]}', 't1')) === JSON.stringify(document.content[5]), `${lines} fence lines; ${result.slice(0, 200)}`)
 }
 
+// e0e3e907: a link on words is `[words](url)` in the text, and the link a person's editor saves.
+{
+  const link = { type: 'link', attrs: { href: 'https://leaf.estiva.app/document/plan-1' } }
+  const created = describe('', undefined, 'See [the plan](https://leaf.estiva.app/document/plan-1) today.')
+  const [run] = blocksOf(created.value)[0].content as { text: string; marks?: unknown[] }[]
+  check('a new description writes `[words](url)` as the words marked with a link', JSON.stringify((blocksOf(created.value)[0].content as object[])[1]) === JSON.stringify({ type: 'text', text: 'the plan', marks: [link] }), created.value)
+  check('…and the text before it stays plain words', run.text === 'See ' && !run.marks)
+
+  const saved = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph', id: 'l1', content: [text('Read '), { type: 'text', text: 'the plan', marks: [link] }, text('.')] }, { type: 'paragraph', id: 'l2', content: [text('Other.')] }] })
+  const shownLink = descriptionText(saved, 'blocks')
+  check('a link on words an editor saved prints as `[words](url)`', shownLink.startsWith('Read [the plan](https://leaf.estiva.app/document/plan-1).'), shownLink)
+  const relinked = editBlockDocument(saved, shownLink.replace('the plan', 'the new plan'))
+  check('editing its words keeps the link and the block’s id', JSON.stringify(byId(relinked.value, 'l1')) === JSON.stringify({ type: 'paragraph', id: 'l1', content: [text('Read '), { type: 'text', text: 'the new plan', marks: [link] }, text('.')] }), relinked.value)
+
+  const boldLink = JSON.stringify({ type: 'doc', content: [{ type: 'paragraph', id: 'm1', content: [{ type: 'text', text: 'plan', marks: [link, { type: 'bold' }] }] }, { type: 'paragraph', id: 'm2', content: [text('Other.')] }] })
+  let boldEdited = ''
+  try {
+    boldEdited = editBlockDocument(boldLink, descriptionText(boldLink, 'blocks').replace('plan', 'new plan')).value
+  } catch (error) {
+    boldEdited = String(error)
+  }
+  check('a bold link an editor saved with its link mark first can be edited, its id kept', boldEdited.startsWith('{') && byId(boldEdited, 'm1') !== undefined && boldEdited.includes('new plan'), boldEdited.slice(0, 300))
+
+  // What the agent wrote before protocol 0.43: the brackets and the URL as words, which readers draw as a link anyway.
+  const old = JSON.stringify({ type: 'doc', content: [{ type: 'bulletList', id: 'b1', content: [item('i1', text('PR: [estiva-agent#91](https://github.com/estiva-app/estiva-agent/pull/91)')), item('i2', text('Kickoff done.'))] }] })
+  const shownOld = descriptionText(old, 'blocks')
+  let added = ''
+  try {
+    added = editBlockDocument(old, `${shownOld}\n- Merged.`).value
+  } catch (error) {
+    added = String(error)
+  }
+  check('a list holding a link written as words can still take a new item, its old items kept', added.startsWith('{') && JSON.stringify(blocksOf(added)[0].content).includes('"id":"i1"') && (blocksOf(added)[0].content as object[]).length === 3, added.slice(0, 300))
+}
+
 if (failures) {
   console.log(`\n${failures} failed`)
   process.exit(1)
