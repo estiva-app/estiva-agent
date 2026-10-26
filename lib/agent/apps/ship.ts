@@ -1266,7 +1266,7 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
 
 /**
  * How each link in a description draws, beside the text `show` prints (WBD-9):
- * the text gives a card no spelling and a link on words prints as its words.
+ * the text gives a card no spelling, so it prints as a row does.
  * Titled from the workspace already read.
  */
 function descriptionLinks(context: AgentContext, state: Workspace, subject: Pick<Project, 'description' | 'descriptionFormat'>) {

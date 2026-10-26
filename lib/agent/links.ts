@@ -2,7 +2,7 @@
  * How each link in a file's text draws, for the agent that reads it as text
  * (WBD-9). The text `show` prints is the text `--description` takes back, and
  * SPEC §13.3 *A description as text* gives a card no spelling, so a card and a
- * row print alike, and a link on words prints as its words. This lists them
+ * row print alike (a link on words prints as `[words](url)`, e0e3e907). This lists them
  * beside the text instead, by the readers' own rule: protocol's
  * `documentLineDraws` (§13.3 *A reference's card*, C22, C24), after
  * `linksAsReferences` has read each app URL as the file it names (§7.7).

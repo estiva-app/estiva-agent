@@ -251,13 +251,42 @@ function visible(block: Block): unknown {
       characters.push(['', canonical(node)])
       continue
     }
-    const { text, type: _type, ...rest } = node
-    const marks = canonical(rest)
-    for (const character of text) characters.push([character, /\s/.test(character) ? '' : marks])
+    const { text: whole, type: _type, ...rest } = node
+    for (const [text, shown] of linksOnWordsIn(whole, rest)) {
+      // Marks as a set: an editor lists them in its schema's order, protocol in its own (a link last), and both draw the same.
+      const marks = canonical({ ...shown, ...(shown.marks ? { marks: shown.marks.map(canonical).sort() } : {}) })
+      for (const character of text) characters.push([character, /\s/.test(character) ? '' : marks])
+    }
   }
   while (characters.length && characters[characters.length - 1][0] !== '' && /\s/.test(characters[characters.length - 1][0])) characters.pop()
   return { ...block, content: characters.map(([character, marks]) => character + '\u0000' + marks).join('\u0001') }
 }
+
+/**
+ * A run's text as a reader draws it: `[words](url)` written as plain text is
+ * drawn as a link on those words (the ui package's `RichText` finds links by
+ * this alternation), so it is the same on screen as the words marked with the
+ * link, which is what protocol reads the text as since 0.43 (e0e3e907). Before
+ * that the agent wrote such text as words (376 runs on production), and a
+ * block holding one would otherwise never read back the same, so could not be
+ * edited. A run with a link or `code` mark is drawn as it is.
+ */
+function linksOnWordsIn(text: string, rest: { marks?: unknown[] }): [string, { marks?: unknown[] }][] {
+  if (!text.includes('](') || rest.marks?.some((mark) => ['link', 'code'].includes((mark as { type?: string }).type ?? ''))) return [[text, rest]]
+  const parts: [string, { marks?: unknown[] }][] = []
+  let at = 0
+  for (const m of text.matchAll(LINK_OR_URL)) {
+    if (!m[1] || !m[2]) continue
+    if (m.index > at) parts.push([text.slice(at, m.index), rest])
+    parts.push([m[1].slice(1, m[1].length - m[2].length - 3), { ...rest, marks: [...(rest.marks ?? []), { type: 'link', attrs: { href: m[2] } }] }])
+    at = m.index + m[0].length
+  }
+  if (at < text.length) parts.push([text.slice(at), rest])
+  return parts
+}
+
+/** `[words](url)` (groups 1 and 2), or a bare URL that swallows any `[` in it so the scan stays linear — protocol's `LINK_ON_WORDS`, which it does not export. */
+const LINK_OR_URL = /(\[[^[\]\n]+\]\(((?:https?:\/\/|mailto:)[^\s)]+)\))|(?:https?:\/\/|mailto:)[^\s)]+/g
 
 /** A line for a block text cannot carry — readable, and unique enough to be matched when it comes back unchanged. */
 function standIn(block: Block): string {
