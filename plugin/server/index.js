@@ -16188,6 +16188,75 @@ function scanMarks(text2, active) {
 function parseInlineMarks(text2) {
   return scanMarks(text2, []).flatMap(splitReferences);
 }
+var LINK_ON_WORDS = /(\[[^[\]\n]+\]\(((?:https?:\/\/|mailto:)[^\s)]+)\))|(?:https?:\/\/|mailto:)[^\s)]+/g;
+function parseInlineMarksAndLinks(text2) {
+  if (!text2.includes("]("))
+    return parseInlineMarks(text2);
+  const mark = unusedCharacter(text2);
+  if (!mark)
+    return parseInlineMarks(text2);
+  const urls = [];
+  const masked = text2.replace(LINK_ON_WORDS, (whole, link, url, at2) => {
+    if (!link || !url || text2[at2 - 1] === "!" || url.split("(").length > url.split(")").length)
+      return whole;
+    urls.push(url);
+    return `${link.slice(0, link.length - url.length - 1)}${mark})`;
+  });
+  if (!urls.length)
+    return parseInlineMarks(text2);
+  const chars = [];
+  let k = 0;
+  for (const span of parseInlineMarks(masked)) {
+    for (let i = 0; i < span.text.length; i++) {
+      const ch = span.text[i];
+      chars.push(ch === mark ? { ch, span, url: urls[k++] } : { ch, span });
+    }
+  }
+  const joined = chars.map((c) => c.ch).join("");
+  const out = [];
+  const push = (text3, span, href) => {
+    const last = out[out.length - 1];
+    if (last && last.span === span && last.href === href)
+      last.text += text3;
+    else
+      out.push({ text: text3, span, href });
+  };
+  let at = 0;
+  const keep = (to) => {
+    for (; at < to; at++)
+      push(chars[at].url ?? chars[at].ch, chars[at].span);
+  };
+  for (const m of joined.matchAll(new RegExp(`\\[([^[\\]\\n]+)\\]\\(${mark}\\)`, "g"))) {
+    const end = m.index + m[0].length;
+    if (m[1].includes(mark) || chars[m.index].span.code || chars[end - 2].span.code)
+      continue;
+    keep(m.index);
+    const href = chars[end - 2].url;
+    for (let i = m.index + 1; i <= m.index + m[1].length; i++)
+      push(chars[i].ch, chars[i].span, href);
+    at = end;
+  }
+  keep(chars.length);
+  const spans = out.map(({ text: text3, span: { code, ...span }, href }) => href ? { ...span, text: text3, href } : { ...span, ...code ? { code } : {}, text: text3 });
+  return spans.reduce((merged, span) => {
+    const last = merged[merged.length - 1];
+    const { text: _a3, ...lastMarks } = last ?? { text: "" };
+    const { text: _b, ...marks } = span;
+    if (last?.href && JSON.stringify(lastMarks) === JSON.stringify(marks))
+      last.text += span.text;
+    else
+      merged.push(span);
+    return merged;
+  }, []);
+}
+function unusedCharacter(text2) {
+  for (let code = 57344; code <= 63743; code++) {
+    const ch = String.fromCharCode(code);
+    if (!text2.includes(ch))
+      return ch;
+  }
+  return void 0;
+}
 function splitReferences(span) {
   if (span.code || !span.text.includes("nostr:"))
     return [span];
@@ -16411,16 +16480,40 @@ function isAllowedHref(href) {
   return scheme !== void 0 && ALLOWED_SCHEMES.has(scheme.toLowerCase());
 }
 var MARK_ORDER = ["bold", "italic", "underline", "code"];
-function markersToInlineNodes(text2) {
-  return parseInlineMarks(text2).map((span) => {
+function markersToInlineNodes(text2, options = {}) {
+  return (options.links ? parseInlineMarksAndLinks(text2) : parseInlineMarks(text2)).map((span) => {
     const marks = MARK_ORDER.filter((m) => span[m]).map((type) => ({ type }));
     if (span.reference)
       marks.push({ type: "reference", attrs: { uri: span.reference } });
+    if (span.href)
+      marks.push({ type: "link", attrs: { href: span.href } });
     return marks.length ? { type: "text", text: span.text, marks } : { type: "text", text: span.text };
   });
 }
-function inlineNodesToMarkers(nodes) {
-  return nodes.map((node) => wrapInlineMarks(node.text, new Set((node.marks ?? []).map((m) => m.type)))).join("");
+function spelledHref(node) {
+  const link = node.marks?.find((m) => m.type === "link");
+  const href = link?.attrs?.href;
+  if (typeof href !== "string" || Object.keys(link?.attrs ?? {}).length !== 1)
+    return void 0;
+  if (!/^(?:https?:\/\/|mailto:)[^\s)]+$/.test(href) || node.marks?.some((m) => m.type === "code"))
+    return void 0;
+  return href;
+}
+function inlineNodesToMarkers(nodes, options = {}) {
+  const wrap = (node) => wrapInlineMarks(node.text, new Set((node.marks ?? []).map((m) => m.type)));
+  if (!options.links)
+    return nodes.map(wrap).join("");
+  let out = "";
+  for (let i = 0; i < nodes.length; ) {
+    const href = spelledHref(nodes[i]);
+    let end = i + 1;
+    while (href && end < nodes.length && spelledHref(nodes[end]) === href)
+      end++;
+    const words = nodes.slice(i, end);
+    out += href && /^[^[\]\n]+$/.test(inlineNodesToText(words)) ? `[${words.map(wrap).join("")}](${href})` : words.map(wrap).join("");
+    i = end;
+  }
+  return out;
 }
 function inlineNodesToText(nodes) {
   return nodes.map((n) => n.text).join("");
@@ -17556,27 +17649,27 @@ function itemFromText(item, description, depth = 0) {
   const task = description ? TASK.exec(item) : null;
   if (!task) {
     const text2 = description ? unescaped(item, ESCAPED_TASK) : item;
-    return { type: "listItem", id: "", ...indent ? { attrs: indent } : {}, content: markersToInlineNodes(text2) };
+    return { type: "listItem", id: "", ...indent ? { attrs: indent } : {}, content: markersToInlineNodes(text2, { links: description }) };
   }
   return {
     type: "listItem",
     id: "",
     attrs: { ...indent, checked: task[1] !== " " },
-    content: markersToInlineNodes(item.slice(task[0].length))
+    content: markersToInlineNodes(item.slice(task[0].length), { links: description })
   };
 }
 function quoteFromLines(lines, description) {
   const alert = description && lines.length > 0 ? ALERT.exec(lines[0].trim()) : null;
   if (!alert) {
     const text2 = description && lines.length > 0 ? [unescaped(lines[0], ESCAPED_ALERT), ...lines.slice(1)] : lines;
-    return { type: "blockquote", id: "", content: markersToInlineNodes(text2.join("\n")) };
+    return { type: "blockquote", id: "", content: markersToInlineNodes(text2.join("\n"), { links: description }) };
   }
-  return { type: "blockquote", id: "", attrs: { tone: alert[1].toLowerCase() }, content: markersToInlineNodes(lines.slice(1).join("\n")) };
+  return { type: "blockquote", id: "", attrs: { tone: alert[1].toLowerCase() }, content: markersToInlineNodes(lines.slice(1).join("\n"), { links: description }) };
 }
 function blockFromSegment2(seg, description) {
   switch (seg.type) {
     case "heading":
-      return { type: "heading", id: "", attrs: { level: seg.level }, content: markersToInlineNodes(seg.text) };
+      return { type: "heading", id: "", attrs: { level: seg.level }, content: markersToInlineNodes(seg.text, { links: description }) };
     case "bullet":
       return {
         type: "bulletList",
@@ -17601,7 +17694,7 @@ function blockFromSegment2(seg, description) {
         content: [{ type: "text", text: seg.lines.join("\n") }]
       };
     case "text":
-      return { type: "paragraph", id: "", content: markersToInlineNodes(seg.lines.join("\n")) };
+      return { type: "paragraph", id: "", content: markersToInlineNodes(seg.lines.join("\n"), { links: description }) };
   }
 }
 function markerTextToBlockDocument(text2, previous, options = {}) {
@@ -17659,12 +17752,12 @@ function markerTextToBlockDocument(text2, previous, options = {}) {
   };
   return { type: "doc", content: fresh.map((block, i) => fill(block, ids[i] || void 0)) };
 }
-var itemText = (item) => isInlineRun3(item.content) ? inlineNodesToMarkers(item.content) : "";
+var itemText = (item, description) => isInlineRun3(item.content) ? inlineNodesToMarkers(item.content, { links: description }) : "";
 function blockDocumentToMarkerText(doc3, options = {}) {
   const description = options.description === true;
   const lines = [];
   for (const block of doc3.content) {
-    const inline = isInlineRun3(block.content) ? inlineNodesToMarkers(block.content) : "";
+    const inline = isInlineRun3(block.content) ? inlineNodesToMarkers(block.content, { links: description }) : "";
     switch (block.type) {
       case "heading": {
         const level = block.attrs?.level === 2 ? 2 : 1;
@@ -17684,7 +17777,7 @@ function blockDocumentToMarkerText(doc3, options = {}) {
           const marker = block.type === "bulletList" ? "-" : `${next[depth]++}.`;
           const checked = description ? listItemChecked(item) : void 0;
           const task = checked === void 0 ? "" : checked ? "[x] " : "[ ] ";
-          const text2 = description && checked === void 0 ? escaped(itemText(item), ESCAPED_TASK) : itemText(item);
+          const text2 = description && checked === void 0 ? escaped(itemText(item, description), ESCAPED_TASK) : itemText(item, description);
           lines.push(`${"  ".repeat(depth)}${marker} ${task}${text2}`);
         });
         break;
@@ -17773,11 +17866,9 @@ function descriptionTextToBlockDocument(text2, previous) {
   }));
 }
 function placeholderFor(text2) {
-  for (let code = 57344; code <= 63743; code++) {
-    const mark = String.fromCharCode(code);
-    if (!text2.includes(mark))
-      return mark;
-  }
+  const mark = unusedCharacter(text2);
+  if (mark)
+    return mark;
   let n = 0;
   while (text2.includes(`\uE000${n}x`))
     n++;
@@ -17812,7 +17903,7 @@ function tableBlock(rows, old) {
   };
 }
 function tableCell(type, text2, old) {
-  const [parsed, ...more] = text2 ? markerTextToBlockDocument(text2).content : [];
+  const [parsed, ...more] = text2 ? markerTextToBlockDocument(text2, void 0, DESCRIPTION).content : [];
   const paragraph = parsed?.type === "paragraph" && !more.length ? parsed : text2 ? { type: "paragraph", id: "", content: [{ type: "text", text: text2 }] } : { type: "paragraph", id: "" };
   const oldParagraph = old ? childBlocks(old)?.[0] : void 0;
   return {
@@ -18882,13 +18973,29 @@ function visible(block) {
       characters.push(["", canonical(node)]);
       continue;
     }
-    const { text: text2, type: _type, ...rest } = node;
-    const marks = canonical(rest);
-    for (const character of text2) characters.push([character, /\s/.test(character) ? "" : marks]);
+    const { text: whole, type: _type, ...rest } = node;
+    for (const [text2, shown] of linksOnWordsIn(whole, rest)) {
+      const marks = canonical({ ...shown, ...shown.marks ? { marks: shown.marks.map(canonical).sort() } : {} });
+      for (const character of text2) characters.push([character, /\s/.test(character) ? "" : marks]);
+    }
   }
   while (characters.length && characters[characters.length - 1][0] !== "" && /\s/.test(characters[characters.length - 1][0])) characters.pop();
   return { ...block, content: characters.map(([character, marks]) => character + "\0" + marks).join("") };
 }
+function linksOnWordsIn(text2, rest) {
+  if (!text2.includes("](") || rest.marks?.some((mark) => ["link", "code"].includes(mark.type ?? ""))) return [[text2, rest]];
+  const parts = [];
+  let at = 0;
+  for (const m of text2.matchAll(LINK_OR_URL2)) {
+    if (!m[1] || !m[2]) continue;
+    if (m.index > at) parts.push([text2.slice(at, m.index), rest]);
+    parts.push([m[1].slice(1, m[1].length - m[2].length - 3), { ...rest, marks: [...rest.marks ?? [], { type: "link", attrs: { href: m[2] } }] }]);
+    at = m.index + m[0].length;
+  }
+  if (at < text2.length) parts.push([text2.slice(at), rest]);
+  return parts;
+}
+var LINK_OR_URL2 = /(\[[^[\]\n]+\]\(((?:https?:\/\/|mailto:)[^\s)]+)\))|(?:https?:\/\/|mailto:)[^\s)]+/g;
 function standIn(block) {
   const attrs = block.attrs ?? {};
   if (block.type === "table") {
@@ -21501,6 +21608,41 @@ function topLevelFolders(folders) {
   return folders.filter((folder) => folder.hasState && !folder.listedIn?.length && !folder.archived);
 }
 async function listFolders(query) {
+  const { events, byId } = await readFolderRecords(query);
+  const listedIn = /* @__PURE__ */ new Map();
+  for (const event of events) {
+    if (event.kind !== KIND_FOLDER_STATE)
+      continue;
+    const container = tagValue2(event, "d");
+    if (!container)
+      continue;
+    for (const tag of event.tags) {
+      if (tag[0] !== "a" || !tag[1])
+        continue;
+      const [kind, , identifier] = tag[1].split(":");
+      if (Number(kind) !== KIND_CHANNEL || !identifier || identifier === container)
+        continue;
+      const containers = listedIn.get(identifier) ?? [];
+      if (!containers.includes(container))
+        containers.push(container);
+      listedIn.set(identifier, containers);
+    }
+  }
+  const { recordsOf, archives, rootOf: rootOf2 } = await placeRecordChannels(events, byId, listedIn, query);
+  for (const [id, containers] of listedIn) {
+    const folder = byId.get(id);
+    if (folder)
+      folder.listedIn = containers;
+  }
+  markArchivedFolders(byId, recordsOf, archives, rootOf2);
+  return [...byId.values()].sort(byFolderName);
+}
+async function listFolderRecords(query) {
+  const { byId } = await readFolderRecords(query);
+  return [...byId.values()].sort(byFolderName);
+}
+var byFolderName = (a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id);
+async function readFolderRecords(query) {
   const events = await query([
     { kinds: [KIND_FOLDER_STATE], limit: 500 },
     { kinds: [KIND_CHANNEL], limit: 500 },
@@ -21542,33 +21684,7 @@ async function listFolders(query) {
       folder.admins = admins;
     folder.channel = pointerToAddress({ kind: KIND_CHANNEL, pubkey: channel.pubkey, identifier: id, relays: [] });
   }
-  const listedIn = /* @__PURE__ */ new Map();
-  for (const event of events) {
-    if (event.kind !== KIND_FOLDER_STATE)
-      continue;
-    const container = tagValue2(event, "d");
-    if (!container)
-      continue;
-    for (const tag of event.tags) {
-      if (tag[0] !== "a" || !tag[1])
-        continue;
-      const [kind, , identifier] = tag[1].split(":");
-      if (Number(kind) !== KIND_CHANNEL || !identifier || identifier === container)
-        continue;
-      const containers = listedIn.get(identifier) ?? [];
-      if (!containers.includes(container))
-        containers.push(container);
-      listedIn.set(identifier, containers);
-    }
-  }
-  const { recordsOf, archives, rootOf: rootOf2 } = await placeRecordChannels(events, byId, listedIn, query);
-  for (const [id, containers] of listedIn) {
-    const folder = byId.get(id);
-    if (folder)
-      folder.listedIn = containers;
-  }
-  markArchivedFolders(byId, recordsOf, archives, rootOf2);
-  return [...byId.values()].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
+  return { events, byId };
 }
 function markArchivedFolders(byId, recordsOf, changes, rootOf2) {
   for (const folder of byId.values()) {
@@ -24678,7 +24794,7 @@ var fileApp = {
         }
         const asked = await askedToMention(context2, flagValue(args2, "mention"));
         const query = relayQuery(context2);
-        const folder = findFolder2(await listFolders(query), folderRef);
+        const folder = findFolder2(await listFolderRecords(query), folderRef);
         if (!folder.hasState) throw new BadRequest(`${folder.name ?? folder.id} is not a Folder that lists files, so nothing can be started in it. Nothing was published.`);
         const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`;
         const { kind, actionId, manifest: creator } = await creatorOf(context2, channel, type, createProjectionCache());
