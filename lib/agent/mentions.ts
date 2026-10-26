@@ -15,8 +15,8 @@
  * Generic rather than per-app: a person is the protocol's, not Ship's or
  * Peek's, and `peek say --mention` will want the same answer.
  */
-import { decodeNpub, encodeNpub } from '@estiva-app/protocol'
-import { mentionTagsFor } from '@estiva-app/conversation'
+import { BLOCK_DOCUMENT_FORMAT, decodeNpub, encodeNpub, type UnsignedEvent } from '@estiva-app/protocol'
+import { MAX_MENTIONED_PEOPLE, mentionAddsFor, mentionTagsFor, newlyNamedPeople, peopleNamedInText, type FileText } from '@estiva-app/conversation'
 import { BadRequest, type AgentContext } from './cli'
 
 /**
@@ -120,4 +120,94 @@ export function withMentions(body: string, keys: readonly string[]): string {
   if (missing.length === 0) return body
   // A body that opens with block markup keeps it: the mentions get a line of their own.
   return `${missing.join(' ')}${/^(#|>|[-*+] |\d+\. |```)/.test(body) ? '\n\n' : ' '}${body}`
+}
+
+/** One version of a file's text as `mentionAddsFor` reads it: a block document, or marker text. */
+export const fileText = (content: string, format: string | undefined): FileText =>
+  format === 'blocks' || format === BLOCK_DOCUMENT_FORMAT ? { content, format: BLOCK_DOCUMENT_FORMAT } : { content }
+
+/**
+ * The Adds a save of a file's text writes beside itself (SPEC §11.8, WBD-9):
+ * one for each person `saved` names by `nostr:npub…` and `editedFrom` did not,
+ * built by conversation's `mentionAddsFor` as Leaf's, Ship's and Peek's saves
+ * build them. The save itself carries no `p`, and a save that still names the
+ * same people writes none, so somebody who left stays out.
+ *
+ * **Every person named anew must be among `asked`** (`--mention`), and every
+ * one asked must be named, for the reason {@link withMentions} gives: an npub
+ * copied out of somebody else's text would add a person nobody asked to reach.
+ * Refused, so nothing is published.
+ *
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-mention-in-a-files-text-adds-the-person-with-no-unread.md
+ */
+export function mentionAdds(
+  writer: string,
+  args: { file: string; folder: string; saved: FileText; editedFrom: FileText | null; asked: readonly string[] },
+): MentionPlan {
+  const named = peopleNamedInText(args.saved)
+  const anew = newlyNamedPeople(args.saved, args.editedFrom).filter((person) => person !== writer)
+  const unasked = anew.find((person) => !args.asked.includes(person))
+  if (unasked) {
+    throw new BadRequest(
+      // What is wrong, never how to get past it: the same caller writes the text and --mention (docs/untrusted-content.md).
+      `The text names nostr:${encodeNpub(unasked)} anew, and --mention does not. A mention in a file's text adds the person to the file; only somebody the person you are working with asked to add belongs in --mention. Nothing was published.`,
+    )
+  }
+  const absent = args.asked.find((person) => !named.has(person))
+  if (absent) {
+    throw new BadRequest(`--mention names nostr:${encodeNpub(absent)}, whom the text does not mention. Nothing was published.`)
+  }
+  // The helper adds at most this many; past it some would be named and never added, with nothing said.
+  if (anew.length > MAX_MENTIONED_PEOPLE) {
+    throw new BadRequest(`The text mentions ${anew.length} people it did not before; one save adds at most ${MAX_MENTIONED_PEOPLE}. Nothing was published.`)
+  }
+  return {
+    adds: mentionAddsFor(writer, Date.now(), { file: args.file, folder: args.folder, saved: args.saved, editedFrom: args.editedFrom }),
+    // Asked, but named before this save too: nobody is added for them, so a person who left stays out. Said back, so the agent does not report them as told.
+    already: args.asked.filter((person) => !anew.includes(person)).map((person) => `nostr:${encodeNpub(person)}`),
+  }
+}
+
+/** What a save of a file's text writes beside itself for its mentions ({@link mentionAdds}). */
+export interface MentionPlan {
+  adds: UnsignedEvent[]
+  already: string[]
+}
+export const NO_MENTIONS: MentionPlan = { adds: [], already: [] }
+
+/**
+ * Publishes the Adds {@link mentionAdds} built, as soon as the save they go
+ * with has landed, and says who was added — and who was asked for but already
+ * named. A refused Add is that person not being told (§11.8, C9), so it fails
+ * the command, naming the save that stands. Spread into a write's answer.
+ */
+export async function publishMentionAdds(
+  context: AgentContext,
+  plan: MentionPlan,
+  saved: string,
+): Promise<{ mentioned?: { added: string; eventId: string }[]; notAdded?: string }> {
+  const out: { added: string; eventId: string }[] = []
+  for (const add of plan.adds) {
+    const person = add.tags.find((tag) => tag[0] === 'p')?.[1] ?? ''
+    const signed = await context.signer.sign(add)
+    const result = await context.relay.publish(signed)
+    if (!result.ok) {
+      throw new BadRequest(
+        `${saved} was saved, but the relay refused adding nostr:${encodeNpub(person)}: ${result.reason ?? 'no reason given'}. ` +
+          `Added before it: ${out.map((entry) => entry.added).join(', ') || 'nobody'}.`,
+      )
+    }
+    out.push({ added: `nostr:${encodeNpub(person)}`, eventId: result.eventId ?? signed.id })
+  }
+  return {
+    ...(out.length ? { mentioned: out } : {}),
+    ...(plan.already.length
+      ? { notAdded: `${plan.already.join(', ')}: already mentioned before this save, so nobody was added or told; a person who left stays out.` }
+      : {}),
+  }
+}
+
+/** The keys a `--mention` flag names, resolved as `comment --mention` resolves them; none when it is absent. */
+export async function askedToMention(context: AgentContext, value: string | undefined): Promise<string[]> {
+  return value === undefined ? [] : mentionedKeys(value, { relayUrl: context.relayUrl, members: () => relayMembers(context) })
 }

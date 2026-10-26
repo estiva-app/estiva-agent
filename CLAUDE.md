@@ -169,6 +169,27 @@ does. Use a picture where it helps a reader see the point: a before/after of a
 UI change, a prototype's screenshot, a diagram. It is not a rule for every
 ticket (Miky, 2026-10-20).
 
+**`show` lists how each link draws** (WBD-9): `links`, beside the text, one
+entry per link in order — the block's first words, and `chip` (in a sentence),
+`row` (alone on its line), `card` (alone, with the card chosen) or `link` (a
+link on words, with its `words`, or a URL no app claims), what it names (`to`)
+and its title when the workspace holds it. The text cannot say this: a card
+prints as its bare link, as a row does, and a link on words as its words
+(SPEC §13.3 gives neither a spelling). `file show` lists them too. A block
+holding a card or a link on words is kept while its chunk comes back
+unchanged, and refused when it does not.
+
+**A mention in a description adds the person** (WBD-9, SPEC §11.8): when the
+new text names somebody by `nostr:npub…` whom the text it replaces did not,
+the agent signs the Add beside the save, as Ship's and Leaf's editors do —
+the person becomes a member and the file is in their lists, with no unread.
+The save itself tags nobody. Every person named anew must also be passed with
+`--mention` (`create-*`, `edit-*`, `file create`, `file describe`), and every
+one passed must be in the text; otherwise nothing is published, for the
+reason `comment --mention` refuses an npub it was not given. A later save that
+still names them adds nobody, so a person who left stays out. The write
+answers `mentioned` with whom it added.
+
 A nested list, a checklist and a callout are text like any other block
 (d98a5636, SPEC §13.3 "A description as text"): an indented item prints two
 spaces a level and is read relative to the item above, a checklist item as

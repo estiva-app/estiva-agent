@@ -155,6 +155,13 @@ const WRITE_NOTE =
 const SUMMARY_NOTE =
   "Optional. One or two sentences of plain text, about 240 characters, saying what it is for — its one-line identity under the title on cards, in lists and in the link picker. Longer is written whole and cut by readers. Fails when the app's manifest declares no summary yet."
 
+/** Who a description mentions anew (SPEC §11.8, WBD-9), as every tool that writes one takes it. */
+const MENTION_PROPERTY = {
+  type: 'string',
+  description:
+    'Optional, with description. Each person the new text mentions by nostr:npub… that the text before did not: one or more, comma-separated, each a hex key, an npub, or a workspace handle such as "miky" — never a display name. Each is added to the file, as the Add button does. Refused when the text mentions anybody new this does not name, or this names somebody the text does not mention.',
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
@@ -359,6 +366,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Optional. The issue body. An empty string clears it.',
           },
+          mention: MENTION_PROPERTY,
           project: {
             type: 'string',
             description:
@@ -495,6 +503,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Optional. What the project is for. An empty string clears it.',
           },
+          mention: MENTION_PROPERTY,
           status: {
             type: 'string',
             enum: ['planned', 'in_progress', 'completed', 'cancelled'],
@@ -526,6 +535,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           title: { type: 'string', description: 'A short name for the project.' },
           summary: { type: 'string', description: SUMMARY_NOTE },
           description: { type: 'string', description: 'Optional. What the project is for.' },
+          mention: MENTION_PROPERTY,
         },
         required: ['team', 'title'],
         additionalProperties: false,
@@ -543,6 +553,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           title: { type: 'string', description: 'A short title.' },
           summary: { type: 'string', description: SUMMARY_NOTE },
           description: { type: 'string', description: 'Optional body text.' },
+          mention: MENTION_PROPERTY,
         },
         required: ['project', 'title'],
         additionalProperties: false,
@@ -794,7 +805,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Same reason as `ship_edit_project` below: an empty string is how a
         // description is cleared, and `flagsFrom` would drop it.
         const flags: Record<string, string | true> = {}
-        for (const name of ['title', 'summary', 'description', 'project']) {
+        for (const name of ['title', 'summary', 'description', 'mention', 'project']) {
           const value = input[name]
           if (typeof value === 'string') flags[name] = value
         }
@@ -832,7 +843,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           command reads the difference as "leave alone" versus "clear".
         */
         const flags: Record<string, string | true> = {}
-        for (const name of ['title', 'summary', 'description', 'status', 'lead']) {
+        for (const name of ['title', 'summary', 'description', 'mention', 'status', 'lead']) {
           const value = input[name]
           if (typeof value === 'string') flags[name] = value
         }
@@ -840,10 +851,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'ship_create_project':
-        return dispatch(command('create-project'), args(flagsFrom(input, ['team', 'title', 'summary', 'description'])))
+        return dispatch(command('create-project'), args(flagsFrom(input, ['team', 'title', 'summary', 'description', 'mention'])))
 
       case 'ship_create_issue':
-        return dispatch(command('create-issue'), args(flagsFrom(input, ['project', 'title', 'summary', 'description'])))
+        return dispatch(command('create-issue'), args(flagsFrom(input, ['project', 'title', 'summary', 'description', 'mention'])))
 
       case 'peek_list_topics':
         return dispatch(command('topics', peekApp), args(flagsFrom(input, ['folder'])))
