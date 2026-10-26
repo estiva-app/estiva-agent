@@ -19390,6 +19390,26 @@ function foldEdits(events, targets = []) {
   }
   return out;
 }
+function foldAttachments(events) {
+  const out = {};
+  for (const event of events) {
+    if (!isConversationKind(event.kind))
+      continue;
+    const files = imetaOf(event);
+    if (files.length > 0)
+      out[event.id.toLowerCase()] = files;
+  }
+  for (const [target, list] of editsByTarget(events)) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const files = imetaOf(list[i]);
+      if (files.length === 0)
+        continue;
+      out[target] = files;
+      break;
+    }
+  }
+  return out;
+}
 
 // node_modules/@estiva-app/conversation/dist/reactions.js
 var REACTION_HORIZON = 100;
@@ -22377,8 +22397,17 @@ function resolveOne(items, reference, how) {
 // lib/agent/conversation.ts
 async function publishEdit(context2, args2) {
   if (!args2.folder) throw new BadRequest("That message names no Folder, so an edit of it has nowhere to be published.");
+  const id = args2.messageEventId.toLowerCase();
+  const events = await relayQuery(context2)([{ ids: [id] }, { kinds: [KIND_EDIT], "#e": [id] }]);
+  if (!events.some((event) => event.id === id)) throw new BadRequest("That message could not be read back, so it was not edited. Try again.");
+  const files = foldAttachments(events)[id] ?? [];
   const signed = await context2.signer.sign(
-    buildEdit(context2.signer.pubkey, Date.now(), { channelUuid: args2.folder, targetEventId: args2.messageEventId, body: args2.body })
+    buildEdit(context2.signer.pubkey, Date.now(), {
+      channelUuid: args2.folder,
+      targetEventId: args2.messageEventId,
+      body: args2.body,
+      mediaTags: files.map(imetaTag)
+    })
   );
   const result = await context2.relay.publish(signed);
   return { ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id };
