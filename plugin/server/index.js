@@ -24748,9 +24748,8 @@ var fileApp = {
       async run(context2, args2) {
         const address = await fileArg(context2, args2, "show");
         const cache = createProjectionCache();
-        const file = await readFile2(context2, address, cache);
+        const [file, folderId] = await Promise.all([readFile2(context2, address, cache), folderOfFile(context2, address)]);
         const text2 = textOf3(file);
-        const folderId = await folderOfFile(context2, address);
         const [channel] = folderId ? await relayQuery(context2)([{ kinds: [KIND_FOLDER], "#d": [folderId], limit: 1 }]) : [];
         const folder = channel ? { name: channel.tags.find((tag) => tag[0] === "name")?.[1] } : void 0;
         return {

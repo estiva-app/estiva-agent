@@ -353,9 +353,8 @@ export const fileApp: AgentApp = {
       async run(context, args) {
         const address = await fileArg(context, args, 'show')
         const cache = createProjectionCache()
-        const file = await readFile(context, address, cache)
+        const [file, folderId] = await Promise.all([readFile(context, address, cache), folderOfFile(context, address)])
         const text = textOf(file)
-        const folderId = await folderOfFile(context, address)
         // The Folder's own record names it (§3.2); `listFolders` would read every Folder's listing for one name.
         const [channel] = folderId ? await relayQuery(context)([{ kinds: [KIND_FOLDER], '#d': [folderId], limit: 1 }]) : []
         const folder = channel ? { name: channel.tags.find((tag) => tag[0] === 'name')?.[1] } : undefined
