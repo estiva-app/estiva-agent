@@ -1162,10 +1162,11 @@ console.log('— an edit lists the files the message keeps —')
   const earlierEdit = (tags: string[][]): SignedEvent => ({ id: '4'.repeat(64), pubkey: self, kind: KIND_EDIT, created_at: 2_000, content: 'old', sig: '', tags: [['h', 'folder'], ['e', target], ...tags] })
   const fake = (held: SignedEvent[]) => {
     const sent: SignedEvent[] = []
+    // A relay by filter: ids, kinds and every `#<tag>`, as the real one reads them.
     const matches = (e: SignedEvent, f: Record<string, unknown>) =>
       (!f.ids || (f.ids as string[]).includes(e.id)) &&
       (!f.kinds || (f.kinds as number[]).includes(e.kind)) &&
-      (!f['#e'] || e.tags.some((t) => t[0] === 'e' && (f['#e'] as string[]).includes(t[1])))
+      Object.entries(f).every(([k, v]) => !k.startsWith('#') || e.tags.some((t) => t[0] === k.slice(1) && (v as string[]).includes(t[1])))
     const context = {
       signer: { pubkey: self, sign: async (event: SignedEvent) => ({ ...event, id: '5'.repeat(64), sig: '' }) },
       relay: {
@@ -1184,9 +1185,11 @@ console.log('— an edit lists the files the message keeps —')
     check('and carries the new words', sent[0]?.content === 'new words')
   }
   {
-    const { context, sent } = fake([message([file('b', 'brief.png')]), earlierEdit([file('c', 'shot.png')])])
+    // An edit of another message, held beside them, is not this message's.
+    const elsewhere: SignedEvent = { ...earlierEdit([file('f', 'other.png')]), id: '6'.repeat(64), created_at: 3_000, tags: [['h', 'folder'], ['e', '7'.repeat(64)], file('f', 'other.png')] }
+    const { context, sent } = fake([message([file('b', 'brief.png')]), earlierEdit([file('c', 'shot.png')]), elsewhere])
     await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' })
-    check("it lists the set an earlier edit left, not the message's own", imetaOf(sent[0]) === JSON.stringify([file('c', 'shot.png')]), imetaOf(sent[0]))
+    check("it lists the set an earlier edit left, not the message's own nor another message's", imetaOf(sent[0]) === JSON.stringify([file('c', 'shot.png')]), imetaOf(sent[0]))
   }
   {
     const { context, sent } = fake([message([])])
@@ -1198,6 +1201,13 @@ console.log('— an edit lists the files the message keeps —')
     let refused = ''
     await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' }).catch((error: Error) => (refused = error.message))
     check('a message that cannot be read back is not edited, since its files are unknown', sent.length === 0 && refused.includes('could not be read back'), refused)
+  }
+  {
+    // Its edits alone do not say which files the message was sent with.
+    const { context, sent } = fake([earlierEdit([])])
+    let refused = ''
+    await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' }).catch((error: Error) => (refused = error.message))
+    check('nor is one whose edits can be read but not the message itself', sent.length === 0 && refused.includes('could not be read back'), refused)
   }
 }
 
