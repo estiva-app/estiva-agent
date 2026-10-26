@@ -18,7 +18,7 @@ import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArg
 import { edited, findMessage, publishEdit } from '../conversation'
 import { describe, descriptionText, formatName } from '../descriptions'
 import { printedLinks } from '../links'
-import { askedToMention, fileText, mentionAdds, mentionedKeys, publishMentionAdds, relayMembers, withMentions } from '../mentions'
+import { askedToMention, fileText, mentionAdds, mentionedKeys, NO_MENTIONS, publishMentionAdds, relayMembers, withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
 import { SUMMARY_LENGTH, summaryRoute, summaryText, summaryWarning } from '../summary'
@@ -397,7 +397,7 @@ function addsFor(
   asked: readonly string[],
 ) {
   const edit = edits.find((candidate) => candidate.field === 'description')
-  if (!edit) return []
+  if (!edit) return NO_MENTIONS
   return mentionAdds(context.signer.pubkey, {
     file: target.addr,
     folder: target.folder,
@@ -2029,9 +2029,10 @@ export const shipApp: AgentApp = {
           )
         }
 
-        const adds = addsFor(context, { addr: issue.addr, folder }, issue, edits, asked)
+        const plan = addsFor(context, { addr: issue.addr, folder }, issue, edits, asked)
 
         const applied: ReturnType<typeof appliedEdit>[] = []
+        let mentioned = {}
         for (const edit of edits) {
           const result = await setField(context, state, { addr: issue.addr, author: issue.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat)
           if (!result.ok) {
@@ -2041,8 +2042,9 @@ export const shipApp: AgentApp = {
             )
           }
           applied.push(appliedEdit(edit, result.eventId))
+          // Straight after the save it goes with, so a later field's refusal cannot leave a mention without its Add.
+          if (edit.field === 'description') mentioned = await publishMentionAdds(context, plan, `The description of ${issue.ref ?? issue.addr}`)
         }
-        const mentioned = await publishMentionAdds(context, adds, `The description of ${issue.ref ?? issue.addr}`)
 
         /*
           A move re-parents the issue and moves nothing else. The issue event's
@@ -2061,7 +2063,7 @@ export const shipApp: AgentApp = {
         return {
           changed: { ref: issue.ref, addr: issue.addr, title: issue.title, folder },
           applied,
-          ...(mentioned.length ? { mentioned } : {}),
+          ...mentioned,
           ...(conversationStaysBehind ? { note: conversationStaysBehind } : {}),
         }
       },
@@ -2119,8 +2121,9 @@ export const shipApp: AgentApp = {
           answer names the ones that landed rather than reporting the whole call
           as failed and leaving a person guessing about half of it.
         */
-        const adds = addsFor(context, { addr: project.addr, folder }, project, edits, asked)
+        const plan = addsFor(context, { addr: project.addr, folder }, project, edits, asked)
         const applied: ReturnType<typeof appliedEdit>[] = []
+        let mentioned = {}
         for (const edit of edits) {
           const result = await setField(context, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat)
           if (!result.ok) {
@@ -2130,10 +2133,11 @@ export const shipApp: AgentApp = {
             )
           }
           applied.push(appliedEdit(edit, result.eventId))
+          // Straight after the save it goes with, so a later field's refusal cannot leave a mention without its Add.
+          if (edit.field === 'description') mentioned = await publishMentionAdds(context, plan, `The description of “${project.title}”`)
         }
-        const mentioned = await publishMentionAdds(context, adds, `The description of “${project.title}”`)
 
-        return { changed: { title: project.title, addr: project.addr, folder }, applied, ...(mentioned.length ? { mentioned } : {}) }
+        return { changed: { title: project.title, addr: project.addr, folder }, applied, ...mentioned }
       },
     },
     {
@@ -2396,7 +2400,7 @@ export const shipApp: AgentApp = {
         const body = description ? await describePlacing(context, '', undefined, description) : undefined
         const adds = body
           ? mentionAdds(context.signer.pubkey, { file: `${KIND.PROJECT}:${context.signer.pubkey}:${id}`, folder: team.id, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked })
-          : []
+          : NO_MENTIONS
         const manifest = state.manifestFor(`${KIND.PROJECT}:${context.signer.pubkey}:${id}`)
         // Seeded on the record when the manifest takes it, and then readable by
         // the whole workspace as the project's name is (SPEC §6.12; Miky, 2026-10-15).
@@ -2433,7 +2437,7 @@ export const shipApp: AgentApp = {
         return {
           created: { title, ...(summary ? { summary } : {}), ...(key ? { key } : {}), addr: created.addr, team: { id: team.id, name: team.name } },
           eventId: created.result.eventId,
-          ...(mentioned.length ? { mentioned } : {}),
+          ...mentioned,
           ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
           /*
             Apart from the record, as Ship reports it: a refused listing is a
@@ -2483,7 +2487,7 @@ export const shipApp: AgentApp = {
         const body = description ? await describePlacing(context, '', undefined, description) : undefined
         const addr =`${KIND.ISSUE}:${context.signer.pubkey}:${id}`
         // A mention in the new text adds the person beside it (§11.8); built now, so a refusal publishes nothing.
-        const adds = body ? mentionAdds(context.signer.pubkey, { file: addr, folder, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : []
+        const adds = body ? mentionAdds(context.signer.pubkey, { file: addr, folder, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : NO_MENTIONS
         const summary = summaryText(flagValue(args, 'summary') ?? '')
         const route = summary ? summaryRoute(state.manifestFor(project.addr)?.manifest, 'add-issue', KIND.ISSUE) : undefined
         if (summary && !route) throw new BadRequest(`Ship's manifest declares no summary for an issue yet, so --summary has nowhere to go. Nothing was published.`)
@@ -2511,7 +2515,7 @@ export const shipApp: AgentApp = {
           state: issueLine({ ref: NO_REF, id: created.id, status: state.vocab.issue.fallback, comments: [] }, undefined),
           created: { short: short(created.id), addr: created.addr, title, ...(summary ? { summary } : {}), project: project.title },
           eventId: created.result.eventId,
-          ...(mentioned.length ? { mentioned } : {}),
+          ...mentioned,
           ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
         }
       },

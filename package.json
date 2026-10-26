@@ -21,7 +21,7 @@
   "dependencies": {
     "@estiva-app/conversation": "^0.17.0",
     "@estiva-app/identity": "^0.2.2",
-    "@estiva-app/interop": "^0.61.0",
+    "@estiva-app/interop": "^0.65.1",
     "@estiva-app/protocol": "^0.42.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@noble/curves": "1.9.2",

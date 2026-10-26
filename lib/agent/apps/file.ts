@@ -49,7 +49,7 @@ import { BadRequest, flagValue, refuseUnsignable, type AgentApp, type AgentConte
 import { edited, findThread, readConversation, replyToOf, type Conversation } from '../conversation'
 import { descriptionText, formatName } from '../descriptions'
 import { printedLinks } from '../links'
-import { askedToMention, fileText, mentionAdds, mentionedKeys, publishMentionAdds, relayMembers, withMentions } from '../mentions'
+import { askedToMention, fileText, mentionAdds, mentionedKeys, NO_MENTIONS, publishMentionAdds, relayMembers, withMentions } from '../mentions'
 import { profilesOf } from '../profiles'
 import { resolveOne } from '../resolve'
 import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../summary'
@@ -274,7 +274,7 @@ export const fileApp: AgentApp = {
         if (description && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`)
         const body = description ? await describePlacing(context, '', undefined, description) : undefined
         // A mention in the new text adds the person beside it (§11.8); built now, so a refusal publishes nothing.
-        const adds = body ? mentionAdds(context.signer.pubkey, { file: address, folder: folder.id, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : []
+        const adds = body ? mentionAdds(context.signer.pubkey, { file: address, folder: folder.id, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : NO_MENTIONS
 
         const built = buildActionEvents({
           manifest: creator,
@@ -324,7 +324,7 @@ export const fileApp: AgentApp = {
           created: { title, type, address, folder: folder.name ?? folder.id, ...(summary ? { summary } : {}), url: file?.openUrl },
           eventId: signed.id,
           ...(body?.blocks ? { blocks: body.blocks.added } : {}),
-          ...(mentioned.length ? { mentioned } : {}),
+          ...mentioned,
           ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
         }
       },
@@ -398,7 +398,7 @@ export const fileApp: AgentApp = {
           changed: { file: title, address, url: file.openUrl, version: versionOf({ value: next.value, format: next.contentFormat ? 'blocks' : before.format }) },
           ...(next.blocks ? { blocks: next.blocks } : {}),
           eventId: result.eventId,
-          ...(mentioned.length ? { mentioned } : {}),
+          ...mentioned,
           ...(detached.length
             ? {
                 detached: detached.map((thread) => ({ id: thread.root.id, opening: thread.root.body.slice(0, 80) })),

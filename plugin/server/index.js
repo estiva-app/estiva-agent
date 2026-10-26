@@ -19981,7 +19981,7 @@ var BARE_FILE_MANIFEST = {
         /*
           No `body`: a topic is a conversation and has no text (SPEC §6.7,
           2026-10-19), so nothing draws one and no document app lists it.
-          why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-document-app-writes-what-a-files-app-shares.md
+          why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-card-changes-what-a-files-app-shares.md
         */
         // A bare file may hold bare files — a sub-topic under a topic. Children
         // of *other* kinds are found the other way round, by their own `a`
@@ -20634,17 +20634,13 @@ function resolveSlots(projection, root, folded, manifest) {
   }
   return { slots, meta: meta2 };
 }
+function changedAtOf(root, folded) {
+  return Math.max(root.created_at, ...Object.values(folded).map((f) => f.at ?? 0));
+}
 function buildObject(args2) {
   const { root, pointer, manifest, projection, folded } = args2;
   const naddr = encodeNaddr(pointer);
   const { slots, meta: meta2 } = resolveSlots(projection, root, folded, manifest);
-  const held = {};
-  for (const spec of Object.values(withDefaultSubtitle(projection.slots, root.kind)).flat()) {
-    const field = spec.fold ?? (Array.isArray(spec.tag) ? spec.tag[0] : spec.tag);
-    const raw = field ? rawSlotValue(spec, root, folded, false)?.value : void 0;
-    if (field && raw !== void 0)
-      held[field] = raw;
-  }
   const objectAddress = pointerToAddress(pointer);
   return {
     // An addressable object's `ref` is its address: stable across the author
@@ -20668,10 +20664,21 @@ function buildObject(args2) {
     // Substituted here rather than in the component: `<bech32>` is a NIP-89
     // detail, and the widget's job is to draw a link, not to know the spec.
     openUrl: args2.webTemplate?.replace("<bech32>", naddr),
-    actions: resolveActions(manifest, pointer.kind, folded).map((action) => action.current === void 0 && action.field ? { ...action, current: held[action.field] } : action),
+    actions: actionsOfFile(manifest, projection, root, folded),
     viaRecommendation: args2.viaRecommendation,
-    ...args2.archived ? { archived: args2.archived } : {}
+    ...args2.archived ? { archived: args2.archived } : {},
+    changedAt: changedAtOf(root, folded)
   };
+}
+function actionsOfFile(manifest, projection, root, folded) {
+  const held = {};
+  for (const spec of Object.values(withDefaultSubtitle(projection.slots, root.kind)).flat()) {
+    const field = spec.fold ?? (Array.isArray(spec.tag) ? spec.tag[0] : spec.tag);
+    const raw = field ? rawSlotValue(spec, root, folded, false)?.value : void 0;
+    if (field && raw !== void 0)
+      held[field] = raw;
+  }
+  return resolveActions(manifest, root.kind, folded).map((action) => action.current === void 0 && action.field ? { ...action, current: held[action.field] } : action);
 }
 async function resolveForeignObject(naddr, query, lookupPeople, depth = 0, cache, options = {}) {
   const pointer = addressPointerOf(naddr);
@@ -20689,11 +20696,13 @@ async function resolveForeignObject(naddr, query, lookupPeople, depth = 0, cache
     options.folderFiles && pointer.kind === KIND_CHANNEL_METADATA ? folderFilesOf(pointer.identifier, query, lookupPeople, cache) : void 0
   ]);
   const followUp = childChangeFilters(plan, answered);
-  const assembled = assembleObject(plan, answered, followUp.length ? await queryChunked(followUp, query) : []);
+  const childChanges = followUp.length ? await queryChunked(followUp, query) : [];
+  const childOwners = await childOwnersOf(plan, answered, childChanges, query, cache);
+  const assembled = assembleObject(plan, answered, childChanges, childOwners);
   if (assembled.object.unreachable)
     return assembled.object;
   if (options.archivedWith)
-    await markArchivedParents([{ object: assembled.object, manifest: resolved.manifest }], query);
+    await markArchivedParents([{ object: assembled.object, manifest: resolved.manifest }], query, cache);
   return withFiles(withBorrowed(withPeople(assembled, await (lookupPeople ?? peopleViaRelay(query))(peopleOf(assembled))), borrowedActions(pointer.kind, resolved, creators)), files);
 }
 function withBorrowed(object3, borrowed) {
@@ -20760,24 +20769,88 @@ async function folderFilesOf(folder, query, lookupPeople, cache) {
 function withFiles(object3, files) {
   return files ? { ...object3, children: files } : object3;
 }
-async function markArchivedParents(entries, query) {
-  const waiting = entries.filter(({ object: o }) => !o.unreachable && !o.archived && o.parentRef && addressPointerOf(o.parentRef));
-  if (waiting.length === 0)
-    return;
-  const rules = waiting.map(({ object: object3, manifest }) => relatedRuleOf(manifest, object3.parentRef));
-  const parents = [...new Set(waiting.map(({ object: object3 }) => object3.parentRef))];
-  const changes = await readArchiveChanges(parents, query, rules);
-  for (const [index, { object: object3 }] of waiting.entries()) {
-    const archive = archiveOf(changes, object3.parentRef, rules[index], void 0);
-    if (archive)
-      object3.archived = { ...archive, with: object3.parentRef };
+async function markArchivedParents(entries, query, cache) {
+  await walkArchivedAbove(entries.filter(({ object: o }) => !o.unreachable && !o.archived && o.parentRef && plainAddress(o.parentRef)).map(({ object: object3, manifest }) => ({
+    manifest,
+    at: plainAddress(object3.parentRef),
+    seen: /* @__PURE__ */ new Set([plainAddress(object3.address ?? "") ?? ""]),
+    mark: (archive) => {
+      object3.archived = archive;
+    }
+  })), query, cache);
+}
+function plainAddress(reference) {
+  const pointer = addressPointerOf(reference);
+  return pointer ? `${pointer.kind}:${pointer.pubkey}:${pointer.identifier}` : void 0;
+}
+async function walkArchivedAbove(starts, query, cache) {
+  let walking = starts;
+  while (walking.length) {
+    const drawnBy = [];
+    const keyed = walking.map((walk) => {
+      const own = walk.manifest?.projections?.[String(addressPointerOf(walk.at).kind)] ? walk.manifest : void 0;
+      if (own && !drawnBy.includes(own))
+        drawnBy.push(own);
+      return { walk, key: `${walk.at}|${own ? drawnBy.indexOf(own) : ""}`, own };
+    });
+    const theirOwn = /* @__PURE__ */ new Map();
+    const resolved = await Promise.all([...new Map(keyed.map((entry) => [entry.key, entry])).values()].map(async ({ key, walk, own }) => {
+      const pointer = addressPointerOf(walk.at);
+      if (!own && !theirOwn.has(walk.at)) {
+        theirOwn.set(walk.at, resolveManifest(pointer, query, cache).then((r) => r?.manifest, () => pointer.kind === KIND_BARE_FILE ? bareFileManifest().manifest : void 0));
+      }
+      return { key, address: walk.at, pointer, manifest: own ?? await theirOwn.get(walk.at) };
+    }));
+    const ancestors = resolved.filter((a) => !!a.manifest);
+    const rules = ancestors.map(({ manifest }) => archiveRuleOf(manifest));
+    const addresses = [...new Set(ancestors.map(({ address }) => address))];
+    const roots = /* @__PURE__ */ new Map();
+    for (const address of addresses) {
+      const pointer = addressPointerOf(address);
+      const group = `${pointer.kind}:${pointer.pubkey}`;
+      const filter = roots.get(group) ?? { kinds: [pointer.kind], authors: [pointer.pubkey], "#d": [] };
+      filter["#d"].push(pointer.identifier);
+      roots.set(group, filter);
+    }
+    const filters = [
+      ...[...roots.values()].flatMap((filter) => {
+        const groups = [];
+        for (let start = 0; start < filter["#d"].length; start += PARENT_ROOT_GROUP) {
+          groups.push({ ...filter, "#d": filter["#d"].slice(start, start + PARENT_ROOT_GROUP) });
+        }
+        return groups;
+      }),
+      ...archiveFilters(addresses, rules)
+    ];
+    const events = await queryChunked(filters, query);
+    const read = /* @__PURE__ */ new Map();
+    for (const [index, { key, address, pointer, manifest }] of ancestors.entries()) {
+      const root = events.filter((e) => e.kind === pointer.kind && e.pubkey === pointer.pubkey && tagValue2(e, "d") === pointer.identifier).sort(byOrder).at(-1);
+      if (!root)
+        continue;
+      const parent = manifest?.projections?.[String(pointer.kind)] ? parentRefOf(manifest, pointer.kind, root, foldOf(events, address, manifest, root)) : void 0;
+      read.set(key, { archive: archiveOf(events, address, rules[index], root), parent, manifest });
+    }
+    const next = [];
+    for (const { walk, key } of keyed) {
+      const found = read.get(key);
+      if (!found)
+        continue;
+      if (found.archive) {
+        walk.mark({ ...found.archive, with: walk.at });
+        continue;
+      }
+      walk.seen.add(walk.at);
+      const parent = found.parent && plainAddress(found.parent);
+      if (parent && !walk.seen.has(parent)) {
+        next.push({ ...walk, manifest: found.manifest, at: parent });
+      }
+    }
+    walking = next;
   }
 }
-function relatedRuleOf(manifest, address) {
-  const kind = addressPointerOf(address)?.kind;
-  return manifest && kind !== void 0 && manifest.projections?.[String(kind)] ? archiveRuleOf(manifest) : ARCHIVE_RULE;
-}
 var ARCHIVE_READ_GROUP = 25;
+var PARENT_ROOT_GROUP = 100;
 function archiveFilters(addresses, rules = [ARCHIVE_RULE], groupSize = ARCHIVE_READ_GROUP) {
   const shapes = new Map(rules.map((rule) => [`${rule.changeKind}:${rule.targetTag}`, rule]));
   const filters = [];
@@ -20829,7 +20902,7 @@ function planObject(naddr, pointer, resolved, depth) {
   ];
   return { naddr, pointer, address, resolved, projection, records, commentKinds, childFilter, filters, openUrl };
 }
-function assembleObject(plan, answered, childChanges = []) {
+function assembleObject(plan, answered, childChanges = [], childOwners = /* @__PURE__ */ new Set()) {
   const { naddr, pointer, address, resolved, projection, commentKinds, childFilter, openUrl } = plan;
   const { manifest, viaRecommendation } = resolved;
   const seen = /* @__PURE__ */ new Set();
@@ -20879,7 +20952,8 @@ function assembleObject(plan, answered, childChanges = []) {
     manifest,
     webTemplate: resolved.webTemplate,
     viaRecommendation,
-    childChanges
+    childChanges,
+    childOwners
   });
   return { object: object3, ...children ? { children } : {} };
 }
@@ -20983,7 +21057,7 @@ function movedInAddressesOf(events, childFilter, records) {
   return [...new Set(targets)];
 }
 function childrenFrom(args2) {
-  const { events, childFilter, manifest, webTemplate: webTemplate2, viaRecommendation, childChanges = [] } = args2;
+  const { events, childFilter, manifest, webTemplate: webTemplate2, viaRecommendation, childChanges = [], childOwners = /* @__PURE__ */ new Set() } = args2;
   if (childFilter === void 0)
     return void 0;
   if (childFilter === null)
@@ -21017,9 +21091,33 @@ function childrenFrom(args2) {
     if (address && manifest.records && archiveOf(childChanges, address, records, event))
       return [];
     return [
-      buildChildObject({ root: event, manifest, projection: childProjection, records, webTemplate: webTemplate2, viaRecommendation, folded })
+      buildChildObject({
+        root: event,
+        manifest,
+        projection: childProjection,
+        records,
+        webTemplate: webTemplate2,
+        viaRecommendation,
+        folded,
+        ownsKind: childOwners.has(event.pubkey)
+      })
     ];
   });
+}
+async function childOwnersOf(plan, answered, childChanges, query, cache) {
+  const { childFilter, resolved } = plan;
+  if (!childFilter || resolveActions(resolved.manifest, childFilter.kind, {}).length === 0)
+    return /* @__PURE__ */ new Set();
+  const movedIn = new Set(movedInAddressesOf(answered, childFilter, resolved.manifest.records));
+  const authors = /* @__PURE__ */ new Set([
+    ...childRootsOf(answered, childFilter).map((e) => e.pubkey),
+    ...childChanges.filter((e) => e.kind === childFilter.kind && movedIn.has(childAddressOf(e) ?? "")).map((e) => e.pubkey)
+  ]);
+  const owners = await Promise.all([...authors].map(async (pubkey) => {
+    const owner = await resolveManifest({ kind: childFilter.kind, pubkey, identifier: "", relays: [] }, query, cache).catch(() => null);
+    return owner?.address === resolved.address ? [pubkey] : [];
+  }));
+  return new Set(owners.flat());
 }
 function childRootsOf(events, childFilter) {
   return events.filter((e) => e.kind === childFilter.kind && hasTagValue(e, childFilter.via, childFilter.parent)).sort(byOrder);
@@ -21051,7 +21149,7 @@ function childChangeFilters(plan, answered) {
 }
 var CHILD_CHANGE_GROUP = 10;
 function buildChildObject(args2) {
-  const { root, manifest, projection, webTemplate: webTemplate2, viaRecommendation, nevent, folded = {} } = args2;
+  const { root, manifest, projection, webTemplate: webTemplate2, viaRecommendation, nevent, folded = {}, ownsKind = false } = args2;
   const identifier = tagValue2(root, "d");
   const addressable = identifier !== void 0;
   const pointer = {
@@ -21096,9 +21194,12 @@ function buildChildObject(args2) {
           single template serve both, and what stops a message linking to nothing.
         */
     openUrl: naddr ?? nevent ? webTemplate2?.replace("<bech32>", naddr ?? nevent) : void 0,
-    // See the note above: nothing can be declared to act on a regular event.
-    actions: [],
-    viaRecommendation
+    // See the note above: nothing can be declared to act on a regular event, and an event read by its id
+    // (`nevent`) may be an older version of its file, its changes unread, so it is offered none either.
+    // A child drawn through an app that does not own its kind gets none: they are not its owner's (`childOwnersOf`).
+    actions: addressable && !nevent && ownsKind ? actionsOfFile(manifest, projection, root, folded) : [],
+    viaRecommendation,
+    changedAt: changedAtOf(root, folded)
   };
 }
 var OPEN_STATUSES = /* @__PURE__ */ new Set([
@@ -21649,7 +21750,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
   const listed = [];
   const archiveByAddress = /* @__PURE__ */ new Map();
   const parentByAddress = /* @__PURE__ */ new Map();
-  const parentRuleOf = /* @__PURE__ */ new Map();
+  const manifestByAddress = /* @__PURE__ */ new Map();
   for (const { address, pointer } of pointers) {
     const resolved = manifests.get(manifestKeyOf(pointer));
     if (!resolved)
@@ -21666,9 +21767,8 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
     const archive = archiveOf(events, address, archiveRuleOf(resolved.manifest), root, nestedAdmins);
     archiveByAddress.set(address, archive);
     const parent = parentRefOf(resolved.manifest, pointer.kind, root, folded);
-    parentByAddress.set(address, parent);
-    if (parent)
-      parentRuleOf.set(parent, relatedRuleOf(resolved.manifest, parent));
+    parentByAddress.set(address, parent && (plainAddress(parent) ?? parent));
+    manifestByAddress.set(address, resolved.manifest);
     const hidden = !!records.hiddenWhen && folded[records.hiddenWhen.field]?.value === records.hiddenWhen.equals;
     if (hidden && !archive)
       continue;
@@ -21694,21 +21794,46 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
       })
     });
   }
-  const outside = [
-    ...new Set(listed.flatMap(({ file }) => {
-      const parent = file.address && parentByAddress.get(file.address);
-      return parent && !archiveByAddress.has(parent) && addressPointerOf(parent) ? [parent] : [];
-    }))
-  ];
-  if (outside.length) {
-    const ruleFor = (parent) => parentRuleOf.get(parent) ?? ARCHIVE_RULE;
-    const changes = await readArchiveChanges(outside, query, outside.map(ruleFor));
-    for (const parent of outside)
-      archiveByAddress.set(parent, archiveOf(changes, parent, ruleFor(parent), void 0));
+  const exits = /* @__PURE__ */ new Map();
+  const exitOf = /* @__PURE__ */ new Map();
+  const drawnBy = [];
+  for (const { file, archive } of listed) {
+    if (archive || !file.address)
+      continue;
+    const seen = /* @__PURE__ */ new Set([file.address]);
+    let child = file.address;
+    for (let at = parentByAddress.get(child); at && !seen.has(at); child = at, at = parentByAddress.get(at)) {
+      if (!archiveByAddress.has(at)) {
+        const plain = plainAddress(at);
+        if (!plain)
+          break;
+        const manifest = manifestByAddress.get(child);
+        const own = manifest?.projections?.[String(addressPointerOf(plain).kind)] ? manifest : void 0;
+        if (own && !drawnBy.includes(own))
+          drawnBy.push(own);
+        const key = `${plain}|${own ? drawnBy.indexOf(own) : ""}`;
+        if (!exits.has(key))
+          exits.set(key, { at: plain, manifest, seen });
+        exitOf.set(file.address, key);
+        break;
+      }
+      if (archiveByAddress.get(at))
+        break;
+      seen.add(at);
+    }
   }
+  await walkArchivedAbove([...exits.values()].map((exit) => ({
+    at: exit.at,
+    manifest: exit.manifest,
+    seen: exit.seen,
+    mark: (found) => {
+      exit.archive = found;
+    }
+  })), query, cache);
   const files = [];
   for (const { file, archive } of listed) {
-    const effective = archive ?? (file.address ? archivedAncestorOf(file.address, (a) => parentByAddress.get(a), (a) => archiveByAddress.get(a)) : void 0);
+    const exit = file.address ? exitOf.get(file.address) : void 0;
+    const effective = archive ?? (file.address ? archivedAncestorOf(file.address, (a) => parentByAddress.get(a), (a) => archiveByAddress.get(a)) : void 0) ?? (exit ? exits.get(exit)?.archive : void 0);
     if (!effective)
       files.push(file);
     else if (options.includeArchived)
@@ -21789,9 +21914,13 @@ function eventIdFromRef(ref) {
   return match ? match[1].toLowerCase() : null;
 }
 function urlPatternsOf(event) {
+  const own = new Set(event.tags.filter((tag) => tag[0] === "web" && tag[1]).map((tag) => originOfUrl(tag[1])));
   const out = [];
   for (const tag of event.tags) {
     if (tag[0] !== "urls" || !tag[1])
+      continue;
+    const origin = originOfUrl(tag[1]);
+    if (origin === null || !own.has(origin))
       continue;
     const kind = tag[2] ? Number(tag[2]) : void 0;
     out.push({ pattern: tag[1], ...Number.isInteger(kind) ? { kind } : {} });
@@ -21803,14 +21932,19 @@ function matchObjectUrl(url, patterns) {
   const target = splitUrl(url);
   if (!target)
     return null;
-  let best = null;
-  for (const { pattern, kind } of patterns) {
+  const origin = `${target.scheme}://${target.host}`;
+  const shapes = patterns.flatMap(({ pattern, kind }) => {
     const shape = splitUrl(pattern);
-    if (!shape)
-      continue;
-    if (shape.scheme !== target.scheme || shape.host !== target.host)
-      continue;
+    return shape ? [{ shape, kind, own: `${shape.scheme}://${shape.host}` === origin }] : [];
+  });
+  if (!shapes.some(({ own }) => own))
+    return null;
+  const onOwn = [];
+  const elsewhere = [];
+  for (const { shape, kind, own } of shapes) {
     if (shape.fragmented !== target.fragmented)
+      continue;
+    if (!own && (shape.fragmented || kind === void 0))
       continue;
     if (shape.segments.length !== target.segments.length)
       continue;
@@ -21842,10 +21976,31 @@ function matchObjectUrl(url, patterns) {
       ...block === void 0 ? {} : { block }
     };
     const specificity = declared.length * 2 + (block === void 0 ? 0 : 1);
-    if (!best || specificity > best.specificity)
-      best = { specificity, match };
+    (own ? onOwn : elsewhere).push({ specificity, match });
   }
-  return best?.match ?? null;
+  return onOwn.length > 0 ? chosen(onOwn) : chosen(elsewhere);
+}
+function chosen(candidates) {
+  if (candidates.length === 0)
+    return null;
+  const top = Math.max(...candidates.map((c) => c.specificity));
+  const [first, ...rest] = candidates.filter((c) => c.specificity === top).map((c) => c.match);
+  if (rest.some((match) => identityOf(match) !== identityOf(first)))
+    return null;
+  const same = candidates.map((c) => c.match).filter((match) => identityOf(match) === identityOf(first));
+  const named = { ...first };
+  delete named.kind;
+  if (same.some((match) => match.kind === void 0))
+    return named;
+  const kinds = [...new Set(same.map((match) => match.kind))].sort((a, b) => a - b);
+  return kinds.length === 1 ? { ...named, kind: kinds[0] } : { ...named, kinds };
+}
+function identityOf(match) {
+  return [match.by, match.identifier, match.within?.by ?? "", match.within?.identifier ?? ""].join(" ");
+}
+function originOfUrl(raw) {
+  const parts = splitUrl(raw);
+  return parts ? `${parts.scheme}://${parts.host}` : null;
 }
 function readBlock(pattern, value) {
   const at = pattern.indexOf(BLOCK_PLACEHOLDER);
@@ -22085,17 +22240,20 @@ async function namesOfLinks(context2, tree) {
   if (urls.size === 0) return () => void 0;
   const manifests = await context2.relay.queryAll([{ kinds: [KIND_APP_HANDLER], limit: 500 }]);
   const shapes = manifests.flatMap((manifest) => urlPatternsOf(manifest));
-  for (const url of urls) {
-    const hit = matchObjectUrl(url, shapes);
-    if (!hit) continue;
-    if (hit.by === "id") {
-      if (EVENT_ID2.test(hit.identifier)) names.set(url, hit.identifier.toLowerCase());
-      continue;
-    }
-    const found = await context2.relay.queryAll([{ "#d": [hit.identifier], limit: 2, ...hit.kind === void 0 ? {} : { kinds: [hit.kind] } }]);
-    const holders = new Set(found.map((event) => `${event.kind}:${event.pubkey}`));
-    if (holders.size === 1) names.set(url, `${[...holders][0]}:${hit.identifier}`);
-  }
+  await Promise.all(
+    [...urls].map(async (url) => {
+      const hit = matchObjectUrl(url, shapes);
+      if (!hit) return;
+      if (hit.by === "id") {
+        if (EVENT_ID2.test(hit.identifier)) names.set(url, hit.identifier.toLowerCase());
+        return;
+      }
+      const kinds = hit.kinds ?? (hit.kind === void 0 ? void 0 : [hit.kind]);
+      const found = await context2.relay.queryAll([{ "#d": [hit.identifier], limit: 2, ...kinds ? { kinds } : {} }]);
+      const holders = new Set(found.map((event) => `${event.kind}:${event.pubkey}`));
+      if (holders.size === 1) names.set(url, `${[...holders][0]}:${hit.identifier}`);
+    })
+  );
   return (url) => names.get(url);
 }
 var KIND_APP_HANDLER = 31990;
@@ -22216,18 +22374,27 @@ function mentionAdds(writer, args2) {
   const unasked = anew.find((person) => !args2.asked.includes(person));
   if (unasked) {
     throw new BadRequest(
-      `The text mentions nostr:${encodeNpub(unasked)}, whom --mention does not name. A mention in a file's text adds the person to the file, so add them to --mention, or take the mention out. Nothing was published.`
+      // What is wrong, never how to get past it: the same caller writes the text and --mention (docs/untrusted-content.md).
+      `The text names nostr:${encodeNpub(unasked)} anew, and --mention does not. A mention in a file's text adds the person to the file; only somebody the person you are working with asked to add belongs in --mention. Nothing was published.`
     );
   }
   const absent = args2.asked.find((person) => !named.has(person));
   if (absent) {
-    throw new BadRequest(`--mention names nostr:${encodeNpub(absent)}, whom the text does not mention. Write nostr:${encodeNpub(absent)} where they belong in it. Nothing was published.`);
+    throw new BadRequest(`--mention names nostr:${encodeNpub(absent)}, whom the text does not mention. Nothing was published.`);
   }
-  return mentionAddsFor(writer, Date.now(), { file: args2.file, folder: args2.folder, saved: args2.saved, editedFrom: args2.editedFrom });
+  if (anew.length > MAX_MENTIONED_PEOPLE) {
+    throw new BadRequest(`The text mentions ${anew.length} people it did not before; one save adds at most ${MAX_MENTIONED_PEOPLE}. Nothing was published.`);
+  }
+  return {
+    adds: mentionAddsFor(writer, Date.now(), { file: args2.file, folder: args2.folder, saved: args2.saved, editedFrom: args2.editedFrom }),
+    // Asked, but named before this save too: nobody is added for them, so a person who left stays out. Said back, so the agent does not report them as told.
+    already: args2.asked.filter((person) => !anew.includes(person)).map((person) => `nostr:${encodeNpub(person)}`)
+  };
 }
-async function publishMentionAdds(context2, adds, saved) {
+var NO_MENTIONS = { adds: [], already: [] };
+async function publishMentionAdds(context2, plan, saved) {
   const out = [];
-  for (const add of adds) {
+  for (const add of plan.adds) {
     const person = add.tags.find((tag) => tag[0] === "p")?.[1] ?? "";
     const signed = await context2.signer.sign(add);
     const result = await context2.relay.publish(signed);
@@ -22238,7 +22405,10 @@ async function publishMentionAdds(context2, adds, saved) {
     }
     out.push({ added: `nostr:${encodeNpub(person)}`, eventId: result.eventId ?? signed.id });
   }
-  return out;
+  return {
+    ...out.length ? { mentioned: out } : {},
+    ...plan.already.length ? { notAdded: `${plan.already.join(", ")}: already mentioned before this save, so nobody was added or told; a person who left stays out.` } : {}
+  };
 }
 async function askedToMention(context2, value) {
   return value === void 0 ? [] : mentionedKeys(value, { relayUrl: context2.relayUrl, members: () => relayMembers(context2) });
@@ -22683,7 +22853,7 @@ async function descriptionMentions(context2, args2) {
 }
 function addsFor(context2, target, subject, edits, asked) {
   const edit = edits.find((candidate) => candidate.field === "description");
-  if (!edit) return [];
+  if (!edit) return NO_MENTIONS;
   return mentionAdds(context2.signer.pubkey, {
     file: target.addr,
     folder: target.folder,
@@ -23667,8 +23837,9 @@ Pass an address to say which.`
             `${issue2.ref ?? issue2.addr} names no Folder, so a change to it has nowhere to be published.`
           );
         }
-        const adds = addsFor(context2, { addr: issue2.addr, folder }, issue2, edits, asked);
+        const plan = addsFor(context2, { addr: issue2.addr, folder }, issue2, edits, asked);
         const applied = [];
+        let mentioned = {};
         for (const edit of edits) {
           const result = await setField(context2, state, { addr: issue2.addr, author: issue2.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat);
           if (!result.ok) {
@@ -23677,15 +23848,15 @@ Pass an address to say which.`
             );
           }
           applied.push(appliedEdit(edit, result.eventId));
+          if (edit.field === "description") mentioned = await publishMentionAdds(context2, plan, `The description of ${issue2.ref ?? issue2.addr}`);
         }
-        const mentioned = await publishMentionAdds(context2, adds, `The description of ${issue2.ref ?? issue2.addr}`);
         const moved = applied.find((entry) => entry.field === "project" && entry.to);
         const destination = moved && state.projects.find((candidate) => candidate.addr === moved.to);
         const conversationStaysBehind = destination && destination.contentFolder !== folder ? `The issue's conversation stays in Folder ${folder}, which is not ${destination.title}'s (${destination.contentFolder}). Moving an issue cannot move its messages: an event's Folder is immutable.` : void 0;
         return {
           changed: { ref: issue2.ref, addr: issue2.addr, title: issue2.title, folder },
           applied,
-          ...mentioned.length ? { mentioned } : {},
+          ...mentioned,
           ...conversationStaysBehind ? { note: conversationStaysBehind } : {}
         };
       }
@@ -23708,8 +23879,9 @@ Pass an address to say which.`
             `\u201C${project.title}\u201D names no Folder for its record, so a change to it has nowhere to be published.`
           );
         }
-        const adds = addsFor(context2, { addr: project.addr, folder }, project, edits, asked);
+        const plan = addsFor(context2, { addr: project.addr, folder }, project, edits, asked);
         const applied = [];
+        let mentioned = {};
         for (const edit of edits) {
           const result = await setField(context2, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat);
           if (!result.ok) {
@@ -23718,9 +23890,9 @@ Pass an address to say which.`
             );
           }
           applied.push(appliedEdit(edit, result.eventId));
+          if (edit.field === "description") mentioned = await publishMentionAdds(context2, plan, `The description of \u201C${project.title}\u201D`);
         }
-        const mentioned = await publishMentionAdds(context2, adds, `The description of \u201C${project.title}\u201D`);
-        return { changed: { title: project.title, addr: project.addr, folder }, applied, ...mentioned.length ? { mentioned } : {} };
+        return { changed: { title: project.title, addr: project.addr, folder }, applied, ...mentioned };
       }
     },
     {
@@ -23927,7 +24099,7 @@ Pass an address to say which.`
         const id = randomUUID();
         const description = flagValue(args2, "description");
         const body = description ? await describePlacing(context2, "", void 0, description) : void 0;
-        const adds = body ? mentionAdds(context2.signer.pubkey, { file: `${KIND2.PROJECT}:${context2.signer.pubkey}:${id}`, folder: team.id, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : [];
+        const adds = body ? mentionAdds(context2.signer.pubkey, { file: `${KIND2.PROJECT}:${context2.signer.pubkey}:${id}`, folder: team.id, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : NO_MENTIONS;
         const manifest = state.manifestFor(`${KIND2.PROJECT}:${context2.signer.pubkey}:${id}`);
         const summary = summaryText(flagValue(args2, "summary") ?? "");
         const route = summary ? summaryRoute(manifest?.manifest, "add-project", KIND2.PROJECT) : void 0;
@@ -23956,7 +24128,7 @@ Pass an address to say which.`
         return {
           created: { title, ...summary ? { summary } : {}, ...key ? { key } : {}, addr: created.addr, team: { id: team.id, name: team.name } },
           eventId: created.result.eventId,
-          ...mentioned.length ? { mentioned } : {},
+          ...mentioned,
           ...summaryWarning(summary) ? { note: summaryWarning(summary) } : {},
           /*
             Apart from the record, as Ship reports it: a refused listing is a
@@ -23986,7 +24158,7 @@ Pass an address to say which.`
         const description = flagValue(args2, "description");
         const body = description ? await describePlacing(context2, "", void 0, description) : void 0;
         const addr2 = `${KIND2.ISSUE}:${context2.signer.pubkey}:${id}`;
-        const adds = body ? mentionAdds(context2.signer.pubkey, { file: addr2, folder, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : [];
+        const adds = body ? mentionAdds(context2.signer.pubkey, { file: addr2, folder, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : NO_MENTIONS;
         const summary = summaryText(flagValue(args2, "summary") ?? "");
         const route = summary ? summaryRoute(state.manifestFor(project.addr)?.manifest, "add-issue", KIND2.ISSUE) : void 0;
         if (summary && !route) throw new BadRequest(`Ship's manifest declares no summary for an issue yet, so --summary has nowhere to go. Nothing was published.`);
@@ -24008,7 +24180,7 @@ Pass an address to say which.`
           state: issueLine({ ref: NO_REF, id: created.id, status: state.vocab.issue.fallback, comments: [] }, void 0),
           created: { short: short(created.id), addr: created.addr, title, ...summary ? { summary } : {}, project: project.title },
           eventId: created.result.eventId,
-          ...mentioned.length ? { mentioned } : {},
+          ...mentioned,
           ...summaryWarning(summary) ? { note: summaryWarning(summary) } : {}
         };
       }
@@ -24503,7 +24675,7 @@ var fileApp = {
         if (summary && !route) throw new BadRequest(`A ${type} takes no summary yet, so --summary has nowhere to go. Nothing was published.`);
         if (description && !describeAction(resolved.manifest, kind)) throw new BadRequest(`A ${type} takes no text, so --description has nowhere to go. Nothing was published.`);
         const body = description ? await describePlacing(context2, "", void 0, description) : void 0;
-        const adds = body ? mentionAdds(context2.signer.pubkey, { file: address, folder: folder.id, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : [];
+        const adds = body ? mentionAdds(context2.signer.pubkey, { file: address, folder: folder.id, saved: fileText(body.value, body.contentFormat), editedFrom: null, asked }) : NO_MENTIONS;
         const built = buildActionEvents({
           manifest: creator,
           kind: KIND_CHANNEL_METADATA,
@@ -24549,7 +24721,7 @@ var fileApp = {
           created: { title, type, address, folder: folder.name ?? folder.id, ...summary ? { summary } : {}, url: file?.openUrl },
           eventId: signed.id,
           ...body?.blocks ? { blocks: body.blocks.added } : {},
-          ...mentioned.length ? { mentioned } : {},
+          ...mentioned,
           ...summaryWarning(summary) ? { note: summaryWarning(summary) } : {}
         };
       }
@@ -24615,7 +24787,7 @@ var fileApp = {
           changed: { file: title, address, url: file.openUrl, version: versionOf({ value: next.value, format: next.contentFormat ? "blocks" : before.format }) },
           ...next.blocks ? { blocks: next.blocks } : {},
           eventId: result.eventId,
-          ...mentioned.length ? { mentioned } : {},
+          ...mentioned,
           ...detached.length ? {
             detached: detached.map((thread) => ({ id: thread.root.id, opening: thread.root.body.slice(0, 80) })),
             note: `${detached.length} comment(s) were on blocks this text removed; they now show as detached.`

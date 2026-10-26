@@ -10,7 +10,7 @@
  * Generic rather than Ship's: a block document and an app URL are the
  * protocol's, and `file show` prints the same list for a Leaf page.
  *
- * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/where-a-link-sits-decides-how-it-draws.md
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-link-on-words-counts-toward-the-card.md
  * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-lone-links-chip-menu-offers-row-or-card.md
  */
 import {
@@ -70,17 +70,21 @@ export async function namesOfLinks(context: Pick<AgentContext, 'relay'>, tree: R
   if (urls.size === 0) return () => undefined
   const manifests = await context.relay.queryAll([{ kinds: [KIND_APP_HANDLER], limit: 500 }] as never)
   const shapes = manifests.flatMap((manifest) => urlPatternsOf(manifest as never))
-  for (const url of urls) {
-    const hit = matchObjectUrl(url, shapes)
-    if (!hit) continue
-    if (hit.by === 'id') {
-      if (EVENT_ID.test(hit.identifier)) names.set(url, hit.identifier.toLowerCase())
-      continue
-    }
-    const found = await context.relay.queryAll([{ '#d': [hit.identifier], limit: 2, ...(hit.kind === undefined ? {} : { kinds: [hit.kind] }) }] as never)
-    const holders = new Set(found.map((event) => `${event.kind}:${event.pubkey}`))
-    if (holders.size === 1) names.set(url, `${[...holders][0]}:${hit.identifier}`)
-  }
+  await Promise.all(
+    [...urls].map(async (url) => {
+      const hit = matchObjectUrl(url, shapes)
+      if (!hit) return
+      if (hit.by === 'id') {
+        if (EVENT_ID.test(hit.identifier)) names.set(url, hit.identifier.toLowerCase())
+        return
+      }
+      // A path on another app's host can read as several kinds (§7.7, LTX-6): ask under each.
+      const kinds = hit.kinds ?? (hit.kind === undefined ? undefined : [hit.kind])
+      const found = await context.relay.queryAll([{ '#d': [hit.identifier], limit: 2, ...(kinds ? { kinds } : {}) }] as never)
+      const holders = new Set(found.map((event) => `${event.kind}:${event.pubkey}`))
+      if (holders.size === 1) names.set(url, `${[...holders][0]}:${hit.identifier}`)
+    }),
+  )
   return (url) => names.get(url)
 }
 /** NIP-89's handler information, where an app publishes its manifest and `urls` (§7.2). */

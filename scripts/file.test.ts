@@ -280,10 +280,11 @@ const addOf = (published: SignedEvent[], person: string) =>
   const refused = await refusal(run('describe', context, [created!.address], { version: before.version, description: `${TEXT}\n\nAsk nostr:${QA2_NPUB}.` }))
   check(
     'a mention --mention does not name is refused with nothing published — an npub copied from somebody’s text adds nobody',
-    published.length === 0 && /--mention does not name/.test(refused),
+    published.length === 0 && /--mention does not/.test(refused),
     refused || `${published.length} published`,
   )
-  const absent = await refusal(run('describe', context, [created!.address], { version: before.version, description: `${TEXT}\n\nNobody named.`, mention: QA2_NPUB }))
+  const fresh = await run('show', context, [created!.address], {})
+  const absent = await refusal(run('describe', context, [created!.address], { version: fresh.version, description: `${TEXT}\n\nNobody named.`, mention: QA2_NPUB }))
   check('…and so is a --mention the text does not name', published.length === 0 && /does not mention/.test(absent), absent || `${published.length} published`)
 }
 {
@@ -323,6 +324,13 @@ console.log('\n— How each link draws (WBD-9) —')
     JSON.stringify(drawn),
   )
   check('…and the text it prints is unchanged, so describe takes it back as before', out.text.split('\n\n').length === 5, JSON.stringify(out.text))
+
+  // Somebody else publishes a page with the same `d`: the URL now names nothing (§7.7), so it stays a link.
+  const lookalike = event(30842, [['d', target.split(':')[2]], ['title', 'Lookalike'], ['h', FOLDER]], '', QA2)
+  const twice = relay([...created!.events, page, text, lookalike])
+  const after = await run('show', twice.context, [`30842:${SELF}:links-page`], {})
+  const lone = after.links?.at(-1)
+  check('an app URL whose `d` two authors hold names nothing: it is listed as a link, never a row of either', lone?.draws === 'link' && lone?.to === url, JSON.stringify(lone))
 }
 
 console.log(failures ? `\n${failures} failed.` : '\nAll file checks passed.')

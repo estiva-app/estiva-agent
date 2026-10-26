@@ -86,11 +86,32 @@ console.log('— A mention in a description adds the person —')
   published.length = 0
   await run('edit-issue', context, [ISSUE], { description: `Ask nostr:${QA2_NPUB} about it, please.` })
   check('a second edit that keeps the mention writes no Add', published.length === 1 && !addOf(published, QA2), `${published.length} published`)
+
+  published.length = 0
+  const again = await run('edit-issue', context, [ISSUE], { description: `Ask nostr:${QA2_NPUB} about it, thanks.`, mention: QA2_NPUB })
+  check(
+    '--mention for somebody the text already named adds nobody, and says so rather than reporting them told',
+    published.length === 1 && !addOf(published, QA2) && again.mentioned === undefined && /already mentioned/.test(again.notAdded ?? ''),
+    JSON.stringify({ mentioned: again.mentioned, notAdded: again.notAdded }),
+  )
+}
+{
+  // The relay refuses the move after the description landed: the Add must already be out.
+  const { context, published } = workspace()
+  const publish = context.relay.publish
+  context.relay.publish = (async (e: SignedEvent) => (tag(e, 'field') === 'project' ? { ok: false, reason: 'refused for the test' } : publish(e))) as typeof publish
+  const project = fixture.events.find((e) => e.kind === 30850 && addressOf(e) !== tag(issue, 'a'))!
+  const refused = await refusal(run('edit-issue', context, [ISSUE], { description: `Ask nostr:${QA2_NPUB}.`, mention: QA2_NPUB, project: addressOf(project) }))
+  check(
+    'a later field the relay refuses leaves the description and its Add both standing',
+    /refused project/.test(refused) && Boolean(addOf(published, QA2)),
+    `${refused} — ${published.map((e) => tag(e, 'field')).join(', ')}`,
+  )
 }
 {
   const { context, published } = workspace()
   const refused = await refusal(run('edit-issue', context, [ISSUE], { description: `Ask nostr:${QA2_NPUB}.` }))
-  check('a mention --mention does not name is refused with nothing published', published.length === 0 && /--mention does not name/.test(refused), refused || `${published.length} published`)
+  check('a mention --mention does not name is refused with nothing published', published.length === 0 && /--mention does not/.test(refused), refused || `${published.length} published`)
   const alone = await refusal(run('edit-issue', context, [ISSUE], { title: 'Renamed', mention: QA2_NPUB }))
   check('--mention without --description is refused', published.length === 0 && /goes with --description/.test(alone), alone || `${published.length} published`)
 }
