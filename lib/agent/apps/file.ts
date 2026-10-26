@@ -48,7 +48,7 @@ import { describePlacing, uploadFiles } from '../attachments'
 import { BadRequest, flagValue, refuseUnsignable, type AgentApp, type AgentContext } from '../cli'
 import { edited, findThread, readConversation, replyToOf, type Conversation } from '../conversation'
 import { descriptionText, formatName } from '../descriptions'
-import { printedLinks } from '../links'
+import { addressesOfUrl, printedLinks } from '../links'
 import { askedToMention, fileText, mentionAdds, mentionedKeys, NO_MENTIONS, publishMentionAdds, relayMembers, withMentions } from '../mentions'
 import { profilesOf } from '../profiles'
 import { resolveOne } from '../resolve'
@@ -56,6 +56,9 @@ import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../sum
 
 /** `kind:pubkey:d`, the one handle every app's file has. A title would be one app's lookup. */
 const ADDRESS = /^\d+:[0-9a-f]{64}:[^\s]+$/
+
+/** A Folder's own record, its name included (§3.2). */
+const KIND_FOLDER = 39000
 
 type Manifest = ResolvedManifest['manifest']
 type Action = NonNullable<Manifest['actions']>[number]
@@ -77,6 +80,20 @@ function addressArg(args: { positional: string[] }, command: string): string {
     throw new BadRequest(`${command} needs a file's address, kind:pubkey:d, as \`file create\`, \`ship show\` and \`peek topics\` print it.`)
   }
   return address
+}
+
+/**
+ * `show`'s file: its address, or an app link to it, read as `links` reads one — the host and type
+ * against the published manifests' `urls` (§7.7), so no app's route is known here.
+ */
+async function fileArg(context: AgentContext, args: { positional: string[] }, command: string): Promise<string> {
+  const link = args.positional[0]
+  if (!link || !/^https?:\/\//i.test(link)) return addressArg(args, command)
+  const found = await addressesOfUrl(context, link)
+  if (found.length === 1) return found[0]
+  // A file's id names one file; two authors holding it names none, as `links` reads it.
+  if (found.length > 1) throw new BadRequest(`${link} names more than one file, so it names none: ${found.join(', ')}.`)
+  throw new BadRequest(`${link} is not a link to a file this key can read: no app's manifest declares it, or nothing readable holds its id. Pass the file's address, kind:pubkey:d, instead.`)
 }
 
 /**
@@ -332,15 +349,20 @@ export const fileApp: AgentApp = {
     {
       name: 'show',
       summary: 'one file by its address: its text, one chunk per block, and its comments with the block each is on',
-      usage: 'show <kind:pubkey:d>',
+      usage: 'show <kind:pubkey:d | app link>',
       async run(context, args) {
-        const address = addressArg(args, 'show')
+        const address = await fileArg(context, args, 'show')
         const cache = createProjectionCache()
         const file = await readFile(context, address, cache)
         const text = textOf(file)
+        const folderId = await folderOfFile(context, address)
+        // The Folder's own record names it (§3.2); `listFolders` would read every Folder's listing for one name.
+        const [channel] = folderId ? await relayQuery(context)([{ kinds: [KIND_FOLDER], '#d': [folderId], limit: 1 }]) : []
+        const folder = channel ? { name: channel.tags.find((tag) => tag[0] === 'name')?.[1] } : undefined
         return {
           title: file.slots.title?.value ?? address,
           summary: file.slots.subtitle?.value,
+          folder: folder?.name ?? folderId,
           address,
           url: file.openUrl,
           /*

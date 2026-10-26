@@ -135,6 +135,22 @@
     {
       "name": "file_summarize",
       "description": "Change any file's one-line summary by its address, a Leaf page's included"
+    },
+    {
+      "name": "file_show",
+      "description": "Read any file, a Leaf page included, by its address or link"
+    },
+    {
+      "name": "file_create",
+      "description": "Start a file in a Folder, such as a Leaf page"
+    },
+    {
+      "name": "file_describe",
+      "description": "Replace a file's text by its address"
+    },
+    {
+      "name": "file_comment",
+      "description": "Comment on any file by its address"
     }
   ],
   "keywords": [

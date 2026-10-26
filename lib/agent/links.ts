@@ -68,24 +68,39 @@ export async function namesOfLinks(context: Pick<AgentContext, 'relay'>, tree: R
   walk(tree)
   const names = new Map<string, string>()
   if (urls.size === 0) return () => undefined
-  const manifests = await context.relay.queryAll([{ kinds: [KIND_APP_HANDLER], limit: 500 }] as never)
-  const shapes = manifests.flatMap((manifest) => urlPatternsOf(manifest as never))
+  const shapes = await urlShapes(context)
   await Promise.all(
     [...urls].map(async (url) => {
-      const hit = matchObjectUrl(url, shapes)
-      if (!hit) return
-      if (hit.by === 'id') {
-        if (EVENT_ID.test(hit.identifier)) names.set(url, hit.identifier.toLowerCase())
-        return
-      }
-      // A path on another app's host can read as several kinds (§7.7, LTX-6): ask under each.
-      const kinds = hit.kinds ?? (hit.kind === undefined ? undefined : [hit.kind])
-      const found = await context.relay.queryAll([{ '#d': [hit.identifier], limit: 2, ...(kinds ? { kinds } : {}) }] as never)
-      const holders = new Set(found.map((event) => `${event.kind}:${event.pubkey}`))
-      if (holders.size === 1) names.set(url, `${[...holders][0]}:${hit.identifier}`)
+      const found = await namesUnder(context, url, shapes, 2)
+      if (found.length === 1) names.set(url, found[0])
     }),
   )
   return (url) => names.get(url)
+}
+
+/**
+ * Every file an app URL could name (§7.7), as `kind:pubkey:d`: none when no
+ * app claims it or nothing readable holds its `d`, more than one when two
+ * authors do — the caller says which, as `namesOfLinks` names nothing then.
+ */
+export async function addressesOfUrl(context: Pick<AgentContext, 'relay'>, url: string): Promise<string[]> {
+  return (await namesUnder(context, url, await urlShapes(context), 10)).filter((name) => !EVENT_ID.test(name))
+}
+
+async function urlShapes(context: Pick<AgentContext, 'relay'>) {
+  const manifests = await context.relay.queryAll([{ kinds: [KIND_APP_HANDLER], limit: 500 }] as never)
+  return manifests.flatMap((manifest) => urlPatternsOf(manifest as never))
+}
+
+/** The host and `<type>` against the manifests' `urls`, then every author holding the `d`, up to `limit`. */
+async function namesUnder(context: Pick<AgentContext, 'relay'>, url: string, shapes: ReturnType<typeof urlPatternsOf>, limit: number): Promise<string[]> {
+  const hit = matchObjectUrl(url, shapes)
+  if (!hit) return []
+  if (hit.by === 'id') return EVENT_ID.test(hit.identifier) ? [hit.identifier.toLowerCase()] : []
+  // A path on another app's host can read as several kinds (§7.7, LTX-6): ask under each.
+  const kinds = hit.kinds ?? (hit.kind === undefined ? undefined : [hit.kind])
+  const found = await context.relay.queryAll([{ '#d': [hit.identifier], limit, ...(kinds ? { kinds } : {}) }] as never)
+  return [...new Set(found.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))]
 }
 /** NIP-89's handler information, where an app publishes its manifest and `urls` (§7.2). */
 const KIND_APP_HANDLER = 31990
