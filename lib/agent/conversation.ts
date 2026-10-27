@@ -17,9 +17,9 @@
  * or an object type and does not; this file names a message, which both app
  * modules have and no third one is obliged to.
  */
-import { decorationsOf, placeOf, type EditFold } from '@estiva-app/conversation'
+import { decorationsOf, foldAttachments, KIND_EDIT, placeOf, type EditFold } from '@estiva-app/conversation'
 import { conversationsOf, threadsOf, type ForeignObject, type ProjectionCache } from '@estiva-app/interop'
-import { buildEdit, type SignedEvent } from '@estiva-app/protocol'
+import { buildEdit, imetaTag, type SignedEvent } from '@estiva-app/protocol'
 import { relayQuery } from './act-on-file'
 import { BadRequest, type AgentContext } from './cli'
 import { resolveOne } from './resolve'
@@ -29,14 +29,30 @@ import { resolveOne } from './resolve'
  * **target's** Folder — the channel-scoped kind is refused anywhere else, with
  * the kind granted and the signature fine (CON-4). Shared by `ship
  * edit-comment` and `peek edit`; the relay decides who may.
+ *
+ * The edit lists the message's files as they stand, read from the relay just
+ * before: an edit is the whole new message, and one with no `imeta` takes
+ * every file off (SPEC §6.8).
+ *
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/an-edit-is-the-whole-new-message.md
  */
 export async function publishEdit(
   context: AgentContext,
   args: { folder: string | undefined; messageEventId: string; body: string },
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
   if (!args.folder) throw new BadRequest('That message names no Folder, so an edit of it has nowhere to be published.')
+  const id = args.messageEventId.toLowerCase()
+  const events = await relayQuery(context)([{ ids: [id] }, { kinds: [KIND_EDIT], '#e': [id] }])
+  // Unread, its files are unknown, and an edit listing none would take them off.
+  if (!events.some((event) => event.id === id)) throw new BadRequest('That message could not be read back, so it was not edited. Try again.')
+  const files = foldAttachments(events)[id] ?? []
   const signed = await context.signer.sign(
-    buildEdit(context.signer.pubkey, Date.now(), { channelUuid: args.folder, targetEventId: args.messageEventId, body: args.body }),
+    buildEdit(context.signer.pubkey, Date.now(), {
+      channelUuid: args.folder,
+      targetEventId: args.messageEventId,
+      body: args.body,
+      mediaTags: files.map(imetaTag),
+    }),
   )
   const result = await context.relay.publish(signed)
   return { ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id }

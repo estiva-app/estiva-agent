@@ -22,7 +22,7 @@ import { peekApp } from '../lib/agent/apps/peek'
 import { cascadeArchives, type Issue, type Project, type Vocabulary } from '../lib/agent/apps/ship-workspace'
 import { buildActionEvent, buildActionEvents, topLevelFolders, type FolderSummary } from '@estiva-app/interop'
 import { findTopic, type Topic } from '../lib/agent/apps/peek'
-import { edited, findMessage, replyToOf } from '../lib/agent/conversation'
+import { edited, findMessage, publishEdit, replyToOf } from '../lib/agent/conversation'
 import { KIND_EDIT, foldEdits } from '@estiva-app/conversation'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { Directory } from '../lib/agent/profiles'
@@ -1145,6 +1145,77 @@ console.log('\n— archives: own, with the project, with the Folder (e2898086) �
   refuses('a project match does not win over ambiguous issues', () => archivable(crowded, [], 'Onboarding', false), 'matches 2 issues')
   check('an exact project address still does', archivable(crowded, [], '30850:abc:onb', false).kind === 'project')
   refuses('nothing matching is refused', () => archivable(state, folders, 'zzzz-nothing', false), 'No issue, project or Folder')
+}
+
+console.log('— an edit lists the files the message keeps —')
+
+{
+  /*
+    An edit is the whole new message (SPEC §6.8, record an-edit-is-the-whole-new-message):
+    its `imeta` is the message's file set and none takes every file off. `edit-comment` and
+    `peek edit` change only the words, so the edit re-lists the files as the relay holds them.
+  */
+  const self = 'a'.repeat(64)
+  const target = '3'.repeat(64)
+  const file = (x: string, name: string) => ['imeta', `url https://relay.test/${x.repeat(64)}`, 'm image/png', `x ${x.repeat(64)}`, 'size 10', `filename ${name}`]
+  const message = (tags: string[][]): SignedEvent => ({ id: target, pubkey: self, kind: 1111, created_at: 1_000, content: 'old', sig: '', tags: [['h', 'folder'], ...tags] })
+  const earlierEdit = (tags: string[][]): SignedEvent => ({ id: '4'.repeat(64), pubkey: self, kind: KIND_EDIT, created_at: 2_000, content: 'old', sig: '', tags: [['h', 'folder'], ['e', target], ...tags] })
+  const fake = (held: SignedEvent[]) => {
+    const sent: SignedEvent[] = []
+    // A relay by filter: ids, kinds and every `#<tag>`, as the real one reads them.
+    const matches = (e: SignedEvent, f: Record<string, unknown>) =>
+      (!f.ids || (f.ids as string[]).includes(e.id)) &&
+      (!f.kinds || (f.kinds as number[]).includes(e.kind)) &&
+      Object.entries(f).every(([k, v]) => !k.startsWith('#') || e.tags.some((t) => t[0] === k.slice(1) && (v as string[]).includes(t[1])))
+    const context = {
+      signer: { pubkey: self, sign: async (event: SignedEvent) => ({ ...event, id: '5'.repeat(64), sig: '' }) },
+      relay: {
+        queryAll: async (filters: Record<string, unknown>[]) => held.filter((e) => filters.some((f) => matches(e, f))),
+        publish: async (event: SignedEvent) => (sent.push(event), { ok: true, eventId: event.id }),
+      },
+    } as unknown as Parameters<typeof publishEdit>[0]
+    return { context, sent }
+  }
+  const imetaOf = (event: SignedEvent | undefined) => JSON.stringify(event?.tags.filter((t) => t[0] === 'imeta') ?? null)
+
+  {
+    const { context, sent } = fake([message([file('b', 'brief.png')])])
+    await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' })
+    check('an edit of the words lists the files the message was sent with', imetaOf(sent[0]) === JSON.stringify([file('b', 'brief.png')]), imetaOf(sent[0]))
+    check('and carries the new words', sent[0]?.content === 'new words')
+  }
+  {
+    // Fields another app writes (Buzz desktop: blurhash, duration; NIP-94 fallbacks) go back as they were read.
+    const rich = [...file('b', 'clip.mp4').slice(0, 5), 'blurhash LKO2?U%2Tw=w', 'fallback https://a.example/clip.mp4', 'duration 12', 'filename clip.mp4']
+    const { context, sent } = fake([message([rich])])
+    await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' })
+    check('a file is listed back with every field it was sent with', imetaOf(sent[0]) === JSON.stringify([rich]), imetaOf(sent[0]))
+  }
+  {
+    // An edit of another message, held beside them, is not this message's.
+    const elsewhere: SignedEvent = { ...earlierEdit([file('f', 'other.png')]), id: '6'.repeat(64), created_at: 3_000, tags: [['h', 'folder'], ['e', '7'.repeat(64)], file('f', 'other.png')] }
+    const { context, sent } = fake([message([file('b', 'brief.png')]), earlierEdit([file('c', 'shot.png')]), elsewhere])
+    await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' })
+    check("it lists the set an earlier edit left, not the message's own nor another message's", imetaOf(sent[0]) === JSON.stringify([file('c', 'shot.png')]), imetaOf(sent[0]))
+  }
+  {
+    const { context, sent } = fake([message([])])
+    await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' })
+    check('control: a message with no files gets an edit with none', imetaOf(sent[0]) === '[]', imetaOf(sent[0]))
+  }
+  {
+    const { context, sent } = fake([])
+    let refused = ''
+    await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' }).catch((error: Error) => (refused = error.message))
+    check('a message that cannot be read back is not edited, since its files are unknown', sent.length === 0 && refused.includes('could not be read back'), refused)
+  }
+  {
+    // Its edits alone do not say which files the message was sent with.
+    const { context, sent } = fake([earlierEdit([])])
+    let refused = ''
+    await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' }).catch((error: Error) => (refused = error.message))
+    check('nor is one whose edits can be read but not the message itself', sent.length === 0 && refused.includes('could not be read back'), refused)
+  }
 }
 
 console.log(failures === 0 ? '\nAll agent CLI checks passed.' : `\n${failures} failed.`)
