@@ -69,7 +69,10 @@ const [issue, other, third] = fixture.events.filter((e) => e.kind === 30851)
 const ISSUE = addressOf(issue)
 /** A Ship issue's link, as a person copies it from Ship's address bar (Ship's manifest `urls`). */
 const linkTo = (e: SignedEvent) => `https://ship.estiva.app/issue/some-title-${tag(e, 'd')}`
-const workspace = () => relay([...structuredClone(fixture.events), manifest.event])
+const workspace = () => {
+  const events = [...structuredClone(fixture.events), manifest.event]
+  return { ...relay(events), events }
+}
 /** Somebody's message elsewhere, which the edit quotes by `nostr:nevent…`. */
 const quoted = fixture.events.find((e) => e.kind === 1111 && tag(e, 'A') !== ISSUE)!
 
@@ -103,6 +106,36 @@ console.log('— A comment says what it links —')
     'ship comment linking its own issue and another names its own once, as the issue it is on, then the other',
     JSON.stringify(tags(sent, 'a')) === JSON.stringify([ISSUE, addressOf(other)]),
     JSON.stringify(sent?.tags),
+  )
+}
+{
+  // The MCP server keeps its relay for days: a link to an issue created after it was first asked about names it then.
+  const { context, published, events } = workspace()
+  const d = '0f0f0f0f-1111-4222-8333-444444444444'
+  const later = { ...structuredClone(other), id: 'e'.repeat(64), tags: other.tags.map((t) => (t[0] === 'd' ? ['d', d] : t)) } as SignedEvent
+  await run('comment', context, [ISSUE], { body: `Will be ${linkTo(later)}.` })
+  events.push(later)
+  await run('comment', context, [ISSUE], { body: `Now ${linkTo(later)}.` })
+  check(
+    'ship comment linking an issue created since the same session first asked about the link carries its a',
+    JSON.stringify(tags(published[1], 'a')) === JSON.stringify([ISSUE, addressOf(later)]),
+    JSON.stringify(published[1]?.tags),
+  )
+}
+{
+  // A manifest read that came back empty (a relay still starting) is asked again, never kept for the session.
+  const { context, published } = workspace()
+  const queryAll = context.relay.queryAll
+  let empty = true
+  const isManifestRead = (filters: Record<string, any>[]) => filters.length === 1 && filters[0].kinds?.[0] === 31990 && filters[0].limit === 500 && !filters[0].authors
+  ;(context.relay as { queryAll: typeof queryAll }).queryAll = async (filters) => (empty && isManifestRead(filters as Record<string, any>[]) ? [] : queryAll(filters))
+  await run('comment', context, [ISSUE], { body: `See ${linkTo(other)}.` })
+  empty = false
+  await run('comment', context, [ISSUE], { body: `See ${linkTo(other)}.` })
+  check(
+    'ship comment after the manifests first read empty carries the linked issue’s a once they read',
+    JSON.stringify(tags(published[1], 'a')) === JSON.stringify([ISSUE, addressOf(other)]),
+    JSON.stringify(published[1]?.tags),
   )
 }
 {

@@ -46,31 +46,37 @@ export interface PrintedLink {
 /** NIP-89's handler information, where an app publishes its manifest and `urls` (§7.2). */
 const KIND_APP_HANDLER = 31990
 
-interface Links {
-  reader: LinkReader
-  manifests: () => Promise<readonly { tags: string[][] }[]>
-}
+type Manifests = () => Promise<readonly { tags: string[][] }[]>
 
 /** One per relay connection, the signed-in agent's: the MCP server holds one for its life, the CLI one per run. */
-const byRelay = new WeakMap<object, Links>()
+const byRelay = new WeakMap<object, Manifests>()
 
-function linksOf(context: Pick<AgentContext, 'relay'>): Links {
+/**
+ * The manifests, read once per relay connection and shared by every reader and
+ * `addressesOfUrl`. A failed read is forgotten, and so is an empty one (a relay
+ * still starting, a read before sign-in), as interop's reader forgets its own:
+ * kept, every link would name nothing for the MCP server's life.
+ */
+function manifestsOf(context: Pick<AgentContext, 'relay'>): Manifests {
   const held = byRelay.get(context.relay)
   if (held) return held
-  // The manifests, read once and shared with `addressesOfUrl`; a failed read is forgotten, as the reader forgets its own.
   let read: Promise<readonly { tags: string[][] }[]> | null = null
   const manifests = () => {
     if (read) return read
     const asked = context.relay.queryAll([{ kinds: [KIND_APP_HANDLER], limit: 500 }])
     read = asked
-    asked.catch(() => {
-      if (read === asked) read = null
-    })
+    asked.then(
+      (found) => {
+        if (found.length === 0 && read === asked) read = null
+      },
+      () => {
+        if (read === asked) read = null
+      },
+    )
     return asked
   }
-  const links = { reader: linkReader({ query: (filters) => context.relay.queryAll(filters), manifests }), manifests }
-  byRelay.set(context.relay, links)
-  return links
+  byRelay.set(context.relay, manifests)
+  return manifests
 }
 
 /**
@@ -78,9 +84,13 @@ function linksOf(context: Pick<AgentContext, 'relay'>): Links {
  * PEEKM-7): the host and `<type>` against the published manifests' `urls`,
  * then one author for the `d`. The tags a comment or an edit earns come from it
  * too (`reader.tagsFor`).
+ *
+ * A new reader per command: a reader keeps every answer for its life, a link
+ * that named nothing included, and the MCP server lives for days, so a file
+ * created after its link was first asked would stay unnamed until a restart.
  */
 export function linkReaderOf(context: Pick<AgentContext, 'relay'>): LinkReader {
-  return linksOf(context).reader
+  return linkReader({ query: (filters) => context.relay.queryAll(filters), manifests: manifestsOf(context) })
 }
 
 /**
@@ -109,7 +119,7 @@ const EVENT_ID = /^[0-9a-f]{64}$/i
  * (`linkReader`); this asks a different question, for `file show <link>`.
  */
 export async function addressesOfUrl(context: Pick<AgentContext, 'relay'>, url: string): Promise<string[]> {
-  const hit = matchObjectUrl(url, (await linksOf(context).manifests()).flatMap((manifest) => urlPatternsOf(manifest)))
+  const hit = matchObjectUrl(url, (await manifestsOf(context)()).flatMap((manifest) => urlPatternsOf(manifest)))
   if (!hit || hit.by === 'id') return []
   // A path on another app's host can read as several kinds (§7.7, LTX-6): ask under each — only
   // addressable ones, where a `d` is one file per author; a manifest anyone can publish names them.
