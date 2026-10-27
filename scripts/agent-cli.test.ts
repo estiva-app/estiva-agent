@@ -1199,6 +1199,12 @@ console.log('— an edit lists the files the message keeps —')
     check("it lists the set an earlier edit left, not the message's own nor another message's", imetaOf(sent[0]) === JSON.stringify([file('c', 'shot.png')]), imetaOf(sent[0]))
   }
   {
+    // An earlier edit that listed none took every file off: the words-only edit after it must not put them back.
+    const { context, sent } = fake([message([file('b', 'brief.png')]), earlierEdit([])])
+    await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' })
+    check('after an edit took every file off, an edit of the words lists none', imetaOf(sent[0]) === '[]', imetaOf(sent[0]))
+  }
+  {
     const { context, sent } = fake([message([])])
     await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' })
     check('control: a message with no files gets an edit with none', imetaOf(sent[0]) === '[]', imetaOf(sent[0]))
