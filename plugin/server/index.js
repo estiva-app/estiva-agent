@@ -22573,7 +22573,7 @@ function writtenOpenerOf(url, opens, origin, declared) {
 // lib/agent/links.ts
 var KIND_APP_HANDLER2 = 31990;
 var byRelay = /* @__PURE__ */ new WeakMap();
-function linksOf(context2) {
+function manifestsOf(context2) {
   const held = byRelay.get(context2.relay);
   if (held) return held;
   let read = null;
@@ -22581,31 +22581,40 @@ function linksOf(context2) {
     if (read) return read;
     const asked = context2.relay.queryAll([{ kinds: [KIND_APP_HANDLER2], limit: 500 }]);
     read = asked;
-    asked.catch(() => {
-      if (read === asked) read = null;
-    });
+    asked.then(
+      (found) => {
+        if (found.length === 0 && read === asked) read = null;
+      },
+      () => {
+        if (read === asked) read = null;
+      }
+    );
     return asked;
   };
-  const links = { reader: linkReader({ query: (filters) => context2.relay.queryAll(filters), manifests }), manifests };
-  byRelay.set(context2.relay, links);
-  return links;
+  byRelay.set(context2.relay, manifests);
+  return manifests;
 }
 function linkReaderOf(context2) {
-  return linksOf(context2).reader;
+  return linkReader({ query: (filters) => context2.relay.queryAll(filters), manifests: manifestsOf(context2) });
 }
-function commentLinkTags(context2, body, own, options = {}) {
-  return linkReaderOf(context2).tagsFor(toRenderTree(body, "marker"), own, options);
+async function commentLinkTags(context2, body, own, options = {}) {
+  const reader = linkReaderOf(context2);
+  const tree = toRenderTree(body, "marker");
+  const tags = await reader.tagsFor(tree, own, options);
+  if (options.edit && linksIn(tree).slice(0, MAX_LINKS_ASKED).some((url) => !reader.answered(url)))
+    throw new BadRequest("A link in the new text could not be looked up, so the message was not edited: without it, the edit would take the message off the file that link names. Try again.");
+  return tags;
 }
-var EVENT_ID3 = /^[0-9a-f]{64}$/i;
 async function addressesOfUrl(context2, url) {
-  const hit = matchObjectUrl(url, (await linksOf(context2).manifests()).flatMap((manifest) => urlPatternsOf(manifest)));
+  const hit = matchObjectUrl(url, (await manifestsOf(context2)()).flatMap((manifest) => urlPatternsOf(manifest)));
   if (!hit || hit.by === "id") return [];
   const kinds = (hit.kinds ?? (hit.kind === void 0 ? void 0 : [hit.kind]))?.filter((kind) => kind >= 3e4 && kind < 4e4);
   if (kinds?.length === 0) return [];
   const limit = 10;
   const found = await context2.relay.queryAll([{ "#d": [hit.identifier], limit, ...kinds ? { kinds } : {} }]);
-  const names = [...new Set(found.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))];
-  return found.length >= limit && names.length === 1 ? [] : names.filter((name) => !EVENT_ID3.test(name));
+  const files = found.filter((event) => event.kind >= 3e4 && event.kind < 4e4);
+  const names = [...new Set(files.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))];
+  return found.length >= limit && names.length === 1 ? [] : names;
 }
 function firstWords(block) {
   const words = (block.inline ?? []).map((run) => run.text).join("").replace(/\s+/g, " ").trim();
@@ -22758,7 +22767,8 @@ async function publishEdit(context2, args2) {
   if (!events.some((event) => event.id === id)) throw new BadRequest("That message could not be read back, so it was not edited. Try again.");
   const files = foldAttachments(events)[id] ?? [];
   const target = events.find((event) => event.id === id);
-  const linkTags = await commentLinkTags(context2, args2.body, { file: anchorsOf(target)[0], parent: editTargetOf(target) }, { edit: true });
+  const own = anchorsOf(target)[0] ?? target.tags.find((t) => t[0] === "a")?.[1];
+  const linkTags = await commentLinkTags(context2, args2.body, { file: own, parent: editTargetOf(target) }, { edit: true });
   const edit = buildEdit(context2.signer.pubkey, Date.now(), {
     channelUuid: args2.folder,
     targetEventId: args2.messageEventId,
