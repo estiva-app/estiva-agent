@@ -52,7 +52,9 @@ export async function publishEdit(
   const target = events.find((event) => event.id === id)!
   // What the new words link, the whole `a`/`q` set (never `p`, `urgent` or `part`), minus the
   // comment's own file and the message it answers, so a file it now links lists it under Mentioned in.
-  const linkTags = await commentLinkTags(context, args.body, { file: anchorsOf(target)[0], parent: editTargetOf(target) }, { edit: true })
+  // A `kind:1111` names its file in `A`; an older `kind:9` comment on a file, in its `a` (§7.3).
+  const own = anchorsOf(target)[0] ?? target.tags.find((t) => t[0] === 'a')?.[1]
+  const linkTags = await commentLinkTags(context, args.body, { file: own, parent: editTargetOf(target) }, { edit: true })
   const edit = buildEdit(context.signer.pubkey, Date.now(), {
     channelUuid: args.folder,
     targetEventId: args.messageEventId,

@@ -212,6 +212,15 @@ console.log('\n— An edit says what the message links now —')
   )
   check('ship edit-comment whose link cannot be looked up publishes nothing, and says the message was not edited', published.length === 0 && refused.includes('not edited'), refused || JSON.stringify(published[0]?.tags))
 }
+{
+  // An older kind:9 comment names its issue in `a`, not `A`: an edit of it linking that issue does not tag it as a mention of itself.
+  const { context, published } = workspace()
+  const own = fixture.events.find((e) => e.kind === 9 && fixture.events.some((i) => i.kind === 30851 && addressOf(i) === tag(e, 'a') && addressOf(i) !== addressOf(other)))!
+  const ownIssue = fixture.events.find((i) => i.kind === 30851 && addressOf(i) === tag(own, 'a'))!
+  await publishEdit(context, { folder: tag(own, 'h'), messageEventId: own.id, body: `Back on ${linkTo(ownIssue)}, see ${linkTo(other)}.` })
+  const [edit] = published
+  check('an edit of a kind:9 comment linking its own issue and another carries only the other’s a', JSON.stringify(tags(edit, 'a')) === JSON.stringify([addressOf(other)]), JSON.stringify(edit?.tags))
+}
 
 console.log(failures ? `\n${failures} failed.` : '\nAll comment link checks passed.')
 process.exit(failures ? 1 : 0)
