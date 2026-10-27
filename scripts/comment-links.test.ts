@@ -97,6 +97,19 @@ console.log('— A comment says what it links —')
   const [sent] = published
   check('ship comment linking its own issue names it once, as the issue it is on', JSON.stringify(tags(sent, 'a')) === JSON.stringify([ISSUE]), JSON.stringify(sent?.tags))
 }
+{
+  // A box draws at most six parts; a block of the comment's own issue must not take one of them.
+  const { context, published } = workspace()
+  const six = fixture.events.filter((e) => e.kind === 30851 && addressOf(e) !== ISSUE).slice(0, 6)
+  const body = [`${linkTo(issue)}#block-own`, ...six.map((e, i) => `${linkTo(e)}#block-b${i + 1}`)].join(' and ')
+  await run('comment', context, [ISSUE], { body })
+  const [sent] = published
+  check(
+    'ship comment linking a block of its own issue first, then blocks of six other issues, carries a part for each of the six, the sixth included',
+    JSON.stringify(sent?.tags.filter((t) => t[0] === 'part')) === JSON.stringify(six.map((e, i) => ['part', addressOf(e), `b${i + 1}`])),
+    JSON.stringify(sent?.tags.filter((t) => t[0] === 'part')),
+  )
+}
 
 console.log('\n— An edit says what the message links now —')
 {
