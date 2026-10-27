@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { addrToNaddr, blockRunTag, calloutTone, encodeNpub, listItemChecked, parseBlockDocument, type Block, type SignedEvent } from '@estiva-app/protocol'
+import { addrToNaddr, blockRunTag, calloutTone, encodeNevent, encodeNpub, listItemChecked, parseBlockDocument, type Block, type SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
 import { fileApp } from '../lib/agent/apps/file'
 import { describe as describeText } from '../lib/agent/descriptions'
@@ -198,6 +198,15 @@ const fixture = () => {
   check('…and a full page of one author’s events never opens theirs', out.address === undefined && String(out.error).includes('not a link to a file'), out.error ?? out.address)
 }
 {
+  // A manifest whose link shape names no kind asks every kind: an event that is no file, carrying the same id, is not a second holder.
+  const { context, events } = fixture()
+  const d = created!.address.split(':')[2]
+  events.push(event(31990, [['d', 'wiki'], ['web', 'https://wiki.example'], ['urls', 'https://wiki.example/page/<d>']], '', QA2))
+  events.push(event(1, [['d', d]], 'not a file', QA2))
+  const out = await run('show', context, [`https://wiki.example/page/${d}`], {}).catch((error: Error) => ({ error: error.message }) as Record<string, any>)
+  check('…and a link whose shape names no kind opens the one file holding its id, never counting an event that is not a file', out.address === created!.address, out.error ?? out.address)
+}
+{
   // QA-2 resolves the thread, then reopens it: show follows the newest, as Leaf's column does.
   const { context, events, comment } = fixture()
   const resolution = (action: string, at: number) => event(9101, [['t', 'resolution'], ['action', action], ['e', comment.id], ['h', FOLDER]], '', QA2, at)
@@ -266,6 +275,21 @@ console.log('\n— Replying —')
   check('…and says which comment and where', out.repliedTo?.comment === comment.id && out.repliedTo?.on === 'blocks' && out.repliedTo?.quote === 'doing this',JSON.stringify(out.repliedTo))
   const reread = await run('show', context, [created!.address], {})
   check('show lists the reply under that comment', reread.comments?.length === 1 && reread.comments[0].messages?.length === 2, JSON.stringify(reread.comments?.[0]?.messages))
+}
+{
+  // PEEKM-7: what a reply links, as Leaf's comment box tags it — never its own document, nor the comment it answers.
+  const { context, published, events, comment } = fixture()
+  const otherD = '77777777-2222-4333-8444-555555555555'
+  events.push(event(30842, [['d', otherD], ['h', FOLDER]], '', QA2))
+  const leafLink = (d: string) => `https://leaf.estiva.app/document/a-page-${d}`
+  const parent = `nostr:${encodeNevent({ id: comment.id, relays: [] })}`
+  await run('comment', context, [created!.address], { body: `See ${leafLink(otherD)}, and ${leafLink(created!.address.split(':')[2])}, as ${parent} asked.`, reply: comment.id })
+  const reply = published[0]
+  check(
+    'file comment --reply linking another document carries its a, and none for its own document or a q for its parent',
+    JSON.stringify(tags(reply, 'a')) === JSON.stringify([`30842:${QA2}:${otherD}`]) && tags(reply, 'q').length === 0,
+    JSON.stringify(reply?.tags),
+  )
 }
 {
   const { context, published } = fixture()

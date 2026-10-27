@@ -120,6 +120,13 @@ interop tags every npub in the body, so one copied from workspace text would
 notify a person nobody asked to reach. A question is a plain mention, never
 urgent (Miky, 2026-10-09).
 
+**A link in a comment lists it under the linked file's Mentioned in**
+(PEEKM-7): a comment (`ship comment`, `file comment`, `peek say`/`reply`)
+earns an `a` for each file its body links, by an app link or a `nostr:`
+reference, and a `q` for each message, read by interop's `linkReader` as every
+app reads them; a URL in code links nothing. An edit (`edit-comment`, `peek
+edit`) carries the whole `a`/`q` set its new words earn, never a `p`.
+
 `ship archive <ref> --resolution "…"` archives one project, issue or Folder the
 way Ship does (FOL-46): a `kind:1851` `archived` change, the resolution as its
 note, shown first when the file is opened; `--unarchive` brings it back.

@@ -16707,6 +16707,61 @@ function valueOfReference(reference) {
   }
   return void 0;
 }
+function valuesIn(blocks, resolveLink) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const take = (value) => {
+    if (!value || seen.has(value))
+      return;
+    seen.add(value);
+    out.push(value);
+  };
+  const resolve3 = (url) => resolveLink && take(normalise(resolveLink(url) ?? ""));
+  const walk = (bs) => {
+    for (const block of bs) {
+      if (block.type !== "codeBlock") {
+        const runs = block.inline ?? [];
+        const links = linksOnWordsIn(runs);
+        const named = [];
+        let inWords = 0;
+        let byTarget = 0;
+        let at = 0;
+        for (const run of runs) {
+          const end = at + run.text.length;
+          if (run.reference)
+            named.push({ at, reference: run.reference });
+          else if (run.href !== void 0)
+            named.push({ at, url: run.href });
+          else if (!run.marks.includes("code")) {
+            for (const { url, from } of urlRunsIn(run.text)) {
+              const pos = at + from;
+              while (inWords < links.length && links[inWords].wordsEnd <= pos)
+                inWords++;
+              const link = links[inWords];
+              if (!link || pos < link.from)
+                named.push({ at: pos, url });
+            }
+            while (byTarget < links.length && links[byTarget].target < at)
+              byTarget++;
+            for (; byTarget < links.length && links[byTarget].target < end; byTarget++) {
+              const link = links[byTarget];
+              if (link.target + link.url.length + 1 <= end)
+                named.push({ at: link.from, url: link.url });
+            }
+          }
+          at = end;
+        }
+        named.sort((a, b) => a.at - b.at);
+        for (const n of named)
+          n.reference ? take(valueOfReference(n.reference)) : resolve3(n.url);
+      }
+      if (block.children)
+        walk(block.children);
+    }
+  };
+  walk(blocks);
+  return out;
+}
 function linesOf(block) {
   const lines = [[]];
   for (const run of block.inline ?? []) {
@@ -16796,6 +16851,26 @@ function urlRunsIn(text2) {
       continue;
     const url = trimUrl(m[0]);
     out.push({ url, from: start, to: start + url.length });
+  }
+  return out;
+}
+function linksOnWordsIn(runs) {
+  return linksOnWordsOf(runs.map((r) => r.text).join("")).map(({ from, words, url }) => ({
+    from,
+    wordsEnd: from + 1 + words.length,
+    target: from + words.length + 3,
+    url
+  }));
+}
+function linksOnWordsOf(text2) {
+  if (!text2.includes("]("))
+    return [];
+  const out = [];
+  for (const m of text2.matchAll(LINK_OR_URL)) {
+    if (!m[1])
+      continue;
+    const close = m[1].indexOf("](");
+    out.push({ from: m.index, to: m.index + m[1].length, words: m[1].slice(1, close), url: m[1].slice(close + 2, -1) });
   }
   return out;
 }
@@ -17955,6 +18030,10 @@ function trimRun(block) {
 
 // node_modules/@estiva-app/protocol/dist/anchors.js
 var BLOCK_ANCHOR_TAG = "block";
+var PART_TAG = "part";
+function partTag(address, block) {
+  return [PART_TAG, address, block];
+}
 
 // node_modules/@estiva-app/protocol/dist/comment-anchor.js
 var QUOTE_TAG = "quote";
@@ -18980,7 +19059,7 @@ function visible(block) {
       continue;
     }
     const { text: whole, type: _type, ...rest } = node;
-    for (const [text2, shown] of linksOnWordsIn(whole, rest)) {
+    for (const [text2, shown] of linksOnWordsIn2(whole, rest)) {
       const marks = canonical({ ...shown, ...shown.marks ? { marks: shown.marks.map(canonical).sort() } : {} });
       for (const character of text2) characters.push([character, /\s/.test(character) ? "" : marks]);
     }
@@ -18988,7 +19067,7 @@ function visible(block) {
   while (characters.length && characters[characters.length - 1][0] !== "" && /\s/.test(characters[characters.length - 1][0])) characters.pop();
   return { ...block, content: characters.map(([character, marks]) => character + "\0" + marks).join("") };
 }
-function linksOnWordsIn(text2, rest) {
+function linksOnWordsIn2(text2, rest) {
   if (!text2.includes("](") || rest.marks?.some((mark) => ["link", "code"].includes(mark.type ?? ""))) return [[text2, rest]];
   const parts = [];
   let at = 0;
@@ -19552,6 +19631,9 @@ function placeOf(comment2) {
   return [...PLACE_TAGS].map((name) => comment2.tags.find((t) => t[0] === name)).filter((t) => !!t);
 }
 
+// node_modules/@estiva-app/conversation/dist/boxCard.js
+var MAX_PARTS = 6;
+
 // node_modules/@estiva-app/conversation/dist/membership.js
 var MEMBER_FIELD_PREFIX = "member:";
 var PUBKEY = /^[0-9a-f]{64}$/;
@@ -19799,6 +19881,7 @@ var KIND_HANDLER_INFORMATION = 31990;
 var KIND_COMMENT2 = 1111;
 var KIND_MESSAGE2 = 9;
 var KIND_DELETION2 = 5;
+var LINK_TAG_NAMES = /* @__PURE__ */ new Set(["a", "q", "part"]);
 function commentKindsOf(manifest) {
   const declared = manifest.actions?.find((action) => action.id === "comment");
   const current = declared?.emits?.kind ?? KIND_COMMENT2;
@@ -21596,6 +21679,16 @@ function buildOneActionEvent(args2) {
       if (!ps.some((t) => t[1] === person))
         tags.push(["p", person]);
     }
+    for (const tag of args2.linkTags ?? []) {
+      if (!LINK_TAG_NAMES.has(tag[0]) || typeof tag[1] !== "string")
+        continue;
+      if ((tag[0] === "a" || tag[0] === "part") && tag[1] === address)
+        continue;
+      if (tag[0] === "q" && tag[1] === replyTo?.id)
+        continue;
+      if (!tags.some((t) => t[0] === tag[0] && t[1] === tag[1]))
+        tags.push([...tag]);
+    }
   }
   const moved = declared.emits.field ? movedByOf(manifest, kind) : void 0;
   const parentAddress = moved?.parentKind === void 0 ? /^\d+:[0-9a-f]{64}:/ : new RegExp(`^${moved.parentKind}:[0-9a-f]{64}:`);
@@ -22305,6 +22398,276 @@ function parseQuery(search) {
   return out;
 }
 
+// node_modules/@estiva-app/interop/dist/links.js
+async function within(work, ms) {
+  let timer;
+  await Promise.race([
+    work.then(() => {
+    }, () => {
+    }),
+    new Promise((resolve3) => {
+      timer = setTimeout(resolve3, ms);
+    })
+  ]);
+  clearTimeout(timer);
+}
+var MAX_LINKS_ASKED = 24;
+var EVENT_ID2 = /^[0-9a-f]{64}$/i;
+var RETRY_MS = 5e3;
+var KIND_APP_HANDLER = 31990;
+function linkReader(options) {
+  const { query, retries = 3 } = options;
+  const origins = /* @__PURE__ */ new Set();
+  let shapes = null;
+  const shapesOf = () => {
+    if (shapes)
+      return shapes;
+    const read = (options.manifests ?? (() => query([{ kinds: [KIND_APP_HANDLER], limit: 500 }])))().then((manifests) => {
+      const found = manifests.flatMap((manifest) => urlPatternsOf(manifest));
+      for (const shape of found) {
+        try {
+          origins.add(new URL(shape.pattern).origin);
+        } catch {
+        }
+      }
+      return found;
+    });
+    shapes = read;
+    read.then((found) => {
+      if (found.length === 0 && shapes === read)
+        shapes = null;
+    }, () => {
+      if (shapes === read)
+        shapes = null;
+    });
+    return read;
+  };
+  const answer = async (url) => {
+    const shapes2 = await shapesOf();
+    if (shapes2.length === 0)
+      throw new Error("No app manifest has been read yet.");
+    const hit = matchObjectUrl(url, shapes2);
+    if (!hit)
+      return { value: null };
+    if (hit.by === "id")
+      return { value: EVENT_ID2.test(hit.identifier) ? hit.identifier.toLowerCase() : null };
+    const kinds = (hit.kinds ?? (hit.kind === void 0 ? void 0 : [hit.kind]))?.filter((kind) => kind >= 3e4 && kind < 4e4);
+    if (kinds?.length === 0)
+      return { value: null };
+    const found = (await query([{ "#d": [hit.identifier], limit: 2, ...kinds ? { kinds } : {} }])).filter((event) => event.kind >= 3e4 && event.kind < 4e4);
+    const authors = new Set(found.map((event) => `${event.kind}:${event.pubkey.toLowerCase()}`));
+    if (authors.size !== 1)
+      return { value: null };
+    const address = `${[...authors][0]}:${hit.identifier}`;
+    return hit.block === void 0 ? { value: address } : { value: address, block: { address, block: hit.block } };
+  };
+  const asked = /* @__PURE__ */ new Map();
+  const known = /* @__PURE__ */ new Map();
+  const failures = /* @__PURE__ */ new Map();
+  const listeners = /* @__PURE__ */ new Set();
+  let answered = 0;
+  const changed = () => {
+    answered += 1;
+    for (const listener of listeners)
+      listener();
+  };
+  const answerOf = (url) => {
+    let pending2 = asked.get(url);
+    if (!pending2) {
+      pending2 = answer(url).then((found) => {
+        known.set(url, found);
+        changed();
+        return found;
+      }, (error2) => {
+        asked.delete(url);
+        const failed = failures.get(url) ?? 0;
+        failures.set(url, failed + 1);
+        if (failed < retries)
+          setTimeout(changed, RETRY_MS * 2 ** failed);
+        throw error2;
+      });
+      asked.set(url, pending2);
+    }
+    return pending2;
+  };
+  const knownValue = (url) => known.get(url)?.value ?? void 0;
+  const knownBlock = (url) => known.get(url)?.block;
+  return {
+    answerOf,
+    async ask(urls) {
+      const waiting = [...new Set(urls)].filter((url) => !known.has(url));
+      await Promise.allSettled(waiting.map(answerOf));
+      if (waiting.some((url) => !known.has(url)))
+        throw new Error("A link could not be asked about; asked again later.");
+    },
+    known: knownValue,
+    knownBlock,
+    answered: (url) => known.has(url),
+    changed(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    version: () => answered,
+    async tagsFor(blocks, own, { waitMs = 5e3, edit = false } = {}) {
+      const urls = linksIn(blocks).slice(0, MAX_LINKS_ASKED);
+      const waiting = urls.filter((url) => !known.has(url));
+      if (waiting.length > 0)
+        await within(Promise.allSettled(waiting.map(answerOf)), waitMs);
+      const first = new Set(urls);
+      const resolve3 = (url) => first.has(url) ? knownValue(url) : void 0;
+      return linkTagsOf(blocks, own, resolve3, edit ? void 0 : (url) => first.has(url) ? knownBlock(url) : void 0);
+    },
+    opener: (url, opens, origin) => writtenOpenerOf(url, opens, origin, origins),
+    declaredOrigins: () => origins
+  };
+}
+function linksIn(blocks) {
+  const urls = [];
+  valuesIn(blocks, (url) => {
+    urls.push(url);
+    return void 0;
+  });
+  return [...new Set(urls)];
+}
+function linkTagsOf(blocks, own, resolve3, blockOf) {
+  const file = own.file && sameValue(own.file);
+  const parent = own.parent?.toLowerCase();
+  const tags = [];
+  for (const value of valuesIn(blocks, resolve3)) {
+    if (EVENT_ID2.test(value)) {
+      if (value !== parent)
+        tags.push(["q", value]);
+    } else if (value !== file)
+      tags.push(["a", value]);
+  }
+  if (blockOf) {
+    const parts = /* @__PURE__ */ new Map();
+    for (const url of linksIn(blocks)) {
+      const part = blockOf(url);
+      if (part && sameValue(part.address) !== file && !parts.has(part.address))
+        parts.set(part.address, part.block);
+    }
+    for (const [address, block] of [...parts].slice(0, MAX_PARTS))
+      tags.push(partTag(address, block));
+  }
+  return tags;
+}
+function sameValue(address) {
+  const [kind, pubkey = "", ...d] = address.split(":");
+  return `${kind}:${pubkey.toLowerCase()}:${d.join(":")}`;
+}
+function writtenOpenerOf(url, opens, origin, declared) {
+  if (!url || !/^https:\/\//i.test(url))
+    return void 0;
+  try {
+    const at = new URL(url).origin;
+    const opensAt = opens ? new URL(opens, origin).origin : void 0;
+    return at === origin || at === opensAt || declared.has(at) ? url : void 0;
+  } catch {
+    return void 0;
+  }
+}
+
+// lib/agent/links.ts
+var KIND_APP_HANDLER2 = 31990;
+var byRelay = /* @__PURE__ */ new WeakMap();
+function manifestsOf(context2) {
+  const held = byRelay.get(context2.relay);
+  if (held) return held;
+  let read = null;
+  const manifests = () => {
+    if (read) return read;
+    const asked = context2.relay.queryAll([{ kinds: [KIND_APP_HANDLER2], limit: 500 }]);
+    read = asked;
+    asked.then(
+      (found) => {
+        if (found.length === 0 && read === asked) read = null;
+      },
+      () => {
+        if (read === asked) read = null;
+      }
+    );
+    return asked;
+  };
+  byRelay.set(context2.relay, manifests);
+  return manifests;
+}
+function linkReaderOf(context2) {
+  return linkReader({ query: (filters) => context2.relay.queryAll(filters), manifests: manifestsOf(context2) });
+}
+async function commentLinkTags(context2, body, own, options = {}) {
+  const reader = linkReaderOf(context2);
+  const tree = toRenderTree(body, "marker");
+  const tags = await reader.tagsFor(tree, own, options);
+  if (options.edit && linksIn(tree).slice(0, MAX_LINKS_ASKED).some((url) => !reader.answered(url)))
+    throw new BadRequest("A link in the new text could not be looked up, so the message was not edited: without it, the edit would take the message off the file that link names. Try again.");
+  return tags;
+}
+async function addressesOfUrl(context2, url) {
+  const hit = matchObjectUrl(url, (await manifestsOf(context2)()).flatMap((manifest) => urlPatternsOf(manifest)));
+  if (!hit || hit.by === "id") return [];
+  const kinds = (hit.kinds ?? (hit.kind === void 0 ? void 0 : [hit.kind]))?.filter((kind) => kind >= 3e4 && kind < 4e4);
+  if (kinds?.length === 0) return [];
+  const limit = 10;
+  const found = await context2.relay.queryAll([{ "#d": [hit.identifier], limit, ...kinds ? { kinds } : {} }]);
+  const files = found.filter((event) => event.kind >= 3e4 && event.kind < 4e4);
+  const names = [...new Set(files.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))];
+  return found.length >= limit && names.length === 1 ? [] : names;
+}
+function firstWords(block) {
+  const words = (block.inline ?? []).map((run) => run.text).join("").replace(/\s+/g, " ").trim();
+  return words.length > 60 ? `${words.slice(0, 59)}\u2026` : words || `[${block.type}]`;
+}
+async function printedLinks(context2, value, format, titleOf) {
+  if (!value) return [];
+  const read = toRenderTree(value, format ?? "marker");
+  const reader = linkReaderOf(context2);
+  await reader.ask(linksIn(read));
+  return drawnLinks(read, reader.known, titleOf);
+}
+function drawnLinks(read, names, titleOf = () => void 0) {
+  const tree = linksAsReferences(read, names);
+  const draws = documentLineDraws(tree, { resolveLink: names });
+  const out = [];
+  const add = (link) => {
+    const title = titleOf(link.to);
+    out.push(title ? { ...link, title } : link);
+  };
+  const walk = (blocks) => {
+    for (const block of blocks) {
+      const lines = draws.get(block);
+      if (lines && block.type !== "codeBlock") {
+        const where = firstWords(block);
+        linesOf(block).forEach((line, i) => {
+          const drawn = lines[i];
+          if (drawn?.draw === "row" || drawn?.draw === "card") {
+            const url = "url" in drawn ? drawn.url : void 0;
+            add({ in: where, draws: drawn.draw, to: drawn.value, ...url ? { url } : {} });
+            return;
+          }
+          if (drawn?.draw === "unreadable") {
+            add({ in: where, draws: "row", to: drawn.reference, unreadable: true });
+            return;
+          }
+          for (const run of line) {
+            if (run.marks.includes("code")) continue;
+            const url = run.reference && run.text !== run.reference ? run.text : void 0;
+            if (run.reference) add({ in: where, draws: "chip", to: valueOfReference(run.reference) ?? personOf(run.reference), ...url ? { url } : {} });
+            else if (run.href !== void 0) add({ in: where, draws: "link", to: run.href, ...run.text !== run.href ? { words: run.text } : {} });
+            else for (const { url: bare } of urlRunsIn(run.text)) add({ in: where, draws: "link", to: bare });
+          }
+        });
+      }
+      if (block.children) walk(block.children);
+    }
+  };
+  walk(tree);
+  return out;
+}
+var personOf = (reference) => reference.replace(/^nostr:/i, "");
+
 // lib/agent/act-on-file.ts
 function pointerOf(address) {
   const [kind, pubkey, ...rest] = address.split(":");
@@ -22344,6 +22707,7 @@ async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, co
     value,
     replyTo,
     contentFormat,
+    linkTags: actionId === "comment" ? await commentLinkTags(context2, value, { file: file.address, parent: replyTo?.id }) : void 0,
     pubkey: context2.signer.pubkey,
     createdAtMs: Date.now()
   });
@@ -22402,14 +22766,16 @@ async function publishEdit(context2, args2) {
   const events = await relayQuery(context2)([{ ids: [id] }, { kinds: [KIND_EDIT], "#e": [id] }]);
   if (!events.some((event) => event.id === id)) throw new BadRequest("That message could not be read back, so it was not edited. Try again.");
   const files = foldAttachments(events)[id] ?? [];
-  const signed = await context2.signer.sign(
-    buildEdit(context2.signer.pubkey, Date.now(), {
-      channelUuid: args2.folder,
-      targetEventId: args2.messageEventId,
-      body: args2.body,
-      mediaTags: files.map(imetaTag)
-    })
-  );
+  const target = events.find((event) => event.id === id);
+  const own = anchorsOf(target)[0] ?? target.tags.find((t) => t[0] === "a")?.[1];
+  const linkTags = await commentLinkTags(context2, args2.body, { file: own, parent: editTargetOf(target) }, { edit: true });
+  const edit = buildEdit(context2.signer.pubkey, Date.now(), {
+    channelUuid: args2.folder,
+    targetEventId: args2.messageEventId,
+    body: args2.body,
+    mediaTags: files.map(imetaTag)
+  });
+  const signed = await context2.signer.sign({ ...edit, tags: [...edit.tags, ...linkTags] });
   const result = await context2.relay.publish(signed);
   return { ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id };
 }
@@ -22473,101 +22839,6 @@ function findThread(threads, reference) {
     hint: "Pass a conversation id from `peek topic` or `file show`, or a distinctive phrase from its first message."
   });
 }
-
-// lib/agent/links.ts
-var EVENT_ID2 = /^[0-9a-f]{64}$/i;
-async function namesOfLinks(context2, tree) {
-  const urls = /* @__PURE__ */ new Set();
-  const walk = (blocks) => {
-    for (const block of blocks) {
-      if (block.type === "codeBlock") continue;
-      for (const run of block.inline ?? []) {
-        if (run.marks.includes("code")) continue;
-        if (run.href !== void 0) urls.add(run.href);
-        else for (const { url } of urlRunsIn(run.text)) urls.add(url);
-      }
-      if (block.children) walk(block.children);
-    }
-  };
-  walk(tree);
-  const names = /* @__PURE__ */ new Map();
-  if (urls.size === 0) return () => void 0;
-  const shapes = await urlShapes(context2);
-  await Promise.all(
-    [...urls].map(async (url) => {
-      const found = await namesUnder(context2, url, shapes, 2);
-      if (found.length === 1) names.set(url, found[0]);
-    })
-  );
-  return (url) => names.get(url);
-}
-async function addressesOfUrl(context2, url) {
-  return (await namesUnder(context2, url, await urlShapes(context2), 10)).filter((name) => !EVENT_ID2.test(name));
-}
-async function urlShapes(context2) {
-  const manifests = await context2.relay.queryAll([{ kinds: [KIND_APP_HANDLER], limit: 500 }]);
-  return manifests.flatMap((manifest) => urlPatternsOf(manifest));
-}
-async function namesUnder(context2, url, shapes, limit) {
-  const hit = matchObjectUrl(url, shapes);
-  if (!hit) return [];
-  if (hit.by === "id") return EVENT_ID2.test(hit.identifier) ? [hit.identifier.toLowerCase()] : [];
-  const kinds = (hit.kinds ?? (hit.kind === void 0 ? void 0 : [hit.kind]))?.filter((kind) => kind >= 3e4 && kind < 4e4);
-  if (kinds?.length === 0) return [];
-  const found = await context2.relay.queryAll([{ "#d": [hit.identifier], limit, ...kinds ? { kinds } : {} }]);
-  const names = [...new Set(found.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))];
-  return found.length >= limit && names.length === 1 ? [] : names;
-}
-var KIND_APP_HANDLER = 31990;
-function firstWords(block) {
-  const words = (block.inline ?? []).map((run) => run.text).join("").replace(/\s+/g, " ").trim();
-  return words.length > 60 ? `${words.slice(0, 59)}\u2026` : words || `[${block.type}]`;
-}
-async function printedLinks(context2, value, format, titleOf) {
-  if (!value) return [];
-  const read = toRenderTree(value, format ?? "marker");
-  return linksIn(read, await namesOfLinks(context2, read), titleOf);
-}
-function linksIn(read, names, titleOf = () => void 0) {
-  const tree = linksAsReferences(read, names);
-  const draws = documentLineDraws(tree, { resolveLink: names });
-  const out = [];
-  const add = (link) => {
-    const title = titleOf(link.to);
-    out.push(title ? { ...link, title } : link);
-  };
-  const walk = (blocks) => {
-    for (const block of blocks) {
-      const lines = draws.get(block);
-      if (lines && block.type !== "codeBlock") {
-        const where = firstWords(block);
-        linesOf(block).forEach((line, i) => {
-          const drawn = lines[i];
-          if (drawn?.draw === "row" || drawn?.draw === "card") {
-            const url = "url" in drawn ? drawn.url : void 0;
-            add({ in: where, draws: drawn.draw, to: drawn.value, ...url ? { url } : {} });
-            return;
-          }
-          if (drawn?.draw === "unreadable") {
-            add({ in: where, draws: "row", to: drawn.reference, unreadable: true });
-            return;
-          }
-          for (const run of line) {
-            if (run.marks.includes("code")) continue;
-            const url = run.reference && run.text !== run.reference ? run.text : void 0;
-            if (run.reference) add({ in: where, draws: "chip", to: valueOfReference(run.reference) ?? personOf(run.reference), ...url ? { url } : {} });
-            else if (run.href !== void 0) add({ in: where, draws: "link", to: run.href, ...run.text !== run.href ? { words: run.text } : {} });
-            else for (const { url: bare } of urlRunsIn(run.text)) add({ in: where, draws: "link", to: bare });
-          }
-        });
-      }
-      if (block.children) walk(block.children);
-    }
-  };
-  walk(tree);
-  return out;
-}
-var personOf = (reference) => reference.replace(/^nostr:/i, "");
 
 // lib/agent/mentions.ts
 async function relayMembers(context2) {
@@ -23337,6 +23608,8 @@ async function act(context2, workspace, target, actionId, value, signs, extra = 
     folderHasState: extra.folderHasState,
     listedIn: extra.listedIn,
     contentFormat: extra.contentFormat,
+    // What a comment's body links, as Ship's comment box tags it (§13.1, PEEKM-7).
+    linkTags: actionId === "comment" && typeof value === "string" ? await commentLinkTags(context2, value, { file: target.addr }) : void 0,
     pubkey: context2.signer.pubkey,
     createdAtMs: Date.now()
   });
