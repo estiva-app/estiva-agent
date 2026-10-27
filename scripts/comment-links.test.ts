@@ -87,15 +87,23 @@ console.log('— A comment says what it links —')
 }
 {
   const { context, published } = workspace()
-  await run('comment', context, [ISSUE], { body: `Paste \`${linkTo(other)}\` into the box.` })
+  await run('comment', context, [ISSUE], { body: `Paste \`${linkTo(other)}\` into the box, then open ${linkTo(third)}.` })
   const [sent] = published
-  check('ship comment with the link only in a code span links nothing: no a but its own issue', JSON.stringify(tags(sent, 'a')) === JSON.stringify([ISSUE]), JSON.stringify(sent?.tags))
+  check(
+    'ship comment with one link in a code span and one outside carries the a of the one outside only',
+    JSON.stringify(tags(sent, 'a')) === JSON.stringify([ISSUE, addressOf(third)]),
+    JSON.stringify(sent?.tags),
+  )
 }
 {
   const { context, published } = workspace()
-  await run('comment', context, [ISSUE], { body: `This one: ${linkTo(issue)}` })
+  await run('comment', context, [ISSUE], { body: `This one: ${linkTo(issue)}, blocked by ${linkTo(other)}.` })
   const [sent] = published
-  check('ship comment linking its own issue names it once, as the issue it is on', JSON.stringify(tags(sent, 'a')) === JSON.stringify([ISSUE]), JSON.stringify(sent?.tags))
+  check(
+    'ship comment linking its own issue and another names its own once, as the issue it is on, then the other',
+    JSON.stringify(tags(sent, 'a')) === JSON.stringify([ISSUE, addressOf(other)]),
+    JSON.stringify(sent?.tags),
+  )
 }
 {
   // A box draws at most six parts; a block of the comment's own issue must not take one of them.
@@ -129,8 +137,12 @@ console.log('\n— An edit says what the message links now —')
     JSON.stringify(edit?.tags),
   )
   check('…and a q for the message it quotes', JSON.stringify(tags(edit, 'q')) === JSON.stringify([quoted.id]), JSON.stringify(edit?.tags))
-  check('…but no a for the comment’s own issue', !tags(edit, 'a').includes(ISSUE), JSON.stringify(edit?.tags))
-  check('…and no p, urgent or part: the person it names was told by the send', ['p', 'urgent', 'part'].every((name) => tags(edit, name).length === 0), JSON.stringify(edit?.tags))
+  check(
+    '…and exactly those, though its words name its own issue, a person and a block: no a for its own issue, no p, urgent or part',
+    JSON.stringify(edit?.tags.filter((t) => ['a', 'q', 'p', 'urgent', 'part'].includes(t[0]))) ===
+      JSON.stringify([['a', addressOf(other)], ['a', addressOf(third)], ['q', quoted.id]]),
+    JSON.stringify(edit?.tags),
+  )
   check('…naming the comment it edits, in its Folder', tag(edit, 'e') === first.eventId && tag(edit, 'h') === tag(issue, 'h'), JSON.stringify(edit?.tags))
 }
 
