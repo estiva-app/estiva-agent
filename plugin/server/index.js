@@ -19631,6 +19631,9 @@ function placeOf(comment2) {
   return [...PLACE_TAGS].map((name) => comment2.tags.find((t) => t[0] === name)).filter((t) => !!t);
 }
 
+// node_modules/@estiva-app/conversation/dist/boxCard.js
+var MAX_PARTS = 6;
+
 // node_modules/@estiva-app/conversation/dist/membership.js
 var MEMBER_FIELD_PREFIX = "member:";
 var PUBKEY = /^[0-9a-f]{64}$/;
@@ -22430,14 +22433,20 @@ function linkReader(options) {
       return found;
     });
     shapes = read;
-    read.catch(() => {
+    read.then((found) => {
+      if (found.length === 0 && shapes === read)
+        shapes = null;
+    }, () => {
       if (shapes === read)
         shapes = null;
     });
     return read;
   };
   const answer = async (url) => {
-    const hit = matchObjectUrl(url, await shapesOf());
+    const shapes2 = await shapesOf();
+    if (shapes2.length === 0)
+      throw new Error("No app manifest has been read yet.");
+    const hit = matchObjectUrl(url, shapes2);
     if (!hit)
       return { value: null };
     if (hit.by === "id")
@@ -22445,7 +22454,7 @@ function linkReader(options) {
     const kinds = (hit.kinds ?? (hit.kind === void 0 ? void 0 : [hit.kind]))?.filter((kind) => kind >= 3e4 && kind < 4e4);
     if (kinds?.length === 0)
       return { value: null };
-    const found = await query([{ "#d": [hit.identifier], limit: 2, ...kinds ? { kinds } : {} }]);
+    const found = (await query([{ "#d": [hit.identifier], limit: 2, ...kinds ? { kinds } : {} }])).filter((event) => event.kind >= 3e4 && event.kind < 4e4);
     const authors = new Set(found.map((event) => `${event.kind}:${event.pubkey.toLowerCase()}`));
     if (authors.size !== 1)
       return { value: null };
@@ -22506,9 +22515,9 @@ function linkReader(options) {
       const waiting = urls.filter((url) => !known.has(url));
       if (waiting.length > 0)
         await within(Promise.allSettled(waiting.map(answerOf)), waitMs);
-      const asked2 = new Set(urls);
-      const resolve3 = (url) => asked2.has(url) ? knownValue(url) : void 0;
-      return linkTagsOf(blocks, own, resolve3, edit ? void 0 : (url) => asked2.has(url) ? knownBlock(url) : void 0);
+      const first = new Set(urls);
+      const resolve3 = (url) => first.has(url) ? knownValue(url) : void 0;
+      return linkTagsOf(blocks, own, resolve3, edit ? void 0 : (url) => first.has(url) ? knownBlock(url) : void 0);
     },
     opener: (url, opens, origin) => writtenOpenerOf(url, opens, origin, origins),
     declaredOrigins: () => origins
@@ -22540,7 +22549,7 @@ function linkTagsOf(blocks, own, resolve3, blockOf) {
       if (part && sameValue(part.address) !== file && !parts.has(part.address))
         parts.set(part.address, part.block);
     }
-    for (const [address, block] of parts)
+    for (const [address, block] of [...parts].slice(0, MAX_PARTS))
       tags.push(partTag(address, block));
   }
   return tags;
