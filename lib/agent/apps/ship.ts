@@ -40,6 +40,7 @@ import { KIND_CHANGE, KIND_COMMENT, KIND_DELETION, KIND_EDIT } from '@estiva-app
 import {
   KIND_CHANNEL_METADATA,
   buildActionEvents,
+  createLoadQuery,
   createProjectionCache,
   listFolders,
   planArchiveFolder,
@@ -823,7 +824,7 @@ async function stateAfter(
  * file, and everything already in it disappears.
  */
 function readFolders(context: AgentContext): Promise<FolderSummary[]> {
-  return listFolders((filters) => context.relay.queryAll(filters as never))
+  return listFolders(createLoadQuery(relayQuery(context)))
 }
 
 /**
@@ -952,9 +953,10 @@ async function publishUnsigned(context: AgentContext, unsigned: Parameters<Agent
  */
 async function readListings(context: AgentContext, sources: readonly FolderRef[]): Promise<Map<string, MovableFile[]> | { unread: string }> {
   const cache = createProjectionCache()
+  const query = createLoadQuery(relayQuery(context))
   const read = await Promise.all(
     sources.map((folder) =>
-      resolveFolderContents(folder.id, relayQuery(context), noPeople, cache, { includeArchived: true }).then(
+      resolveFolderContents(folder.id, query, noPeople, cache, { includeArchived: true }).then(
         (content) => content.files as MovableFile[],
         (error: unknown) => ({ unread: error instanceof Error ? error.message : String(error) }),
       ),
@@ -1097,10 +1099,12 @@ async function timelineFor(
  */
 /**
  * The workspace with the Folder half of the archive cascade applied — the
- * Folder listing read beside the workspace scan, not after it.
+ * Folder listing read beside the workspace scan, not after it, through one
+ * load's query so a read both make is asked once (APP-2).
  */
 async function loadWithFolders(context: AgentContext) {
-  const [state, folders] = await Promise.all([loadWorkspace(context), listFolders(relayQuery(context))])
+  const query = createLoadQuery(relayQuery(context))
+  const [state, folders] = await Promise.all([loadWorkspace(context, query), listFolders(query)])
   cascadeArchives(state, folders)
   return { state, folders }
 }

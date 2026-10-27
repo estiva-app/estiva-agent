@@ -440,7 +440,8 @@ when you need to be sure you are talking about the same object twice.
 
 `loadWorkspace` (`lib/agent/apps/ship-workspace.ts`) reads every Ship project
 and issue, every change to them, and the manifests that fold them on every call
-— no cache, by design, and `--project` filters the answer, not the read. Three
+— no cache across calls, by design (within one call, interop's `createLoadQuery`
+asks a read the call repeats once, APP-2), and `--project` filters the answer, not the read. Three
 commands in a row is three full scans, so gather what you need in one `show`
 rather than looping.
 
