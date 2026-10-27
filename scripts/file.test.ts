@@ -198,6 +198,15 @@ const fixture = () => {
   check('…and a full page of one author’s events never opens theirs', out.address === undefined && String(out.error).includes('not a link to a file'), out.error ?? out.address)
 }
 {
+  // A manifest whose link shape names no kind asks every kind: an event that is no file, carrying the same id, is not a second holder.
+  const { context, events } = fixture()
+  const d = created!.address.split(':')[2]
+  events.push(event(31990, [['d', 'wiki'], ['web', 'https://wiki.example'], ['urls', 'https://wiki.example/page/<d>']], '', QA2))
+  events.push(event(1, [['d', d]], 'not a file', QA2))
+  const out = await run('show', context, [`https://wiki.example/page/${d}`], {}).catch((error: Error) => ({ error: error.message }) as Record<string, any>)
+  check('…and a link whose shape names no kind opens the one file holding its id, never counting an event that is not a file', out.address === created!.address, out.error ?? out.address)
+}
+{
   // QA-2 resolves the thread, then reopens it: show follows the newest, as Leaf's column does.
   const { context, events, comment } = fixture()
   const resolution = (action: string, at: number) => event(9101, [['t', 'resolution'], ['action', action], ['e', comment.id], ['h', FOLDER]], '', QA2, at)

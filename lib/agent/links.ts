@@ -117,8 +117,6 @@ export async function commentLinkTags(context: Pick<AgentContext, 'relay'>, body
 /** What an app URL names (§7.7), or undefined: the reader's answers, asked before drawing. */
 export type LinkNames = (url: string) => string | undefined
 
-const EVENT_ID = /^[0-9a-f]{64}$/i
-
 /**
  * Every file an app URL could name (§7.7), as `kind:pubkey:d`, up to 10: none
  * when no app claims it or nothing readable holds its `d`, more than one when
@@ -134,9 +132,11 @@ export async function addressesOfUrl(context: Pick<AgentContext, 'relay'>, url: 
   if (kinds?.length === 0) return []
   const limit = 10
   const found = await context.relay.queryAll([{ '#d': [hit.identifier], limit, ...(kinds ? { kinds } : {}) }])
-  const names = [...new Set(found.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))]
+  // A shape that names no kind asks every one; only an addressable answer is a file, as the reader counts it.
+  const files = found.filter((event) => event.kind >= 30000 && event.kind < 40000)
+  const names = [...new Set(files.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))]
   // A full page can hide another holder behind newer events of one author: then it names none.
-  return found.length >= limit && names.length === 1 ? [] : names.filter((name) => !EVENT_ID.test(name))
+  return found.length >= limit && names.length === 1 ? [] : names
 }
 
 /** A block as one line of words, for saying where a link is. */
