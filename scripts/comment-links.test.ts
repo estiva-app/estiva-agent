@@ -196,6 +196,22 @@ console.log('\n— An edit says what the message links now —')
     JSON.stringify(edit?.tags),
   )
 }
+{
+  // An edit replaces the whole a set: one sent without a link it could not look up takes the comment off that file.
+  const { context, published } = workspace()
+  const first = await run('comment', context, [ISSUE], { body: `See ${linkTo(third)}.` })
+  published.length = 0
+  const queryAll = context.relay.queryAll
+  ;(context.relay as { queryAll: typeof queryAll }).queryAll = async (filters) => {
+    if ((filters as Record<string, any>[]).some((f) => f['#d']?.includes(tag(third, 'd')))) throw new Error('relay timed out')
+    return queryAll(filters)
+  }
+  const refused = await run('edit-comment', context, [ISSUE], { message: first.eventId, body: `Still ${linkTo(third)}.` }).then(
+    () => '',
+    (error: Error) => error.message,
+  )
+  check('ship edit-comment whose link cannot be looked up publishes nothing, and says the message was not edited', published.length === 0 && refused.includes('not edited'), refused || JSON.stringify(published[0]?.tags))
+}
 
 console.log(failures ? `\n${failures} failed.` : '\nAll comment link checks passed.')
 process.exit(failures ? 1 : 0)

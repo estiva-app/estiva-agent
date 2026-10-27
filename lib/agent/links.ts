@@ -24,8 +24,8 @@ import {
   type ContentFormat,
   type RenderBlock,
 } from '@estiva-app/protocol'
-import { linkReader, linksIn, matchObjectUrl, urlPatternsOf, type LinkReader, type OwnPlace } from '@estiva-app/interop'
-import type { AgentContext } from './cli'
+import { linkReader, linksIn, matchObjectUrl, MAX_LINKS_ASKED, urlPatternsOf, type LinkReader, type OwnPlace } from '@estiva-app/interop'
+import { BadRequest, type AgentContext } from './cli'
 
 /** One link as it draws: `chip` in a sentence, `row` or `card` alone on its line, `link` for words or a URL no app claims. */
 export interface PrintedLink {
@@ -98,13 +98,20 @@ export function linkReaderOf(context: Pick<AgentContext, 'relay'>): LinkReader {
  * `nostr:` reference or an app link, as every app's comment box tags it (SPEC
  * §13.1, PEEKM-7), so the file a link names lists the comment under Mentioned
  * in. Never its own file, nor the comment it answers. An edit (`edit: true`)
- * carries the whole `a`/`q` set its new words earn and no `part`. A link not
- * answered within the reader's wait earns nothing and stays a link.
+ * carries the whole `a`/`q` set its new words earn and no `part`. On a send, a
+ * link not answered within the reader's wait earns nothing and stays a link.
+ * An edit with a link not answered is refused: it replaces the whole set, so
+ * it would take the message off the file that link names.
  *
  * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/an-edit-says-what-the-message-links-now.md
  */
-export function commentLinkTags(context: Pick<AgentContext, 'relay'>, body: string, own: OwnPlace, options: { edit?: boolean } = {}): Promise<string[][]> {
-  return linkReaderOf(context).tagsFor(toRenderTree(body, 'marker'), own, options)
+export async function commentLinkTags(context: Pick<AgentContext, 'relay'>, body: string, own: OwnPlace, options: { edit?: boolean } = {}): Promise<string[][]> {
+  const reader = linkReaderOf(context)
+  const tree = toRenderTree(body, 'marker')
+  const tags = await reader.tagsFor(tree, own, options)
+  if (options.edit && linksIn(tree).slice(0, MAX_LINKS_ASKED).some((url) => !reader.answered(url)))
+    throw new BadRequest('A link in the new text could not be looked up, so the message was not edited: without it, the edit would take the message off the file that link names. Try again.')
+  return tags
 }
 
 /** What an app URL names (§7.7), or undefined: the reader's answers, asked before drawing. */
