@@ -35,6 +35,7 @@
 import {
   buildActionEvents,
   conversationsOf,
+  createLoadQuery,
   createProjectionCache,
   FOLDER_ACTIONS_ADDRESS,
   KIND_BARE_FILE,
@@ -97,7 +98,8 @@ export interface Topic {
  * 3 min 19 s that way, past the MCP client's 60 s (43e9a775).
  */
 async function loadTopics(context: AgentContext, cache: ProjectionCache, folderRef?: string): Promise<Topic[]> {
-  const query = relayQuery(context)
+  // One load: the listing and every Folder's contents share what they have read (APP-2).
+  const query = createLoadQuery(relayQuery(context))
   const all = await listFolders(query, { recordChannels: false })
   const queue = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all)
   const byId = new Map(all.map((folder) => [folder.id, folder]))
@@ -450,7 +452,7 @@ export const peekApp: AgentApp = {
         // Folder that exists but no drawn Folder lists would take the topic
         // somewhere nobody can reach — this ticket's bug again.
         const query = relayQuery(context)
-        const folder = findFolder(topLevelFolders(await listFolders(query, { recordChannels: false })), folderRef)
+        const folder = findFolder(topLevelFolders(await listFolders(createLoadQuery(query), { recordChannels: false })), folderRef)
 
         /*
           The Folder's built-in `create-file` (SPEC §3.2), as Peek's launcher

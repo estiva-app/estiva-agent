@@ -231,6 +231,29 @@ console.log('\n— Peek —')
   check('peek topics lists the topic beside a project', listed.topics.map((t) => t.title).join() === 'Launch', JSON.stringify(listed.topics))
   check('peek topics never asks for a project’s changes', !named.includes(PROJECT), named.join(' '))
 }
+{
+  // A topic listed in a Folder and in the Folder inside it: one listing reads
+  // its changes once, not once per Folder (APP-2; 12 repeated asks on production).
+  const NESTED = '66666666-7777-8888-9999-000000000000'
+  const TOPIC = `30840:${SELF}:t1`
+  const { context } = relay([
+    event(39000, [['d', FOLDER], ['name', 'HQ']], '', RELAY_KEY),
+    event(39000, [['d', NESTED], ['name', 'Plans']], '', RELAY_KEY),
+    event(30890, [['d', FOLDER], ['a', TOPIC], ['a', `39000:${RELAY_KEY}:${NESTED}`]], '', RELAY_KEY),
+    event(30890, [['d', NESTED], ['a', TOPIC]], '', RELAY_KEY),
+    event(30840, [['d', 't1'], ['title', 'Launch'], ['h', FOLDER]]),
+    event(1851, [['a', TOPIC], ['field', 'summary'], ['value', 'What we call the launch.'], ['h', FOLDER]]),
+  ])
+  let asked = 0
+  const queryAll = context.relay.queryAll
+  context.relay.queryAll = (async (filters: Record<string, unknown>[]) => {
+    for (const filter of filters) if ((filter.kinds as number[] | undefined)?.includes(1851) && (filter['#a'] as string[] | undefined)?.includes(TOPIC)) asked++
+    return queryAll(filters as never)
+  }) as typeof queryAll
+  const listed = (await run(peekApp, 'topics', context, [], {})) as { topics: { title: string; summary?: string }[] }
+  check('peek topics lists a topic two Folders list once, with its summary', listed.topics.map((t) => `${t.title}: ${t.summary}`).join() === 'Launch: What we call the launch.', JSON.stringify(listed.topics))
+  check('peek topics asks for a topic’s changes once when two Folders list it', asked === 1, `asked ${asked} times`)
+}
 for (const claimed of [false, true]) {
   const { context, published } = peek(claimed)
   const when = claimed ? ' (Peek’s old k 39000 claim still published)' : ''

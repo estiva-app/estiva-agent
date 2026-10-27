@@ -18,6 +18,7 @@
  */
 import {
   conversationsOf,
+  createLoadQuery,
   createProjectionCache,
   folderOf,
   projectEvents,
@@ -231,9 +232,11 @@ function rawStatus(object: ForeignObject, vocab: Vocabulary): string {
 
 const metaValue = (object: ForeignObject, field: string) => object.meta.find((slot) => slot.field === field)?.value || undefined
 
-/** Every Ship project and issue, folded through Ship's manifest, with the change stream. */
-export async function loadWorkspace(context: AgentContext): Promise<Workspace> {
-  const query = relayQuery(context)
+/**
+ * Every Ship project and issue, folded through Ship's manifest, with the change stream.
+ * `query` is the load's, when the workspace is read beside other reads of the same load (APP-2).
+ */
+export async function loadWorkspace(context: AgentContext, query: QueryFn = createLoadQuery(relayQuery(context))): Promise<Workspace> {
   const cache = createProjectionCache()
   const roots = await query([{ kinds: [KIND.PROJECT, KIND.ISSUE] }])
   const manifests = await manifestsFor(roots, query, cache)

@@ -22023,6 +22023,109 @@ async function addressesByContainment(folder, query) {
   };
 }
 
+// node_modules/@estiva-app/interop/dist/loadQuery.js
+function byTagOf(filter) {
+  const keys = Object.keys(filter);
+  const tagKeys = keys.filter((key) => key.startsWith("#"));
+  if (keys.length !== 3 || tagKeys.length !== 1 || tagKeys[0].length !== 2)
+    return null;
+  const { kinds, limit } = filter;
+  const values2 = filter[tagKeys[0]];
+  if (!Array.isArray(kinds) || kinds.length !== 1 || typeof kinds[0] !== "number")
+    return null;
+  if (typeof limit !== "number" || !Array.isArray(values2) || values2.length === 0)
+    return null;
+  if (!values2.every((value) => typeof value === "string"))
+    return null;
+  return { kind: kinds[0], tag: tagKeys[0].slice(1), values: values2, limit };
+}
+function completeByValue(shape, answer) {
+  const byValue = new Map(shape.values.map((value) => [value, []]));
+  let matched = 0;
+  for (const event of answer) {
+    if (event.kind !== shape.kind)
+      continue;
+    let hit = false;
+    for (const [name, value] of event.tags) {
+      const held = name === shape.tag ? byValue.get(value) : void 0;
+      if (held && !held.includes(event)) {
+        held.push(event);
+        hit = true;
+      }
+    }
+    if (hit)
+      matched++;
+  }
+  return matched >= Math.min(shape.limit, RELAY_PAGE_CEILING) ? null : byValue;
+}
+function createLoadQuery(query) {
+  const known = /* @__PURE__ */ new Map();
+  const flights = /* @__PURE__ */ new Map();
+  const ask = (filters) => {
+    const key = JSON.stringify(filters);
+    const held = flights.get(key);
+    if (held)
+      return held;
+    const flight = query(filters).finally(() => flights.delete(key));
+    flights.set(key, flight);
+    return flight;
+  };
+  return async (filters) => {
+    const send = [];
+    const asked = [];
+    const joined = [];
+    for (const filter of filters) {
+      const shape = byTagOf(filter);
+      if (!shape) {
+        send.push(filter);
+        continue;
+      }
+      const fresh = [];
+      for (const value of new Set(shape.values)) {
+        const entry = known.get(`${shape.kind}:${shape.tag}:${value}`);
+        if (entry && entry.limit <= shape.limit)
+          joined.push({ shape, value, entry: entry.events });
+        else
+          fresh.push(value);
+      }
+      if (fresh.length === 0)
+        continue;
+      send.push({ ...filter, [`#${shape.tag}`]: fresh });
+      asked.push({ ...shape, values: fresh });
+    }
+    const answer = send.length ? ask(send) : Promise.resolve([]);
+    for (const shape of asked) {
+      const split = answer.then((events) => completeByValue(shape, events));
+      for (const value of shape.values) {
+        const key = `${shape.kind}:${shape.tag}:${value}`;
+        if ((known.get(key)?.limit ?? -1) > shape.limit)
+          continue;
+        const entry = { limit: shape.limit, events: split.then((byValue) => byValue?.get(value) ?? null) };
+        known.set(key, entry);
+        const forget = () => {
+          if (known.get(key) === entry)
+            known.delete(key);
+        };
+        entry.events.then((events) => events ?? forget(), forget);
+      }
+    }
+    const out = [...await answer];
+    const unknown2 = /* @__PURE__ */ new Map();
+    for (const { shape, value, entry } of joined) {
+      const events = await entry;
+      if (events)
+        out.push(...events);
+      else
+        unknown2.set(shape, [...unknown2.get(shape) ?? [], value]);
+    }
+    if (unknown2.size) {
+      out.push(...await ask([...unknown2].map(([shape, values2]) => ({ kinds: [shape.kind], [`#${shape.tag}`]: values2, limit: shape.limit }))));
+    }
+    const seen = /* @__PURE__ */ new Set();
+    return out.filter((e) => !seen.has(e.id) && !!seen.add(e.id));
+  };
+}
+
 // node_modules/@estiva-app/interop/dist/objectUrl.js
 var TRAILING_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var TRAILING_EVENT_ID_RE = /(?:^|[^0-9a-f])([0-9a-f]{64})$/i;
@@ -22665,8 +22768,7 @@ function rawStatus(object3, vocab) {
   return vocab.entries.find((entry) => entry.label === shown)?.value ?? shown;
 }
 var metaValue = (object3, field) => object3.meta.find((slot) => slot.field === field)?.value || void 0;
-async function loadWorkspace(context2) {
-  const query = relayQuery2(context2);
+async function loadWorkspace(context2, query = createLoadQuery(relayQuery2(context2))) {
   const cache = createProjectionCache();
   const roots = await query([{ kinds: [KIND2.PROJECT, KIND2.ISSUE] }]);
   const manifests = await manifestsFor(roots, query, cache);
@@ -23171,7 +23273,7 @@ async function stateAfter(context2, state, issue2, after) {
   );
 }
 function readFolders(context2) {
-  return listFolders((filters) => context2.relay.queryAll(filters));
+  return listFolders(createLoadQuery(relayQuery2(context2)));
 }
 async function resolveTeam(context2, reference) {
   return resolveTeamIn(topLevelFolders(await readFolders(context2)), reference);
@@ -23233,9 +23335,10 @@ async function publishUnsigned(context2, unsigned) {
 }
 async function readListings(context2, sources) {
   const cache = createProjectionCache();
+  const query = createLoadQuery(relayQuery2(context2));
   const read = await Promise.all(
     sources.map(
-      (folder) => resolveFolderContents(folder.id, relayQuery2(context2), noPeople, cache, { includeArchived: true }).then(
+      (folder) => resolveFolderContents(folder.id, query, noPeople, cache, { includeArchived: true }).then(
         (content) => content.files,
         (error2) => ({ unread: error2 instanceof Error ? error2.message : String(error2) })
       )
@@ -23318,7 +23421,8 @@ async function timelineFor(context2, state, addr2, extraPubkeys) {
   };
 }
 async function loadWithFolders(context2) {
-  const [state, folders] = await Promise.all([loadWorkspace(context2), listFolders(relayQuery2(context2))]);
+  const query = createLoadQuery(relayQuery2(context2));
+  const [state, folders] = await Promise.all([loadWorkspace(context2, query), listFolders(query)]);
   cascadeArchives(state, folders);
   return { state, folders };
 }
@@ -24321,7 +24425,7 @@ Pass an address to say which.`
 var noPeople2 = async () => ({});
 var TOPIC_TREE_KINDS = [KIND_BARE_FILE, KIND_CHANNEL_METADATA];
 async function loadTopics(context2, cache, folderRef) {
-  const query = relayQuery(context2);
+  const query = createLoadQuery(relayQuery(context2));
   const all = await listFolders(query, { recordChannels: false });
   const queue = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all);
   const byId = new Map(all.map((folder) => [folder.id, folder]));
@@ -24579,7 +24683,7 @@ var peekApp = {
         if (!title) throw new BadRequest("create-topic needs --title.");
         const summary = summaryText(flagValue(args2, "summary") ?? "");
         const query = relayQuery(context2);
-        const folder = findFolder(topLevelFolders(await listFolders(query, { recordChannels: false })), folderRef);
+        const folder = findFolder(topLevelFolders(await listFolders(createLoadQuery(query), { recordChannels: false })), folderRef);
         const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`;
         const pointer = pointerOf(channel);
         const creator = await resolveActingManifest(pointer, FOLDER_ACTIONS_ADDRESS, query);
