@@ -19378,20 +19378,17 @@ function foldEdits(events, targets = []) {
   for (const [target, list] of editsByTarget(events)) {
     let body = bodies.get(target);
     let changed;
-    let attachments;
     for (const edit of list) {
       if (body === void 0 || edit.content !== body)
         changed = edit;
       body = edit.content;
-      const files = imetaOf(edit);
-      if (files.length > 0)
-        attachments = files;
     }
+    const latest = list[list.length - 1];
     out[target] = {
-      body: list[list.length - 1].content,
+      body: latest.content,
       edited: changed !== void 0,
       ...changed ? { editedAt: orderingMs(changed), editedBy: changed.pubkey } : {},
-      ...attachments ? { attachments } : {}
+      attachments: imetaOf(latest)
     };
   }
   return out;
@@ -19406,13 +19403,11 @@ function foldAttachments(events) {
       out[event.id.toLowerCase()] = files;
   }
   for (const [target, list] of editsByTarget(events)) {
-    for (let i = list.length - 1; i >= 0; i--) {
-      const files = imetaOf(list[i]);
-      if (files.length === 0)
-        continue;
+    const files = imetaOf(list[list.length - 1]);
+    if (files.length > 0)
       out[target] = files;
-      break;
-    }
+    else
+      delete out[target];
   }
   return out;
 }

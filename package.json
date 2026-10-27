@@ -19,7 +19,7 @@
     "plugin:validate": "node scripts/build-extension.mjs && tsx scripts/plugin.test.ts"
   },
   "dependencies": {
-    "@estiva-app/conversation": "^0.17.0",
+    "@estiva-app/conversation": "^0.19.0",
     "@estiva-app/identity": "^0.2.2",
     "@estiva-app/interop": "^0.68.0",
     "@estiva-app/protocol": "^0.44.0",
