@@ -17,11 +17,12 @@
  * or an object type and does not; this file names a message, which both app
  * modules have and no third one is obliged to.
  */
-import { decorationsOf, foldAttachments, KIND_EDIT, placeOf, type EditFold } from '@estiva-app/conversation'
+import { anchorsOf, decorationsOf, editTargetOf, foldAttachments, KIND_EDIT, placeOf, type EditFold } from '@estiva-app/conversation'
 import { conversationsOf, threadsOf, type ForeignObject, type ProjectionCache } from '@estiva-app/interop'
 import { buildEdit, imetaTag, type SignedEvent } from '@estiva-app/protocol'
 import { relayQuery } from './act-on-file'
 import { BadRequest, type AgentContext } from './cli'
+import { commentLinkTags } from './links'
 import { resolveOne } from './resolve'
 
 /**
@@ -32,9 +33,11 @@ import { resolveOne } from './resolve'
  *
  * The edit lists the message's files as they stand, read from the relay just
  * before: an edit is the whole new message, and one with no `imeta` takes
- * every file off (SPEC §6.8).
+ * every file off (SPEC §6.8). It also says what the new words link
+ * (PEEKM-7): the `a` and `q` they earn, as a send's.
  *
  * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/an-edit-is-the-whole-new-message.md
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/an-edit-says-what-the-message-links-now.md
  */
 export async function publishEdit(
   context: AgentContext,
@@ -46,14 +49,17 @@ export async function publishEdit(
   // Unread, its files are unknown, and an edit listing none would take them off.
   if (!events.some((event) => event.id === id)) throw new BadRequest('That message could not be read back, so it was not edited. Try again.')
   const files = foldAttachments(events)[id] ?? []
-  const signed = await context.signer.sign(
-    buildEdit(context.signer.pubkey, Date.now(), {
-      channelUuid: args.folder,
-      targetEventId: args.messageEventId,
-      body: args.body,
-      mediaTags: files.map(imetaTag),
-    }),
-  )
+  const target = events.find((event) => event.id === id)!
+  // What the new words link, the whole `a`/`q` set (never `p`, `urgent` or `part`), minus the
+  // comment's own file and the message it answers, so a file it now links lists it under Mentioned in.
+  const linkTags = await commentLinkTags(context, args.body, { file: anchorsOf(target)[0], parent: editTargetOf(target) }, { edit: true })
+  const edit = buildEdit(context.signer.pubkey, Date.now(), {
+    channelUuid: args.folder,
+    targetEventId: args.messageEventId,
+    body: args.body,
+    mediaTags: files.map(imetaTag),
+  })
+  const signed = await context.signer.sign({ ...edit, tags: [...edit.tags, ...linkTags] })
   const result = await context.relay.publish(signed)
   return { ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id }
 }

@@ -14,6 +14,7 @@
 import { buildActionEvent, folderOf, resolveManifest, type QueryFn, type ResolvedManifest } from '@estiva-app/interop'
 import { imetaTag, type Imeta } from '@estiva-app/protocol'
 import { BadRequest, type AgentContext } from './cli'
+import { commentLinkTags } from './links'
 
 /** A `d` may itself hold a colon, so everything after the pubkey is the identifier. */
 export function pointerOf(address: string) {
@@ -76,6 +77,7 @@ export async function actOnFile(
     value,
     replyTo,
     contentFormat,
+    linkTags: actionId === 'comment' ? await commentLinkTags(context, value, { file: file.address, parent: replyTo?.id }) : undefined,
     pubkey: context.signer.pubkey,
     createdAtMs: Date.now(),
   })

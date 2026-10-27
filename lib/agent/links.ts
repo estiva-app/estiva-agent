@@ -5,7 +5,8 @@
  * row print alike (a link on words prints as `[words](url)`, e0e3e907). This lists them
  * beside the text instead, by the readers' own rule: protocol's
  * `documentLineDraws` (§13.3 *A reference's card*, C22, C24), after
- * `linksAsReferences` has read each app URL as the file it names (§7.7).
+ * `linksAsReferences` has read each app URL as the file it names (§7.7), as
+ * interop's `linkReader` answers it for every app (PEEKM-7).
  *
  * Generic rather than Ship's: a block document and an app URL are the
  * protocol's, and `file show` prints the same list for a Leaf page.
@@ -23,7 +24,7 @@ import {
   type ContentFormat,
   type RenderBlock,
 } from '@estiva-app/protocol'
-import { matchObjectUrl, urlPatternsOf } from '@estiva-app/interop'
+import { linkReader, linksIn, matchObjectUrl, urlPatternsOf, type LinkReader, type OwnPlace } from '@estiva-app/interop'
 import type { AgentContext } from './cli'
 
 /** One link as it draws: `chip` in a sentence, `row` or `card` alone on its line, `link` for words or a URL no app claims. */
@@ -42,72 +43,84 @@ export interface PrintedLink {
   unreadable?: true
 }
 
-/** What an app URL names (§7.7), or undefined; `byUrl` holds every answer, asked before drawing. */
+/** NIP-89's handler information, where an app publishes its manifest and `urls` (§7.2). */
+const KIND_APP_HANDLER = 31990
+
+interface Links {
+  reader: LinkReader
+  manifests: () => Promise<readonly { tags: string[][] }[]>
+}
+
+/** One per relay connection, the signed-in agent's: the MCP server holds one for its life, the CLI one per run. */
+const byRelay = new WeakMap<object, Links>()
+
+function linksOf(context: Pick<AgentContext, 'relay'>): Links {
+  const held = byRelay.get(context.relay)
+  if (held) return held
+  // The manifests, read once and shared with `addressesOfUrl`; a failed read is forgotten, as the reader forgets its own.
+  let read: Promise<readonly { tags: string[][] }[]> | null = null
+  const manifests = () => {
+    if (read) return read
+    const asked = context.relay.queryAll([{ kinds: [KIND_APP_HANDLER], limit: 500 }])
+    read = asked
+    asked.catch(() => {
+      if (read === asked) read = null
+    })
+    return asked
+  }
+  const links = { reader: linkReader({ query: (filters) => context.relay.queryAll(filters), manifests }), manifests }
+  byRelay.set(context.relay, links)
+  return links
+}
+
+/**
+ * What app links name, as every app reads them (interop's `linkReader`, §7.7,
+ * PEEKM-7): the host and `<type>` against the published manifests' `urls`,
+ * then one author for the `d`. The tags a comment or an edit earns come from it
+ * too (`reader.tagsFor`).
+ */
+export function linkReaderOf(context: Pick<AgentContext, 'relay'>): LinkReader {
+  return linksOf(context).reader
+}
+
+/**
+ * The `a`, `q` and `part` tags a comment's body earns for what it links, by a
+ * `nostr:` reference or an app link, as every app's comment box tags it (SPEC
+ * §13.1, PEEKM-7), so the file a link names lists the comment under Mentioned
+ * in. Never its own file, nor the comment it answers. An edit (`edit: true`)
+ * carries the whole `a`/`q` set its new words earn and no `part`. A link not
+ * answered within the reader's wait earns nothing and stays a link.
+ *
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/an-edit-says-what-the-message-links-now.md
+ */
+export function commentLinkTags(context: Pick<AgentContext, 'relay'>, body: string, own: OwnPlace, options: { edit?: boolean } = {}): Promise<string[][]> {
+  return linkReaderOf(context).tagsFor(toRenderTree(body, 'marker'), own, options)
+}
+
+/** What an app URL names (§7.7), or undefined: the reader's answers, asked before drawing. */
 export type LinkNames = (url: string) => string | undefined
 
 const EVENT_ID = /^[0-9a-f]{64}$/i
 
 /**
- * Each app URL in the text, asked once: the host and `<type>` against every
- * published manifest's `urls`, then one author for the `d` — a `d` two authors
- * hold names nothing, as Ship's and Peek's readers ask it (§7.7, LTX-6).
- */
-export async function namesOfLinks(context: Pick<AgentContext, 'relay'>, tree: RenderBlock[]): Promise<LinkNames> {
-  const urls = new Set<string>()
-  const walk = (blocks: RenderBlock[]) => {
-    for (const block of blocks) {
-      if (block.type === 'codeBlock') continue
-      for (const run of block.inline ?? []) {
-        if (run.marks.includes('code')) continue
-        if (run.href !== undefined) urls.add(run.href)
-        else for (const { url } of urlRunsIn(run.text)) urls.add(url)
-      }
-      if (block.children) walk(block.children)
-    }
-  }
-  walk(tree)
-  const names = new Map<string, string>()
-  if (urls.size === 0) return () => undefined
-  const shapes = await urlShapes(context)
-  await Promise.all(
-    [...urls].map(async (url) => {
-      const found = await namesUnder(context, url, shapes, 2)
-      if (found.length === 1) names.set(url, found[0])
-    }),
-  )
-  return (url) => names.get(url)
-}
-
-/**
- * Every file an app URL could name (§7.7), as `kind:pubkey:d`: none when no
- * app claims it or nothing readable holds its `d`, more than one when two
- * authors do — the caller says which, as `namesOfLinks` names nothing then.
+ * Every file an app URL could name (§7.7), as `kind:pubkey:d`, up to 10: none
+ * when no app claims it or nothing readable holds its `d`, more than one when
+ * two authors do — the caller says which. A link names nothing then
+ * (`linkReader`); this asks a different question, for `file show <link>`.
  */
 export async function addressesOfUrl(context: Pick<AgentContext, 'relay'>, url: string): Promise<string[]> {
-  return (await namesUnder(context, url, await urlShapes(context), 10)).filter((name) => !EVENT_ID.test(name))
-}
-
-async function urlShapes(context: Pick<AgentContext, 'relay'>) {
-  const manifests = await context.relay.queryAll([{ kinds: [KIND_APP_HANDLER], limit: 500 }] as never)
-  return manifests.flatMap((manifest) => urlPatternsOf(manifest as never))
-}
-
-/** The host and `<type>` against the manifests' `urls`, then every author holding the `d`, up to `limit`. */
-async function namesUnder(context: Pick<AgentContext, 'relay'>, url: string, shapes: ReturnType<typeof urlPatternsOf>, limit: number): Promise<string[]> {
-  const hit = matchObjectUrl(url, shapes)
-  if (!hit) return []
-  if (hit.by === 'id') return EVENT_ID.test(hit.identifier) ? [hit.identifier.toLowerCase()] : []
+  const hit = matchObjectUrl(url, (await linksOf(context).manifests()).flatMap((manifest) => urlPatternsOf(manifest)))
+  if (!hit || hit.by === 'id') return []
   // A path on another app's host can read as several kinds (§7.7, LTX-6): ask under each — only
   // addressable ones, where a `d` is one file per author; a manifest anyone can publish names them.
   const kinds = (hit.kinds ?? (hit.kind === undefined ? undefined : [hit.kind]))?.filter((kind) => kind >= 30000 && kind < 40000)
   if (kinds?.length === 0) return []
-  const found = await context.relay.queryAll([{ '#d': [hit.identifier], limit, ...(kinds ? { kinds } : {}) }] as never)
+  const limit = 10
+  const found = await context.relay.queryAll([{ '#d': [hit.identifier], limit, ...(kinds ? { kinds } : {}) }])
   const names = [...new Set(found.map((event) => `${event.kind}:${event.pubkey}:${hit.identifier}`))]
   // A full page can hide another holder behind newer events of one author: then it names none.
-  return found.length >= limit && names.length === 1 ? [] : names
+  return found.length >= limit && names.length === 1 ? [] : names.filter((name) => !EVENT_ID.test(name))
 }
-/** NIP-89's handler information, where an app publishes its manifest and `urls` (§7.2). */
-const KIND_APP_HANDLER = 31990
 
 /** A block as one line of words, for saying where a link is. */
 function firstWords(block: RenderBlock): string {
@@ -128,11 +141,14 @@ export async function printedLinks(
 ): Promise<PrintedLink[]> {
   if (!value) return []
   const read = toRenderTree(value, format ?? 'marker')
-  return linksIn(read, await namesOfLinks(context, read), titleOf)
+  const reader = linkReaderOf(context)
+  // Every link the text names something by, asked before drawing; a read that failed fails the command.
+  await reader.ask(linksIn(read))
+  return drawnLinks(read, reader.known, titleOf)
 }
 
-/** {@link printedLinks} over a tree already read, with what its app URLs name ({@link namesOfLinks}). */
-export function linksIn(read: RenderBlock[], names: LinkNames, titleOf: (value: string) => string | undefined = () => undefined): PrintedLink[] {
+/** {@link printedLinks} over a tree already read, with what its app URLs name. */
+export function drawnLinks(read: RenderBlock[], names: LinkNames, titleOf: (value: string) => string | undefined = () => undefined): PrintedLink[] {
   const tree = linksAsReferences(read, names)
   const draws = documentLineDraws(tree, { resolveLink: names })
   const out: PrintedLink[] = []

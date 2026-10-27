@@ -17,7 +17,7 @@ import { describePlacing, placeFiles, uploadFiles, type PlacedFiles } from '../a
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
 import { describe, descriptionText, formatName } from '../descriptions'
-import { printedLinks } from '../links'
+import { commentLinkTags, printedLinks } from '../links'
 import { askedToMention, fileText, mentionAdds, mentionedKeys, NO_MENTIONS, publishMentionAdds, relayMembers, withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
@@ -916,6 +916,8 @@ async function act(
     folderHasState: extra.folderHasState,
     listedIn: extra.listedIn,
     contentFormat: extra.contentFormat,
+    // What a comment's body links, as Ship's comment box tags it (§13.1, PEEKM-7).
+    linkTags: actionId === 'comment' && typeof value === 'string' ? await commentLinkTags(context, value, { file: target.addr }) : undefined,
     pubkey: context.signer.pubkey,
     createdAtMs: Date.now(),
   })
