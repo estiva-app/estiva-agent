@@ -22,7 +22,7 @@
     "@estiva-app/conversation": "^0.17.0",
     "@estiva-app/identity": "^0.2.2",
     "@estiva-app/interop": "^0.68.0",
-    "@estiva-app/protocol": "^0.43.0",
+    "@estiva-app/protocol": "^0.44.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@noble/curves": "1.9.2",
     "@noble/hashes": "1.8.0"

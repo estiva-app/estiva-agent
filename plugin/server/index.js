@@ -18119,16 +18119,15 @@ function buildBlossomAuth(pubkey, createdAtMs, args2) {
 function blossomAuthHeader(signed) {
   return authorizationHeaderFor(signed);
 }
+var OPTIONAL_FIELDS = ["dim", "blurhash", "alt", "thumb", "fallback", "duration", "bitrate", "image", "filename"];
+var ADDED_FIELDS = ["blurhash", "duration", "bitrate", "image"];
 function imetaTag(meta2) {
   const parts = [`url ${meta2.url}`, `m ${meta2.m}`, `x ${meta2.x}`, `size ${meta2.size}`];
-  if (meta2.dim)
-    parts.push(`dim ${meta2.dim}`);
-  if (meta2.alt)
-    parts.push(`alt ${meta2.alt}`);
-  if (meta2.thumb)
-    parts.push(`thumb ${meta2.thumb}`);
-  if (meta2.filename)
-    parts.push(`filename ${meta2.filename}`);
+  for (const key of OPTIONAL_FIELDS) {
+    for (const value of [meta2[key]].flat())
+      if (value)
+        parts.push(`${key} ${value}`);
+  }
   return ["imeta", ...parts];
 }
 function imetaOf(event) {
@@ -18137,18 +18136,22 @@ function imetaOf(event) {
     if (tag[0] !== "imeta")
       continue;
     const fields = {};
+    const fallback = [];
     for (const part of tag.slice(1)) {
       const space = part.indexOf(" ");
       if (space <= 0)
         continue;
       const key = part.slice(0, space);
-      if (!(key in fields))
-        fields[key] = part.slice(space + 1);
+      const value = part.slice(space + 1);
+      if (key === "fallback")
+        fallback.push(value);
+      else if (!(key in fields))
+        fields[key] = value;
     }
     const size = Number.parseInt(fields.size ?? "", 10);
     if (!fields.url || !fields.m || !fields.x || !Number.isFinite(size))
       continue;
-    out.push({
+    const meta2 = {
       url: fields.url,
       m: fields.m,
       x: fields.x,
@@ -18157,14 +18160,20 @@ function imetaOf(event) {
       alt: fields.alt,
       thumb: fields.thumb,
       filename: fields.filename
-    });
+    };
+    for (const key of ADDED_FIELDS)
+      if (fields[key])
+        meta2[key] = fields[key];
+    if (fallback.length)
+      meta2.fallback = fallback;
+    out.push(meta2);
   }
   return out;
 }
 function imetaFromAttrs(attrs) {
   if (!attrs)
     return void 0;
-  const { url, m, x, size, dim, thumb, alt, filename } = attrs;
+  const { url, m, x, size } = attrs;
   if (typeof url !== "string" || !url)
     return void 0;
   if (typeof m !== "string" || !m)
@@ -18173,16 +18182,13 @@ function imetaFromAttrs(attrs) {
     return void 0;
   if (typeof size !== "number" || !Number.isFinite(size))
     return void 0;
-  return {
-    url,
-    m,
-    x,
-    size,
-    ...typeof dim === "string" && dim ? { dim } : {},
-    ...typeof thumb === "string" && thumb ? { thumb } : {},
-    ...typeof alt === "string" && alt ? { alt } : {},
-    ...typeof filename === "string" && filename ? { filename } : {}
-  };
+  const meta2 = { url, m, x, size };
+  for (const key of ["dim", "thumb", "alt", "filename"]) {
+    const value = attrs[key];
+    if (typeof value === "string" && value)
+      meta2[key] = value;
+  }
+  return meta2;
 }
 function attachmentsInDocument(value, contentFormat) {
   if (contentFormat !== BLOCK_DOCUMENT_FORMAT || !value)

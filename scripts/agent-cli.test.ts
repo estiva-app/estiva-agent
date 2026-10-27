@@ -1185,6 +1185,13 @@ console.log('— an edit lists the files the message keeps —')
     check('and carries the new words', sent[0]?.content === 'new words')
   }
   {
+    // Fields another app writes (Buzz desktop: blurhash, duration; NIP-94 fallbacks) go back as they were read.
+    const rich = [...file('b', 'clip.mp4').slice(0, 5), 'blurhash LKO2?U%2Tw=w', 'fallback https://a.example/clip.mp4', 'duration 12', 'filename clip.mp4']
+    const { context, sent } = fake([message([rich])])
+    await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' })
+    check('a file is listed back with every field it was sent with', imetaOf(sent[0]) === JSON.stringify([rich]), imetaOf(sent[0]))
+  }
+  {
     // An edit of another message, held beside them, is not this message's.
     const elsewhere: SignedEvent = { ...earlierEdit([file('f', 'other.png')]), id: '6'.repeat(64), created_at: 3_000, tags: [['h', 'folder'], ['e', '7'.repeat(64)], file('f', 'other.png')] }
     const { context, sent } = fake([message([file('b', 'brief.png')]), earlierEdit([file('c', 'shot.png')]), elsewhere])
