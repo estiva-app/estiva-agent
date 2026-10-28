@@ -49,7 +49,8 @@ function relay(events: SignedEvent[]) {
   let seq = 0
   const context = {
     relayUrl: 'https://estiva.example',
-    relay: { queryAll, publish: async (e: SignedEvent) => (published.push(e), events.push(e), { ok: true, eventId: e.id }) },
+    // `query` is the one-page read `show`'s search asks; this relay ignores `search`, so a full page sends it to the whole read.
+    relay: { queryAll, query: queryAll, publish: async (e: SignedEvent) => (published.push(e), events.push(e), { ok: true, eventId: e.id }) },
     signer: { pubkey: SELF, sign: async (e: SignedEvent) => ({ ...e, id: createHash('sha256').update(JSON.stringify(e) + seq++).digest('hex'), sig: '' }) },
   } as unknown as AgentContext
   return { context, published }

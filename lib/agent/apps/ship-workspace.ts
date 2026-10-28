@@ -17,6 +17,7 @@
  * answer at about a hundred POSTs per command.
  */
 import {
+  contentFormatOf,
   conversationsOf,
   createProjectionCache,
   folderOf,
@@ -149,6 +150,8 @@ export interface Change {
   field: string
   value: string
   note: string
+  /** How `value` is written, when it is a text save — what prints it as text. */
+  format: ContentFormat
 }
 
 export interface Workspace {
@@ -176,29 +179,31 @@ const pointerOf = (address: string) => {
  * `resolveManifest` reads the author's own `kind:31989` first and falls back to
  * the newest manifest claiming the kind, so for an author who recommends
  * nothing the answer depends on the kind alone. Production has no
- * recommendation for Ship's kinds at all (2026-10-02). So: one read for every
- * author's recommendations, one resolution per kind shared by everybody who
- * has none, and a resolution of their own for anybody who does.
+ * recommendation for Ship's kinds at all (2026-10-02). So: one resolution per
+ * kind shared by everybody who has none, asked for a key that recommends
+ * nothing before the roots are in (APP-6); one read for every author's
+ * recommendations; and a resolution of their own for anybody who has one.
  */
-async function manifestsFor(roots: readonly SignedEvent[], query: QueryFn, cache: ProjectionCache) {
-  const authors = [...new Set(roots.map((root) => root.pubkey))]
-  const kinds = [KIND.PROJECT, KIND.ISSUE]
+async function manifestsFor(roots: Promise<readonly SignedEvent[]> | readonly SignedEvent[], query: QueryFn, cache: ProjectionCache) {
+  const kinds: number[] = [KIND.PROJECT, KIND.ISSUE]
+  // Resolved even when no root of the kind exists yet: an identity filing its first project acts with it.
+  const sharing = Promise.all(kinds.map((kind) => resolveManifest(pointerOf(`${kind}:${NOBODY}:`), query, cache)))
+  sharing.catch(() => {}) // a refusal is met where it is awaited
+  const authors = [...new Set((await roots).map((root) => root.pubkey))]
   const recommendations = authors.length
     ? await query([{ kinds: [KIND_HANDLER_RECOMMENDATION], authors, '#d': kinds.map(String) }])
     : []
   const recommends = new Set(recommendations.map((event) => `${tagValue(event, 'd')}:${event.pubkey}`))
 
   const resolved = new Map<string, ResolvedManifest | undefined>()
-  const shared = new Map<number, ResolvedManifest | undefined>()
-  for (const kind of kinds) {
-    // Resolved even when no root of the kind exists yet: an identity filing its first project acts with it.
-    const quiet = authors.find((author) => !recommends.has(`${kind}:${author}`)) ?? NOBODY
-    shared.set(kind, (await resolveManifest(pointerOf(`${kind}:${quiet}:`), query, cache)) ?? undefined)
-  }
-  for (const key of recommends) {
-    const [kind, author] = key.split(':')
-    resolved.set(`${kind}:${author}`, (await resolveManifest(pointerOf(`${kind}:${author}:`), query, cache)) ?? undefined)
-  }
+  // Side by side: each is a few round trips, and in sequence they were a second of `show` (APP-6).
+  await Promise.all(
+    [...recommends].map(async (key) => {
+      const [kind, author] = key.split(':')
+      resolved.set(`${kind}:${author}`, (await resolveManifest(pointerOf(`${kind}:${author}:`), query, cache)) ?? undefined)
+    }),
+  )
+  const shared = new Map((await sharing).map((manifest, i) => [kinds[i], manifest ?? undefined]))
   return {
     of: (pointer: { kind: number; pubkey: string }) =>
       recommends.has(`${pointer.kind}:${pointer.pubkey}`) ? resolved.get(`${pointer.kind}:${pointer.pubkey}`) : shared.get(pointer.kind),
@@ -242,18 +247,63 @@ export async function loadWorkspace(context: AgentContext, query: QueryFn = load
   // read only if it has been asked by then (APP-6). The read below joins it.
   const early = query([{ kinds: [KIND_CHANGE] }])
   early.catch(() => {}) // a refusal is met by the read below
-  const roots = await query([{ kinds: [KIND.PROJECT, KIND.ISSUE] }])
+  const roots = await readRoots(query)
   const manifests = await manifestsFor(roots, query, cache)
-  const manifestOf = manifests.of
-  // Changes by the change kind every manifest in play declares — Ship's is one kind for both.
-  const changeKinds = [
+  const changes = await query([{ kinds: changeKindsOf(manifests) }])
+  return foldWorkspace(roots, changes, manifests, cache)
+}
+
+/** Every Ship project and issue root — 903 were 2.7 MB on 28 Oct, against 41 MB of changes. */
+export function readRoots(query: QueryFn): Promise<SignedEvent[]> {
+  return query([{ kinds: [KIND.PROJECT, KIND.ISSUE] }])
+}
+
+/**
+ * A reader of some Ship files, each folded exactly as {@link loadWorkspace}
+ * folds it, from its own changes alone (APP-6). `roots` is
+ * {@link readRoots}' answer; the manifests that fold them are asked for at
+ * once, before the caller knows which files it wants. A call's answer holds
+ * only the files it names, so a project's issues are only those named with it.
+ */
+export function filesReader(query: QueryFn, roots: Promise<readonly SignedEvent[]>): (addresses: readonly string[]) => Promise<Workspace> {
+  const cache = createProjectionCache()
+  const manifests = manifestsFor(roots, query, cache)
+  manifests.catch(() => {}) // a refusal is met by the read that awaits it
+  return async (addresses) => {
+    const wanted = new Set(addresses)
+    const theirs = (await roots).filter((root) => wanted.has(addressOf(root)))
+    const byTarget = (kinds: number[]) => (kinds.length && wanted.size ? query([{ kinds, '#a': [...wanted] }]) : Promise.resolve([]))
+    // Each file's manifest as its own author resolves it, into the cache its conversation is read through next.
+    const owners = [...new Set(theirs.map((root) => `${root.kind}:${root.pubkey}:`))]
+    // The change kind is asked beside the manifests; one declaring another kind is read after.
+    const [resolved, changes] = await Promise.all([
+      manifests,
+      byTarget([KIND_CHANGE]),
+      ...owners.map((owner) => resolveManifest(pointerOf(owner), query, cache)),
+    ])
+    const more = await byTarget(changeKindsOf(resolved).filter((kind) => kind !== KIND_CHANGE))
+    return foldWorkspace(theirs, [...changes, ...more], resolved, cache)
+  }
+}
+
+const addressOf = (root: SignedEvent) => `${root.kind}:${root.pubkey}:${tagValue(root, 'd')}`
+
+/** SPEC's change kind, and any other every manifest in play declares — Ship's is one kind for both. */
+function changeKindsOf(manifests: Manifests): number[] {
+  return [
     ...new Set([KIND_CHANGE, ...manifests.all().flatMap((resolved) => (resolved.manifest.records ? [resolved.manifest.records.changeKind] : []))]),
   ]
+}
+
+type Manifests = Awaited<ReturnType<typeof manifestsFor>>
+
+function foldWorkspace(roots: readonly SignedEvent[], read: readonly SignedEvent[], manifests: Manifests, cache: ProjectionCache): Workspace {
+  const manifestOf = manifests.of
   // Every change to a Ship object, including one whose record is gone — a
   // deleted project's history is still history, and `activity` lists it.
   const shipKind = (target: string | undefined) =>
     target !== undefined && (target.startsWith(`${KIND.PROJECT}:`) || target.startsWith(`${KIND.ISSUE}:`))
-  const changes = (await query([{ kinds: changeKinds }])).filter((event) => shipKind(tagValue(event, 'a')))
+  const changes = read.filter((event) => shipKind(tagValue(event, 'a')))
 
   const objects = new Map(projectEvents([...roots, ...changes], manifestOf).map((object) => [object.address!, object]))
   // The version `projectEvents` folded, so the author, date and Folder printed are that version's.
@@ -328,6 +378,7 @@ export async function loadWorkspace(context: AgentContext, query: QueryFn = load
       field,
       value,
       note: event.content,
+      format: contentFormatOf(event),
     }]
   })
 
@@ -342,8 +393,7 @@ export async function loadWorkspace(context: AgentContext, query: QueryFn = load
   const current = new Map(issues.map((issue) => [issue.addr, issue.status]))
   for (const change of activity) {
     if (change.field !== 'status' || change.value !== current.get(change.target)) continue
-    const trusted = change.ts !== undefined && Math.floor(change.ts / 1000) === change.createdAt
-    statusAt.set(change.target, trusted ? change.ts! : change.createdAt * 1000)
+    statusAt.set(change.target, changedAt(change))
   }
   for (const issue of issues) issue.statusChangedAt = statusAt.get(issue.addr)
 
@@ -357,6 +407,15 @@ export async function loadWorkspace(context: AgentContext, query: QueryFn = load
     cache,
   }
 }
+
+/**
+ * When a change was made, epoch ms: its `ts` only when SPEC §6.2 trusts it
+ * (inside the event's own second, as the fold orders it), `created_at`
+ * otherwise. A planted `ts` would back-date a change, or, past what a date
+ * can hold, make the file unprintable.
+ */
+export const changedAt = (change: Pick<Change, 'ts' | 'createdAt'>): number =>
+  change.ts !== undefined && Math.floor(change.ts / 1000) === change.createdAt ? change.ts : change.createdAt * 1000
 
 /** One message of a conversation, as the agent prints it. */
 export interface Message {

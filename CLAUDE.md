@@ -456,9 +456,21 @@ when you need to be sure you are talking about the same object twice.
 `loadWorkspace` (`lib/agent/apps/ship-workspace.ts`) reads every Ship project
 and issue, every change to them, and the manifests that fold them on every call
 — no cache across calls, by design (within one call, interop's `createLoadQuery`
-asks a read the call repeats once, APP-2), and `--project` filters the answer, not the read. Three
-commands in a row is three full scans, so gather what you need in one `show`
-rather than looping.
+asks a read the call repeats once, and counts a whole read of the change kind
+for every file it covers, APP-2/APP-6), and `--project` filters the answer, not
+the read. On 28 Oct that was 44 MB in ~5 s for `ship issues`: every change once
+(41 MB) and every root (2.7 MB). Three commands in a row is three full scans,
+so gather what you need in one `show` rather than looping.
+
+**`show` reads the one file** (APP-6): every root (2.7 MB), the relay's search
+for a renamed title or ref, then only the candidates' own changes — and a
+project's issues, found by their roots and by the `A` every move carries
+(SPEC §7.2; the moves from before it were re-posted with it on 28 Oct). About
+2 s and 2–5 MB where the whole read was 8 s and 96 MB. An ambiguous reference,
+or one nothing matches by a word's start, is read whole, so the refusal lists
+every candidate and a mid-word match still resolves. History prints a save of
+the text as a numbered version with its length; `--history-text` (MCP
+`historyText`) adds the old text.
 
 ## If you are changing the agent tooling
 

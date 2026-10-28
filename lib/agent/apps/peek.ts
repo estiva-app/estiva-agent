@@ -90,7 +90,7 @@ export interface Topic {
  * Not `listedIn`, which names every Ship project's record Folder too: walking
  * those cost ~150 requests per listing against a key metered at 300 a minute,
  * and Peek draws a project as its issues, not as a Folder of topics.
- * Sequential through one cache so the manifest discovery warms once.
+ * A level at a time through one cache, which shares the manifest discovery.
  *
  * Only topics and Folders are read, and no record's channel: every other file
  * comes with its whole change history, and Peek's tree on production took
@@ -100,33 +100,43 @@ async function loadTopics(context: AgentContext, cache: ProjectionCache, folderR
   // One load: the listing and every Folder's contents share what they have read (APP-2).
   const query = loadQuery(context)
   const all = await listFolders(query, { recordChannels: false })
-  const queue = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all)
+  let level = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all)
   const byId = new Map(all.map((folder) => [folder.id, folder]))
-  const visited = new Set(queue.map((folder) => folder.id))
+  const visited = new Set(level.map((folder) => folder.id))
   const topics = new Map<string, Topic>()
-  for (let folder = queue.shift(); folder; folder = queue.shift()) {
-    const content = await resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS, includeArchived })
-    for (const file of content.files) {
-      if (!file.address) continue
-      if (file.kind === KIND_CHANNEL_METADATA) {
-        const nested = byId.get(file.address.split(':')[2])
-        if (nested && !visited.has(nested.id)) {
-          visited.add(nested.id)
-          queue.push(nested)
+  // A level of the tree at a time, its Folders read side by side and taken in order: the order one at a
+  // time gave, in a round trip a level rather than one a Folder (APP-6). The cache shares a manifest two
+  // Folders ask for at once.
+  while (level.length) {
+    const contents = await Promise.all(
+      level.map((folder) => resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS, includeArchived })),
+    )
+    const next: FolderSummary[] = []
+    for (const [i, content] of contents.entries()) {
+      const folder = level[i]
+      for (const file of content.files) {
+        if (!file.address) continue
+        if (file.kind === KIND_CHANNEL_METADATA) {
+          const nested = byId.get(file.address.split(':')[2])
+          if (nested && !visited.has(nested.id)) {
+            visited.add(nested.id)
+            next.push(nested)
+          }
+          continue
         }
-        continue
+        if (file.kind !== KIND_BARE_FILE || topics.has(file.address)) continue
+        topics.set(file.address, {
+          address: file.address,
+          title: file.slots.title?.value ?? '(untitled)',
+          // Every file kind's `subtitle` is its summary (SPEC §7.2), built into interop.
+          summary: file.slots.subtitle?.value,
+          folder: { id: folder.id, name: folder.name },
+          url: file.openUrl,
+          object: file,
+        })
       }
-      if (file.kind !== KIND_BARE_FILE || topics.has(file.address)) continue
-      topics.set(file.address, {
-        address: file.address,
-        title: file.slots.title?.value ?? '(untitled)',
-        // Every file kind's `subtitle` is its summary (SPEC §7.2), built into interop.
-        summary: file.slots.subtitle?.value,
-        folder: { id: folder.id, name: folder.name },
-        url: file.openUrl,
-        object: file,
-      })
     }
+    level = next
   }
   return [...topics.values()]
 }
