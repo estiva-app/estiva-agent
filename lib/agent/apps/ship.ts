@@ -1424,7 +1424,9 @@ const MOST_CANDIDATES = 24
  * `resolveMaybe` decides among what they are called now; a project's issues
  * are read with it. Only one issue or one project is taken from here: an
  * ambiguity is listed from the whole read, so the list is complete, and a
- * miss is read whole, so a renamed title matched mid-word still resolves.
+ * miss is read whole, so a renamed title matched mid-word still resolves. So
+ * is a title matched as text (an issue's always is): only every title as it is
+ * now says whether a renamed one holds the same words inside a word.
  */
 async function oneFile(context: AgentContext, query: QueryFn, reference: string) {
   const needle = reference.trim().toLowerCase()
@@ -1491,6 +1493,8 @@ async function oneFile(context: AgentContext, query: QueryFn, reference: string)
   }
   const asIssue = resolveMaybe(state.issues.filter((issue) => candidates.has(issue.addr)), reference, ISSUE_BY)
   const asProject = resolveMaybe(state.projects.filter((project) => candidates.has(project.addr)), reference, PROJECT_BY)
+  // A match on part of a title is settled only against every title as it is now, which only the whole read has.
+  if (('found' in asIssue && asIssue.by === 'part') || ('found' in asProject && asProject.by === 'part')) return undefined
 
   if ('found' in asProject && 'none' in asIssue) return { state, project: asProject.found, readMore: read, threadsOf }
   if (!('found' in asIssue) || !('none' in asProject)) return undefined

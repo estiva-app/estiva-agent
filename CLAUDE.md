@@ -392,8 +392,9 @@ same listing to resolve the title — pass the topic's id and it still does, so 
 not loop. `topic` does not (APP-6): it finds candidates among the topic roots
 and the relay's search for a renamed title, takes the Folder that lists one
 from the Folder states, reads only that Folder and, beside it, the
-conversation — about 20 requests and 2 s. A topic two Folders list, an
-ambiguous reference or a miss walks the tree, so the answer is the walk's.
+conversation — about 20 requests and 2 s, for a whole title or an id. A topic
+two Folders list, part of a title, an ambiguous reference or a miss walks the
+tree, so the answer is the walk's.
 
 ### The open part: attribution
 
@@ -471,9 +472,11 @@ for a renamed title or ref, then only the candidates' own changes — and a
 project's issues, found by their roots and by the `A` every move carries
 (SPEC §7.2; the moves from before it were re-posted with it on 28 Oct) — with
 the one candidate's conversation read beside them. About 2 s and 2–5 MB where
-the whole read was 8 s and 96 MB. An ambiguous reference,
-or one nothing matches by a word's start, is read whole, so the refusal lists
-every candidate and a mid-word match still resolves. History prints a save of
+the whole read was 8 s and 96 MB — for a ref, a short id, an address or a
+project's whole title. An issue's title or part of any title, an ambiguous
+reference, or one nothing matches by a word's start, is read whole, so the
+refusal lists every candidate and a mid-word match still resolves or refuses
+as before: pass the short id when speed matters. History prints a save of
 the text as a numbered version with its length; `--history-text` (MCP
 `historyText`) adds the old text.
 

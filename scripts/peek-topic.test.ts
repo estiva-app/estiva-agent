@@ -35,6 +35,7 @@ const RENAMED = topicAt(4)
 const SHARED = topicAt(5)
 const SHELVED = topicAt(6)
 const BURIED = topicAt(7)
+const RESEQUENCED = topicAt(8)
 
 let seq = 0
 const event = (kind: number, tagList: string[][], content = '', pubkey = SELF, created_at = 1_760_000_000 + seq): SignedEvent =>
@@ -53,7 +54,10 @@ const EVENTS = [
   event(30890, [['d', INNER], ['a', WEEKLY], ['a', SHARED]], '', RELAY_KEY, 1_700_000_000),
   event(39000, [['d', HQ], ['name', 'Estiva HQ']], '', RELAY_KEY),
   // HQ lists its topics and two nested Folders; the first lists one of its own and one HQ lists too.
-  event(30890, [['d', HQ], ...[PLANNING, LEAF, RENAMED, SHARED, SHELVED, `39000:${RELAY_KEY}:${INNER}`, `39000:${RELAY_KEY}:${OLD}`].map((a) => ['a', a])], '', RELAY_KEY),
+  event(30890, [['d', HQ], ...[PLANNING, LEAF, RENAMED, SHARED, SHELVED, RESEQUENCED, `39000:${RELAY_KEY}:${INNER}`, `39000:${RELAY_KEY}:${OLD}`].map((a) => ['a', a])], '', RELAY_KEY),
+  // Renamed to a title that holds "sequencing" only inside a word, which the search does not find.
+  topic(RESEQUENCED, 'Draft', HQ),
+  change(RESEQUENCED, 'title', 'Resequencing', HQ, 1_800_000_300),
   // The second is archived by its owner, so the tree never reaches the one topic it lists.
   event(39000, [['d', OLD], ['name', 'Old']], '', RELAY_KEY),
   event(39001, [['d', OLD], ['p', SELF, 'owner']], '', RELAY_KEY),
@@ -133,6 +137,7 @@ const cases: [string, string][] = [
   ['an archived topic', 'Shelved idea'],
   ['a topic only an archived Folder lists', 'Buried plans'],
   ['a word two topics share', 'planning'],
+  ['a word another topic holds inside its new title', 'sequencing'],
   ['a reference naming nothing', 'no such topic'],
 ]
 for (const [what, reference] of cases) {

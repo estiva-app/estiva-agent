@@ -141,6 +141,8 @@ async function loadTopics(
 
 /** The most title changes one search asks for; a full page may have left one out. */
 const RENAME_SEARCH_LIMIT = 32
+/** The most topics `topic` resolves to find one; a reference naming more walks the tree. */
+const MOST_CANDIDATES = 24
 
 /**
  * The one topic a reference names, found without walking the tree (APP-6), or
@@ -153,8 +155,9 @@ const RENAME_SEARCH_LIMIT = 32
  * is known without a read; only those Folders' contents are resolved, and the
  * same `resolveMaybe` decides among what the topics are called now. A topic
  * listed by two Folders the tree reaches — where the walk's order decides which
- * one it is shown in — an ambiguity, and a miss all go to the walk, so a
- * refusal lists every topic and a renamed title matched mid-word still resolves.
+ * one it is shown in — an ambiguity, a miss, and a match on part of a title all
+ * go to the walk, so a refusal lists every topic and a renamed title matched
+ * mid-word still resolves, or makes the reference ambiguous.
  *
  * `early` is handed the one candidate when there is only one, before its
  * Folder is resolved: it is the topic shown, if any is.
@@ -192,7 +195,7 @@ async function oneTopic(
     const target = tag(change, 'a')
     if (target?.startsWith(`${KIND_BARE_FILE}:`) && tag(change, 'field') === 'title') candidates.add(target)
   }
-  if (candidates.size === 0) return undefined
+  if (candidates.size === 0 || candidates.size > MOST_CANDIDATES) return undefined
   if (candidates.size === 1) early([...candidates][0])
 
   const all = await listed
@@ -225,7 +228,8 @@ async function oneTopic(
     if (file) topics.push(topicOf(file, folder))
   }
   const resolved = resolveMaybe(topics, reference, TOPIC_BY)
-  return 'found' in resolved ? resolved.found : undefined
+  // A match on part of a title is settled only against every title as it is now, which only the walk has.
+  return 'found' in resolved && resolved.by !== 'part' ? resolved.found : undefined
 }
 
 /** A topic as the tree lists it, in the Folder it was reached through. */

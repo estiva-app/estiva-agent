@@ -22659,14 +22659,18 @@ function standIn(block) {
 }
 var cellText = (cell) => (childBlocks2(cell) ?? []).map((child) => childBlocks2(child) ? cellText(child) : inlineTextOf(child)).join(" ").replace(/\s+/g, " ").trim();
 var blockText = (block) => {
+  let text2 = printedObject.get(block);
+  if (text2 !== void 0) return text2;
   const key = JSON.stringify(block);
-  let text2 = printed.get(key);
+  text2 = printed.get(key);
   if (text2 === void 0) {
     if (printed.size >= MOST_PRINTED) printed.clear();
     printed.set(key, text2 = spellable(block) ? printable(block) : standIn(block));
   }
+  printedObject.set(block, text2);
   return text2;
 };
+var printedObject = /* @__PURE__ */ new WeakMap();
 var printed = /* @__PURE__ */ new Map();
 var MOST_PRINTED = 5e3;
 function descriptionText(value, format) {
@@ -22914,13 +22918,13 @@ function resolveMaybe(items, reference, how) {
   const exact = items.filter(
     (item) => how.exact(item).some((value) => value?.toLowerCase() === needle)
   );
-  if (exact.length === 1) return { found: exact[0] };
+  if (exact.length === 1) return { found: exact[0], by: "exact" };
   const byPrefix = how.prefix && needle.length >= MIN_PREFIX && exact.length === 0 ? items.filter(
     (item) => how.prefix(item).some((value) => value?.toLowerCase().startsWith(needle))
   ) : [];
-  if (byPrefix.length === 1) return { found: byPrefix[0] };
+  if (byPrefix.length === 1) return { found: byPrefix[0], by: "prefix" };
   const partial2 = byPrefix.length > 1 ? [] : items.filter((item) => how.text(item).toLowerCase().includes(needle));
-  if (partial2.length === 1) return { found: partial2[0] };
+  if (partial2.length === 1) return { found: partial2[0], by: "part" };
   if (partial2.length > 1 || exact.length > 1 || byPrefix.length > 1) {
     const collided = exact.length > 1 ? exact : byPrefix.length > 1 ? byPrefix : partial2;
     const candidates = collided.slice(0, MAX_CANDIDATES);
@@ -24211,6 +24215,7 @@ async function oneFile(context2, query, reference) {
   }
   const asIssue = resolveMaybe(state.issues.filter((issue3) => candidates.has(issue3.addr)), reference, ISSUE_BY);
   const asProject = resolveMaybe(state.projects.filter((project) => candidates.has(project.addr)), reference, PROJECT_BY);
+  if ("found" in asIssue && asIssue.by === "part" || "found" in asProject && asProject.by === "part") return void 0;
   if ("found" in asProject && "none" in asIssue) return { state, project: asProject.found, readMore: read, threadsOf: threadsOf2 };
   if (!("found" in asIssue) || !("none" in asProject)) return void 0;
   let issue2 = asIssue.found;
@@ -25095,6 +25100,7 @@ async function loadTopics(context2, cache, folderRef, includeArchived = false, q
   return [...topics.values()];
 }
 var RENAME_SEARCH_LIMIT2 = 32;
+var MOST_CANDIDATES2 = 24;
 async function oneTopic(context2, query, cache, reference, early) {
   const needle = reference.trim().toLowerCase();
   if (!needle) return void 0;
@@ -25118,7 +25124,7 @@ async function oneTopic(context2, query, cache, reference, early) {
     const target = tag(change, "a");
     if (target?.startsWith(`${KIND_BARE_FILE}:`) && tag(change, "field") === "title") candidates.add(target);
   }
-  if (candidates.size === 0) return void 0;
+  if (candidates.size === 0 || candidates.size > MOST_CANDIDATES2) return void 0;
   if (candidates.size === 1) early([...candidates][0]);
   const all = await listed;
   const byId = new Map(all.map((folder) => [folder.id, folder]));
@@ -25148,7 +25154,7 @@ async function oneTopic(context2, query, cache, reference, early) {
     if (file) topics.push(topicOf(file, folder));
   }
   const resolved = resolveMaybe(topics, reference, TOPIC_BY);
-  return "found" in resolved ? resolved.found : void 0;
+  return "found" in resolved && resolved.by !== "part" ? resolved.found : void 0;
 }
 function topicOf(file, folder) {
   return {

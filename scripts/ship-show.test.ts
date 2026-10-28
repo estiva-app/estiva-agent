@@ -135,12 +135,17 @@ const planted = state.issues.find((issue) => issue !== edited && issue !== moved
 events.push({ ...change(planted.addr, planted.author, planted.folder, 'status', 'todo'), tags: [['a', planted.addr], ['field', 'status'], ['value', 'todo'], ['h', planted.folder], ['ts', '9'.repeat(20)]] })
 
 console.log('— show answers what the whole read answers —')
+// A title matched as text — part of one, or an issue's, which is never an exact match — is read
+// whole: whether another file's title holds it too, inside a word of a renamed title the search
+// does not find, only every title as it is now can say (APP-6).
+const PART = new Set(['part of a title', 'a renamed title', 'a renamed title, by some of its new words'])
 const references: [string, string][] = [
   ['a ref', edited.ref!],
   ['a short id', edited.id.slice(0, 8)],
   ['an address', edited.addr],
   ['part of a title', fragment],
-  ['a renamed title, by its new words', 'zebra crossing'],
+  ['a renamed title', 'Quarterly zebra crossing audit'],
+  ['a renamed title, by some of its new words', 'zebra crossing'],
   ['an issue moved to another project', moved.id.slice(0, 8)],
   ['a project, with the issue moved into it', into.addr],
   ['the project that issue left', movedFrom],
@@ -154,7 +159,7 @@ for (const [what, ref] of references) {
   check(`${what}: the same answer`, one === whole, one === whole ? one.slice(0, 90) : `${one.slice(0, 200)} ‖ ${whole.slice(0, 200)}`)
   if (!one.startsWith('refused')) {
     const wholeRead = narrow.asked.some((f) => Array.isArray(f.kinds) && f.kinds.includes(1851) && Object.keys(f).every((k) => k === 'kinds' || k === 'limit'))
-    check(`${what}: …without reading every change`, !wholeRead)
+    check(PART.has(what) ? `${what}: …by reading every change` : `${what}: …without reading every change`, PART.has(what) ? wholeRead : !wholeRead)
   }
 }
 const project = JSON.parse(await show(relay(events).context, into.addr))
