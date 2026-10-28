@@ -173,11 +173,24 @@ const asMessage = (event: SignedEvent): Message => ({
  *    `#a` read. One level only, because that is what Peek's pane reads.
  * 3. What was done to each — edits and resolutions — which names the comment,
  *    so it is a third read (`decorationsOf`, `@estiva-app/conversation`).
+ *
+ * Only the file's address is needed, so a caller can start this before the
+ * file itself is resolved (APP-6). `beside` is a read that needs only the
+ * threads — the speakers' names — asked at the same time as the third.
  */
-export async function readConversation(context: AgentContext, file: { object: ForeignObject; address: string }, cache: ProjectionCache) {
+export async function readConversation<T = undefined>(
+  context: AgentContext,
+  file: { address: string },
+  cache: ProjectionCache,
+  beside: (conversations: Conversation[]) => Promise<T> = async () => undefined as T,
+) {
   const query = relayQuery(context)
-  const rootIds = ((await conversationsOf([file.object], query, cache))[file.address] ?? []).map((message) => message.id)
-  if (!rootIds.length) return { conversations: [] as Conversation[], edits: {} as Record<string, EditFold>, resolved: new Set<string>() }
+  // `conversationsOf` reads a file's identity and address only, and an address is the identity of a file that has one.
+  const object = { ref: file.address, address: file.address } as ForeignObject
+  const rootIds = ((await conversationsOf([object], query, cache))[file.address] ?? []).map((message) => message.id)
+  if (!rootIds.length) {
+    return { conversations: [] as Conversation[], edits: {} as Record<string, EditFold>, resolved: new Set<string>(), besides: await beside([]) }
+  }
 
   // 1000, not Peek's 200: an agent answering from a file needs its oldest replies too.
   const threads = await threadsOf(file.address, rootIds, query, cache, 1000)
@@ -189,10 +202,13 @@ export async function readConversation(context: AgentContext, file: { object: Fo
   // edits fold against each message's own body, so an attachments-only edit
   // does not mark it edited.
   const all = conversations.flatMap((thread) => [thread.root, ...thread.replies])
-  const decorations = await decorationsOf(
-    all.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })),
-    query,
-  )
+  const [decorations, besides] = await Promise.all([
+    decorationsOf(
+      all.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })),
+      query,
+    ),
+    beside(conversations),
+  ])
   const isResolved = (id: string) => decorations.byId[id]?.resolutions.at(-1)?.action === 'resolved'
   const edits: Record<string, EditFold> = {}
   for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit
@@ -201,6 +217,7 @@ export async function readConversation(context: AgentContext, file: { object: Fo
     conversations,
     edits,
     resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved)),
+    besides,
   }
 }
 

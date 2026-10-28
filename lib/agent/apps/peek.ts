@@ -35,7 +35,6 @@
 import {
   buildActionEvents,
   conversationsOf,
-  createLoadQuery,
   createProjectionCache,
   FOLDER_ACTIONS_ADDRESS,
   KIND_BARE_FILE,
@@ -46,12 +45,13 @@ import {
   topLevelFolders,
   type FolderSummary,
   type PeopleFn,
+  type QueryFn,
   type ForeignObject,
   type ProjectionCache,
 } from '@estiva-app/interop'
 import { KIND } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
-import { actOnFile, archiveOfFile, pointerOf, published, refuseIfArchived, relayQuery } from '../act-on-file'
+import { actOnFile, archiveOfFile, loadQuery, pointerOf, published, refuseIfArchived, relayQuery } from '../act-on-file'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { edited, findMessage, findThread, publishEdit, readConversation, replyToOf } from '../conversation'
 import { withMentions } from '../mentions'
@@ -91,45 +91,158 @@ export interface Topic {
  * Not `listedIn`, which names every Ship project's record Folder too: walking
  * those cost ~150 requests per listing against a key metered at 300 a minute,
  * and Peek draws a project as its issues, not as a Folder of topics.
- * Sequential through one cache so the manifest discovery warms once.
+ * A level at a time through one cache, which shares the manifest discovery.
  *
  * Only topics and Folders are read, and no record's channel: every other file
  * comes with its whole change history, and Peek's tree on production took
  * 3 min 19 s that way, past the MCP client's 60 s (43e9a775).
  */
-async function loadTopics(context: AgentContext, cache: ProjectionCache, folderRef?: string, includeArchived = false): Promise<Topic[]> {
+async function loadTopics(
+  context: AgentContext,
+  cache: ProjectionCache,
+  folderRef?: string,
+  includeArchived = false,
   // One load: the listing and every Folder's contents share what they have read (APP-2).
-  const query = createLoadQuery(relayQuery(context))
+  query = loadQuery(context),
+): Promise<Topic[]> {
   const all = await listFolders(query, { recordChannels: false })
-  const queue = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all)
+  let level = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all)
   const byId = new Map(all.map((folder) => [folder.id, folder]))
-  const visited = new Set(queue.map((folder) => folder.id))
+  const visited = new Set(level.map((folder) => folder.id))
   const topics = new Map<string, Topic>()
-  for (let folder = queue.shift(); folder; folder = queue.shift()) {
-    const content = await resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS, includeArchived })
-    for (const file of content.files) {
-      if (!file.address) continue
-      if (file.kind === KIND_CHANNEL_METADATA) {
-        const nested = byId.get(file.address.split(':')[2])
-        if (nested && !visited.has(nested.id)) {
-          visited.add(nested.id)
-          queue.push(nested)
+  // A level of the tree at a time, its Folders read side by side and taken in order: the order one at a
+  // time gave, in a round trip a level rather than one a Folder (APP-6). The cache shares a manifest two
+  // Folders ask for at once.
+  while (level.length) {
+    const contents = await Promise.all(
+      level.map((folder) => resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS, includeArchived })),
+    )
+    const next: FolderSummary[] = []
+    for (const [i, content] of contents.entries()) {
+      const folder = level[i]
+      for (const file of content.files) {
+        if (!file.address) continue
+        if (file.kind === KIND_CHANNEL_METADATA) {
+          const nested = byId.get(file.address.split(':')[2])
+          if (nested && !visited.has(nested.id)) {
+            visited.add(nested.id)
+            next.push(nested)
+          }
+          continue
         }
-        continue
+        if (file.kind !== KIND_BARE_FILE || topics.has(file.address)) continue
+        topics.set(file.address, topicOf(file, folder))
       }
-      if (file.kind !== KIND_BARE_FILE || topics.has(file.address)) continue
-      topics.set(file.address, {
-        address: file.address,
-        title: file.slots.title?.value ?? '(untitled)',
-        // Every file kind's `subtitle` is its summary (SPEC §7.2), built into interop.
-        summary: file.slots.subtitle?.value,
-        folder: { id: folder.id, name: folder.name },
-        url: file.openUrl,
-        object: file,
-      })
     }
+    level = next
   }
   return [...topics.values()]
+}
+
+/** The most title changes one search asks for; a full page may have left one out. */
+const RENAME_SEARCH_LIMIT = 32
+/** The most topics `topic` resolves to find one; a reference naming more walks the tree. */
+const MOST_CANDIDATES = 24
+
+/**
+ * The one topic a reference names, found without walking the tree (APP-6), or
+ * undefined for `topic` to walk it as before.
+ *
+ * The candidates are the topics whose root the reference names by address,
+ * id, or a title it is part of, and those the relay's search finds a title
+ * change for (SPEC §5.2: a typed word matches the start of a word). Every
+ * Folder's state is already in the listing, so the Folder that lists each one
+ * is known without a read; only those Folders' contents are resolved, and the
+ * same `resolveMaybe` decides among what the topics are called now. A topic
+ * listed by two Folders the tree reaches — where the walk's order decides which
+ * one it is shown in — an ambiguity, a miss, and a match on part of a title all
+ * go to the walk, so a refusal lists every topic and a renamed title matched
+ * mid-word still resolves, or makes the reference ambiguous.
+ *
+ * `early` is handed the one candidate when there is only one, before its
+ * Folder is resolved: it is the topic shown, if any is.
+ */
+async function oneTopic(
+  context: AgentContext,
+  query: QueryFn,
+  cache: ProjectionCache,
+  reference: string,
+  early: (address: string) => void,
+): Promise<Topic | undefined> {
+  const needle = reference.trim().toLowerCase()
+  if (!needle) return undefined
+  const listed = listFolders(query, { recordChannels: false })
+  listed.catch(() => {}) // a refusal is met by the read that awaits it
+  const [roots, renamed] = await Promise.all([
+    query([{ kinds: [KIND_BARE_FILE] }]),
+    context.relay.query([{ kinds: [KIND_CHANGE], search: reference.trim(), search_mode: 'prefix', limit: RENAME_SEARCH_LIMIT }]),
+  ])
+  if (renamed.length >= RENAME_SEARCH_LIMIT) return undefined
+
+  const tag = (event: { tags: string[][] }, name: string) => event.tags.find((t) => t[0] === name)?.[1]
+  const candidates = new Set<string>()
+  for (const root of roots) {
+    const d = tag(root, 'd') ?? ''
+    const address = `${root.kind}:${root.pubkey}:${d}`
+    const named =
+      address.toLowerCase() === needle ||
+      d.toLowerCase() === needle ||
+      (needle.length >= 4 && d.toLowerCase().startsWith(needle)) ||
+      tag(root, 'title')?.toLowerCase().includes(needle)
+    if (named) candidates.add(address)
+  }
+  for (const change of renamed) {
+    const target = tag(change, 'a')
+    if (target?.startsWith(`${KIND_BARE_FILE}:`) && tag(change, 'field') === 'title') candidates.add(target)
+  }
+  if (candidates.size === 0 || candidates.size > MOST_CANDIDATES) return undefined
+  if (candidates.size === 1) early([...candidates][0])
+
+  const all = await listed
+  // The Folders the tree reaches: a top-level one, or one a reached Folder lists, none of them archived.
+  const byId = new Map(all.map((folder) => [folder.id, folder]))
+  const top = new Set(topLevelFolders(all).map((folder) => folder.id))
+  const reached = new Map<string, boolean>()
+  const reaches = (folder: FolderSummary): boolean => {
+    if (!reached.has(folder.id)) {
+      reached.set(folder.id, false) // a cycle reaches nothing it did not already
+      const parents = (folder.listedIn ?? []).flatMap((id) => byId.get(id) ?? [])
+      reached.set(folder.id, !folder.archived && (top.has(folder.id) || parents.some(reaches)))
+    }
+    return reached.get(folder.id)!
+  }
+  const listing = new Map<string, FolderSummary>()
+  for (const address of candidates) {
+    const folders = all.filter((folder) => folder.addresses?.includes(address) && reaches(folder))
+    if (folders.length > 1) return undefined
+    if (folders.length === 1) listing.set(address, folders[0])
+  }
+
+  const folders = [...new Set(listing.values())]
+  const contents = await Promise.all(
+    folders.map((folder) => resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS })),
+  )
+  const topics: Topic[] = []
+  for (const [address, folder] of listing) {
+    const file = contents[folders.indexOf(folder)].files.find((each) => each.address === address && each.kind === KIND_BARE_FILE)
+    if (file) topics.push(topicOf(file, folder))
+  }
+  const resolved = resolveMaybe(topics, reference, TOPIC_BY)
+  // A match on part of a title is settled only against every title as it is now, which only the walk has.
+  return 'found' in resolved && resolved.by !== 'part' ? resolved.found : undefined
+}
+
+/** A topic as the tree lists it, in the Folder it was reached through. */
+function topicOf(file: ForeignObject, folder: FolderSummary): Topic {
+  return {
+    address: file.address!,
+    title: file.slots.title?.value ?? '(untitled)',
+    // Every file kind's `subtitle` is its summary (SPEC §7.2), built into interop.
+    summary: file.slots.subtitle?.value,
+    folder: { id: folder.id, name: folder.name },
+    url: file.openUrl,
+    object: file,
+  }
 }
 
 function who(directory: Directory, pubkey: string): string {
@@ -300,11 +413,24 @@ export const peekApp: AgentApp = {
         if (!reference) throw new BadRequest('topic needs a title — try `peek topics` first.')
 
         const cache = createProjectionCache()
-        const topic = findTopic(await loadTopics(context, cache), reference)
-        const { conversations, edits, resolved } = await readConversation(context, topic, cache)
-
-        const speakers = conversations.flatMap((thread) => [thread.root, ...thread.replies].map((message) => message.author))
-        const directory: Directory = await profilesOf(relayQuery(context), speakers)
+        const query = loadQuery(context)
+        // A topic's conversation, and its speakers' names beside its edits; asked once, as early as its address is known.
+        const reads = new Map<string, ReturnType<typeof conversationOf>>()
+        const conversationOf = (address: string) =>
+          readConversation(context, { address }, cache, (threads) =>
+            profilesOf(relayQuery(context), threads.flatMap((thread) => [thread.root, ...thread.replies].map((message) => message.author))),
+          )
+        const read = (address: string) => {
+          if (!reads.has(address)) {
+            const reading = conversationOf(address)
+            reading.catch(() => {}) // a refusal is met by `topic`, which awaits it
+            reads.set(address, reading)
+          }
+          return reads.get(address)!
+        }
+        const topic =
+          (await oneTopic(context, query, cache, reference, read)) ?? findTopic(await loadTopics(context, cache, undefined, false, query), reference)
+        const { conversations, edits, resolved, besides: directory } = await read(topic.address)
 
         return {
           id: topic.address.split(':')[2],
@@ -471,7 +597,7 @@ export const peekApp: AgentApp = {
         // Folder that exists but no drawn Folder lists would take the topic
         // somewhere nobody can reach — this ticket's bug again.
         const query = relayQuery(context)
-        const folder = findFolder(topLevelFolders(await listFolders(createLoadQuery(query), { recordChannels: false })), folderRef)
+        const folder = findFolder(topLevelFolders(await listFolders(loadQuery(context), { recordChannels: false })), folderRef)
 
         /*
           The Folder's built-in `create-file` (SPEC §3.2), as Peek's launcher

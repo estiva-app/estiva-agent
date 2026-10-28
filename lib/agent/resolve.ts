@@ -92,7 +92,12 @@ export const short = (id: string): string => id.slice(0, SHORT)
  * caller that needs to look in two places gets the same generosity and the same
  * refusals, rather than a fourth implementation of the rule.
  */
-export type Resolution<T> = { found: T } | { ambiguous: string } | { none: true }
+/**
+ * `by` says which rule found it. Only `part` needs every item's current text to
+ * be sure nothing else matches; `exact` and `prefix` can be settled among the
+ * items a narrower read found (APP-6).
+ */
+export type Resolution<T> = { found: T; by: 'exact' | 'prefix' | 'part' } | { ambiguous: string } | { none: true }
 
 export function resolveMaybe<T>(items: T[], reference: string, how: Resolvable<T>): Resolution<T> {
   const needle = reference.trim().toLowerCase()
@@ -101,7 +106,7 @@ export function resolveMaybe<T>(items: T[], reference: string, how: Resolvable<T
   const exact = items.filter((item) =>
     how.exact(item).some((value) => value?.toLowerCase() === needle),
   )
-  if (exact.length === 1) return { found: exact[0] }
+  if (exact.length === 1) return { found: exact[0], by: 'exact' }
 
   const byPrefix =
     how.prefix && needle.length >= MIN_PREFIX && exact.length === 0
@@ -109,11 +114,11 @@ export function resolveMaybe<T>(items: T[], reference: string, how: Resolvable<T
           how.prefix!(item).some((value) => value?.toLowerCase().startsWith(needle)),
         )
       : []
-  if (byPrefix.length === 1) return { found: byPrefix[0] }
+  if (byPrefix.length === 1) return { found: byPrefix[0], by: 'prefix' }
 
   const partial =
     byPrefix.length > 1 ? [] : items.filter((item) => how.text(item).toLowerCase().includes(needle))
-  if (partial.length === 1) return { found: partial[0] }
+  if (partial.length === 1) return { found: partial[0], by: 'part' }
 
   if (partial.length > 1 || exact.length > 1 || byPrefix.length > 1) {
     /*

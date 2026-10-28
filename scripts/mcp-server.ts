@@ -76,6 +76,10 @@ function callingClient(): string | undefined {
  *
  * A failed attempt is **not** cached: somebody who creates the credential file
  * and asks again should succeed without restarting Desktop.
+ *
+ * `main` starts one attempt in the background once the server is up, so the
+ * first call does not wait for the token (APP-6). Its failure is dropped, not
+ * reported: the call that follows tries again and explains it.
  */
 let pending: Promise<AgentContext> | null = null
 function context(): Promise<AgentContext> {
@@ -226,13 +230,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         'Use it before editing anything — a project description in particular is returned nowhere else in full, and overwriting one that was never read is how a brief gets lost. ' +
         'For "where is this issue now" ask `ship_status` instead: this returns the whole description and conversation every time, and most calls to it were that question. ' +
         'Accepts a display ref (PEE-1), a short id (the first eight characters of the `d`, printed in every listing), a project name, a full address, or part of a title. The answer says which kind it found. ' +
-        'If the reference matches more than one issue, more than one project, or one of each, this returns the candidates instead of choosing — pick one and ask again rather than guessing, because the wrong object is indistinguishable from the right one once reported.',
+        'If the reference matches more than one issue, more than one project, or one of each, this returns the candidates instead of choosing — pick one and ask again rather than guessing, because the wrong object is indistinguishable from the right one once reported. ' +
+        'History lists who changed which field and when; a save of the description is a numbered version with its length, and its old text only with `historyText`.',
       inputSchema: {
         type: 'object',
         properties: {
           ref: {
             type: 'string',
             description: 'Display ref, project name, address, or a distinctive fragment of a title.',
+          },
+          historyText: {
+            type: 'boolean',
+            description: 'Optional. Include the old text of every description version in history — large on a file edited often.',
           },
         },
         required: ['ref'],
@@ -856,7 +865,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'ship_get_issue': {
         const ref = typeof input.ref === 'string' ? input.ref : ''
-        return await dispatch(command('show'), args({}, [ref]))
+        return await dispatch(command('show'), args(input.historyText === true ? { 'history-text': true } : {}, [ref]))
       }
 
       case 'ship_status':
@@ -1002,6 +1011,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   await server.connect(new StdioServerTransport())
   console.error(`estiva mcp server ready (pid ${process.pid})`)
+  context().catch(() => {})
 }
 
 main().catch((error) => {

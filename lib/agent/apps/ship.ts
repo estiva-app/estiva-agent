@@ -13,7 +13,7 @@
  * issue, an issue moved between projects — live in one place, and if this CLI
  * and `ship.estiva.app` disagree, the manifest is what is wrong.
  */
-import { refuseIfArchived } from '../act-on-file'
+import { loadQuery, refuseIfArchived } from '../act-on-file'
 import { describePlacing, placeFiles, uploadFiles, type PlacedFiles } from '../attachments'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
@@ -26,9 +26,15 @@ import { SUMMARY_LENGTH, summaryRoute, summaryText, summaryWarning } from '../su
 import {
   KIND,
   cascadeArchives,
+  changedAt,
+  type Change,
   conversationsFor,
+  editsFor,
+  filesReader,
   loadWorkspace,
+  readRoots,
   relayQuery,
+  threadsFor,
   type Conversation,
   type Issue,
   type Project,
@@ -36,12 +42,13 @@ import {
   type Workspace,
 } from './ship-workspace'
 import { randomUUID } from 'node:crypto'
-import { KIND as PROTOCOL_KIND, imetaTag, type Imeta } from '@estiva-app/protocol'
+import { KIND as PROTOCOL_KIND, imetaTag, type Imeta, type SignedEvent } from '@estiva-app/protocol'
 import { KIND_CHANGE, KIND_COMMENT, KIND_DELETION, KIND_EDIT } from '@estiva-app/conversation'
 import {
+  BODY_SLOT,
   KIND_CHANNEL_METADATA,
+  MOVED_TO_TAG,
   buildActionEvents,
-  createLoadQuery,
   createProjectionCache,
   listFolders,
   planArchiveFolder,
@@ -53,6 +60,7 @@ import {
   type FolderSummary,
   type MovableFile,
   type MoveRefusal,
+  type QueryFn,
   type ResolvedManifest,
 } from '@estiva-app/interop'
 
@@ -254,10 +262,11 @@ export function archivedRemoved<T extends { archived?: boolean }>(projects: T[])
 }
 
 async function coverage(
-  context: AgentContext,
+  query: QueryFn,
   reachable: Issue[],
 ): Promise<{ reachable: number; unreachable: number; total: number; note?: string }> {
-  const events = await context.relay.queryAll([{ kinds: [KIND.ISSUE] }])
+  // The load's query: the workspace read every issue root already (APP-6).
+  const events = await query([{ kinds: [KIND.ISSUE] }])
 
   const everything = new Set<string>()
   for (const event of events) {
@@ -825,7 +834,7 @@ async function stateAfter(
  * file, and everything already in it disappears.
  */
 function readFolders(context: AgentContext): Promise<FolderSummary[]> {
-  return listFolders(createLoadQuery(relayQuery(context)))
+  return listFolders(loadQuery(context))
 }
 
 /**
@@ -956,7 +965,7 @@ async function publishUnsigned(context: AgentContext, unsigned: Parameters<Agent
  */
 async function readListings(context: AgentContext, sources: readonly FolderRef[]): Promise<Map<string, MovableFile[]> | { unread: string }> {
   const cache = createProjectionCache()
-  const query = createLoadQuery(relayQuery(context))
+  const query = loadQuery(context)
   const read = await Promise.all(
     sources.map((folder) =>
       resolveFolderContents(folder.id, query, noPeople, cache, { includeArchived: true }).then(
@@ -1030,6 +1039,14 @@ async function setField(
   return outcome
 }
 
+/** One save of a file's text as history prints it: which version, how long, and the text only when asked for. */
+function textVersion(change: Change, versions: Map<string, number>, withText: boolean) {
+  const version = (versions.get(change.field) ?? 0) + 1
+  versions.set(change.field, version)
+  const text = descriptionText(change.value, change.format)
+  return { version, length: text.length, ...(withText ? { value: text } : {}) }
+}
+
 /**
  * The activity and conversation on one object, rendered the way `show` renders
  * them for an issue.
@@ -1044,37 +1061,55 @@ async function timelineFor(
   state: Workspace,
   addr: string,
   extraPubkeys: (string | undefined)[],
+  { historyText = false, threads }: { historyText?: boolean; threads?: Promise<Map<string, Conversation[]>> } = {},
 ) {
-  const talk = await conversationsFor(context, state, [addr])
-  const conversations = talk.byObject.get(addr) ?? []
+  const threadsRead = threads ?? threadsFor(relayQuery(context), state.cache, [addr])
   const history = state.activity.filter((change) => change.target === addr)
+  // The field the file's manifest folds its text from: a save of it is a version of the whole text.
+  const kind = addr.split(':')[0]
+  const slot = state.manifestFor(addr)?.manifest.projections?.[kind]?.slots?.[BODY_SLOT] as { fold?: string } | undefined
+  const isText = (change: Change) => slot?.fold !== undefined && change.field === slot.fold
+  const versions = new Map<string, number>()
+  // Printed while the conversation is read: the slowest part of `show` (0.4 s for 38 versions), and it needs no names.
+  const textVersions = new Map(history.filter(isText).map((change) => [change, textVersion(change, versions, historyText)]))
+  const byObject = await threadsRead
+  const conversations = byObject.get(addr) ?? []
 
-  const directory = await directoryFor(context, [
+  // The edits and the names are read side by side: every author is known once the threads are.
+  const [edits, directory] = await Promise.all([editsFor(context, byObject), directoryFor(context, [
     ...extraPubkeys,
     ...history.map((change) => change.author),
     // The values too, not just the actors — a `lead` or `assignee` change names
     // somebody in `value`, and asking for the actors alone leaves half the line
     // unresolved.
-    ...history.map((change) => change.value),
+    ...history.filter((change) => !isText(change)).map((change) => change.value),
     ...conversations.flatMap((thread) => [
       thread.root.author,
       ...thread.replies.map((reply) => reply.author),
     ]),
-  ])
+  ])])
 
   return {
     directory,
     history: history.map((change) => ({
       field: change.field,
-      // Resolved by shape rather than by field name: any 64-character hex value
-      // is a key somebody may have a name for, and matching on the field name
-      // would silently miss the next field that carries one.
-      value: resolvePubkeys(directory, change.value),
+      /*
+        A text save is a version of the whole text: its number and length,
+        and the text itself only when asked for (APP-6) — 38 old copies of one
+        description were 1.5 MB of a 1.55 MB answer. why:
+        https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-file-keeps-every-change-for-good.md
+      */
+      ...(textVersions.get(change) ?? {
+        // Resolved by shape rather than by field name: any 64-character hex value
+        // is a key somebody may have a name for, and matching on the field name
+        // would silently miss the next field that carries one.
+        value: resolvePubkeys(directory, change.value),
+      }),
       by: who(directory, change.author),
-      // `ts` when the change carried one, `created_at` otherwise — the same
+      // `ts` when the fold trusts it, `created_at` otherwise — the same
       // precedence the fold uses, because second-resolution timestamps tie for
       // changes made in one burst.
-      at: new Date(change.ts ?? change.createdAt * 1000).toISOString(),
+      at: new Date(changedAt(change)).toISOString(),
     })),
     conversation: conversations.map((thread) => ({
       id: thread.id,
@@ -1087,7 +1122,7 @@ async function timelineFor(
         id: message.id,
         by: who(directory, message.author),
         at: new Date(message.ts ?? message.createdAt * 1000).toISOString(),
-        ...edited(talk.edits, message),
+        ...edited(edits, message),
       })),
     })),
   }
@@ -1105,11 +1140,10 @@ async function timelineFor(
  * Folder listing read beside the workspace scan, not after it, through one
  * load's query so a read both make is asked once (APP-2).
  */
-async function loadWithFolders(context: AgentContext) {
-  const query = createLoadQuery(relayQuery(context))
+async function loadWithFolders(context: AgentContext, query: QueryFn = loadQuery(context)) {
   const [state, folders] = await Promise.all([loadWorkspace(context, query), listFolders(query)])
   cascadeArchives(state, folders)
-  return { state, folders }
+  return { state, folders, query }
 }
 
 const FOLDER_BY = {
@@ -1276,20 +1310,39 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
  * the text gives a card no spelling, so it prints as a row does.
  * Titled from the workspace already read.
  */
-function descriptionLinks(context: AgentContext, state: Workspace, subject: Pick<Project, 'description' | 'descriptionFormat'>) {
+async function descriptionLinks(
+  context: AgentContext,
+  state: Workspace,
+  subject: Pick<Project, 'description' | 'descriptionFormat'>,
+  /** For a workspace read for one file: the Ship files it links to, read as it was. */
+  readMore?: (addresses: string[]) => Promise<Workspace>,
+) {
   const titles = new Map<string, string>([...state.issues, ...state.projects].map((file) => [file.addr, file.title]))
-  return printedLinks(context, subject.description, subject.descriptionFormat, (value) => titles.get(value))
+  const links = await printedLinks(context, subject.description, subject.descriptionFormat, (value) => titles.get(value))
+  const isShip = (to: string) => to.startsWith(`${KIND.PROJECT}:`) || to.startsWith(`${KIND.ISSUE}:`)
+  const unread = [...new Set(links.flatMap((link) => (!link.title && isShip(link.to) ? [link.to] : [])))]
+  if (!readMore || unread.length === 0) return links
+  const more = await readMore(unread)
+  for (const file of [...more.issues, ...more.projects]) titles.set(file.addr, file.title)
+  return links.map((link) => (!link.title && titles.get(link.to) ? { ...link, title: titles.get(link.to)! } : link))
 }
 
-async function showProject(context: AgentContext, state: Workspace, project: Project) {
+async function showProject(
+  context: AgentContext,
+  state: Workspace,
+  project: Project,
+  historyText: boolean,
+  readMore?: (addresses: string[]) => Promise<Workspace>,
+  threads?: Promise<Map<string, Conversation[]>>,
+) {
   const issues = state.issues.filter((issue) => issue.projectAddr === project.addr)
-  const { directory, history, conversation } = await timelineFor(context, state, project.addr, [
-    project.author,
-    project.lead,
-    project.archive?.by,
-    ...issues.map((issue) => issue.assignee),
-    ...issues.map((issue) => issue.author),
-  ])
+  const { directory, history, conversation } = await timelineFor(
+    context,
+    state,
+    project.addr,
+    [project.author, project.lead, project.archive?.by, ...issues.map((issue) => issue.assignee), ...issues.map((issue) => issue.author)],
+    { historyText, threads },
+  )
 
   return {
     kind: 'project' as const,
@@ -1303,7 +1356,7 @@ async function showProject(context: AgentContext, state: Workspace, project: Pro
     archived: archiveSummary(directory, project.archive),
     description: descriptionText(project.description, project.descriptionFormat),
     descriptionFormat: formatName(project.descriptionFormat),
-    links: await descriptionLinks(context, state, project),
+    links: await descriptionLinks(context, state, project, readMore),
     createdAt: new Date(project.createdAt * 1000).toISOString(),
     folder: project.contentFolder,
     issues: issues.map((issue) => issueSummary(issue, directory, state.vocab.issue)),
@@ -1312,6 +1365,147 @@ async function showProject(context: AgentContext, state: Workspace, project: Pro
   }
 }
 
+async function showIssue(
+  context: AgentContext,
+  state: Workspace,
+  issue: Issue,
+  historyText: boolean,
+  readMore?: (addresses: string[]) => Promise<Workspace>,
+  threads?: Promise<Map<string, Conversation[]>>,
+) {
+  const { directory, history, conversation } = await timelineFor(
+    context,
+    state,
+    issue.addr,
+    [issue.author, issue.assignee, issue.archive?.by],
+    { historyText, threads },
+  )
+
+  return {
+    kind: 'issue' as const,
+    ...issueSummary(issue, directory, state.vocab.issue),
+    /*
+      A block document from Ship's editor is printed as text, one chunk
+      per block, because that is what `edit-issue --description` takes
+      back — and it keeps every block whose chunk comes back unchanged
+      (AGE-8). `descriptionFormat` says which it was.
+    */
+    description: descriptionText(issue.description, issue.descriptionFormat),
+    descriptionFormat: formatName(issue.descriptionFormat),
+    // How each link in it draws — chip, row, card or a link on words — which the text cannot say (WBD-9).
+    links: await descriptionLinks(context, state, issue, readMore),
+    createdAt: new Date(issue.createdAt * 1000).toISOString(),
+    folder: issue.folder,
+    /*
+      The change stream, not a derived summary. Who moved an issue and
+      when is the part a person asks about, and it is also the evidence
+      that somebody other than the author acted — which is the whole
+      reason the model is event-sourced rather than a mutable row.
+    */
+    history,
+    conversation,
+  }
+}
+
+/** The most rename hits one search asks for; a full page may have left one out. */
+const RENAME_SEARCH_LIMIT = 32
+/** The most files `show` folds to find one; a reference naming more is read whole. */
+const MOST_CANDIDATES = 24
+
+/**
+ * The one issue or project a reference names, read without the change log
+ * (APP-6), or undefined for `show` to read the whole workspace as before.
+ *
+ * The candidates are the roots the reference names by address, id, ref, or a
+ * title it is part of, and the files the relay's search finds a title or ref
+ * change for (SPEC §5.2: a typed word matches the start of a word). Only those
+ * and their projects are folded — their own changes, 1.5 MB for the project
+ * with the longest history where the whole log was 41 MB — and the same
+ * `resolveMaybe` decides among what they are called now; a project's issues
+ * are read with it. Only one issue or one project is taken from here: an
+ * ambiguity is listed from the whole read, so the list is complete, and a
+ * miss is read whole, so a renamed title matched mid-word still resolves. So
+ * is a title matched as text (an issue's always is): only every title as it is
+ * now says whether a renamed one holds the same words inside a word.
+ */
+async function oneFile(context: AgentContext, query: QueryFn, reference: string) {
+  const needle = reference.trim().toLowerCase()
+  if (!needle) return undefined
+  // Only the Folders' own archives: a record channel is archived with its project, which the project's own change says.
+  const folders = listFolders(query, { recordChannels: false })
+  folders.catch(() => {}) // a refusal is met by the read that awaits it
+  const rootsRead = readRoots(query)
+  const cache = createProjectionCache()
+  const readFiles = filesReader(query, rootsRead, cache)
+  const [roots, renamed] = await Promise.all([
+    rootsRead,
+    context.relay.query([{ kinds: [KIND_CHANGE], search: reference.trim(), search_mode: 'prefix', limit: RENAME_SEARCH_LIMIT }]),
+  ])
+  if (renamed.length >= RENAME_SEARCH_LIMIT) return undefined
+
+  const tag = (event: { tags: string[][] }, name: string) => event.tags.find((t) => t[0] === name)?.[1]
+  const candidates = new Set<string>()
+  for (const root of roots) {
+    const d = tag(root, 'd') ?? ''
+    const addr = `${root.kind}:${root.pubkey}:${d}`
+    const named =
+      addr.toLowerCase() === needle ||
+      d.toLowerCase() === needle ||
+      (needle.length >= 4 && d.toLowerCase().startsWith(needle)) ||
+      tag(root, 'ref')?.toLowerCase() === needle ||
+      [tag(root, 'title'), tag(root, 'name')].some((title) => title?.toLowerCase().includes(needle))
+    if (named) candidates.add(addr)
+  }
+  for (const change of renamed) {
+    const target = tag(change, 'a')
+    if (target && ['title', 'ref'].includes(tag(change, 'field') ?? '')) candidates.add(target)
+  }
+  if (candidates.size === 0 || candidates.size > MOST_CANDIDATES) return undefined
+
+  const addressOf = (root: SignedEvent) => `${root.kind}:${root.pubkey}:${tag(root, 'd')}`
+  // Each issue's project as its root names it, for its archive; a moved one is read after.
+  const projects = roots.flatMap((root) => {
+    const parent = root.kind === KIND.ISSUE && candidates.has(addressOf(root)) ? tag(root, 'a') : undefined
+    return parent?.startsWith(`${KIND.PROJECT}:`) ? [parent] : []
+  })
+  // Each project's issues, read with it rather than after: those whose root names it now, and those
+  // moved in, by the move's `A` (SPEC §7.2), once that read names them. The fold decides which are still there.
+  const asked = [...candidates].filter((addr) => addr.startsWith(`${KIND.PROJECT}:`))
+  const movedIn = asked.length ? query([{ kinds: [KIND_CHANGE], [`#${MOVED_TO_TAG}`]: asked }]) : Promise.resolve([])
+  const theirIssues = roots.flatMap((root) => (root.kind === KIND.ISSUE && asked.includes(tag(root, 'a') ?? '') ? [addressOf(root)] : []))
+  const read = async (addresses: string[]) => {
+    const [state, listed] = await Promise.all([readFiles(addresses), folders])
+    cascadeArchives(state, listed)
+    return state
+  }
+  // The one candidate's conversation is asked beside the changes: it is the file shown, if any is.
+  const [only] = candidates.size === 1 ? candidates : []
+  const threads = only ? threadsFor(query, cache, [only]) : undefined
+  threads?.catch(() => {}) // a refusal is met by `show`, which awaits it
+  const threadsOf = (addr: string) => (addr === only ? threads : undefined)
+  const scope = [...new Set([...candidates, ...projects, ...theirIssues])]
+  const [first, moved] = await Promise.all([read(scope), movedIn])
+  let state = first
+  const late = moved.flatMap((change) => tag(change, 'a') ?? []).filter((addr) => !scope.includes(addr))
+  if (late.length) {
+    scope.push(...new Set(late))
+    state = await read(scope)
+  }
+  const asIssue = resolveMaybe(state.issues.filter((issue) => candidates.has(issue.addr)), reference, ISSUE_BY)
+  const asProject = resolveMaybe(state.projects.filter((project) => candidates.has(project.addr)), reference, PROJECT_BY)
+  // A match on part of a title is settled only against every title as it is now, which only the whole read has.
+  if (('found' in asIssue && asIssue.by === 'part') || ('found' in asProject && asProject.by === 'part')) return undefined
+
+  if ('found' in asProject && 'none' in asIssue) return { state, project: asProject.found, readMore: read, threadsOf }
+  if (!('found' in asIssue) || !('none' in asProject)) return undefined
+
+  let issue = asIssue.found
+  if (issue.projectAddr && !state.projects.some((project) => project.addr === issue.projectAddr)) {
+    state = await read([...scope, issue.projectAddr])
+    issue = state.issues.find((each) => each.addr === issue.addr)!
+  }
+  return { state, issue, readMore: read, threadsOf }
+}
 
 /** What one key has been seen doing, which is the only evidence this list has. */
 export interface Participant {
@@ -1480,7 +1674,7 @@ export const shipApp: AgentApp = {
       },
       async run(context, args) {
         // An issue of a project in an archived Folder is hidden with both, as Ship hides it.
-        const { state } = await loadWithFolders(context)
+        const { state, query } = await loadWithFolders(context)
         const wantedProject = flagValue(args, 'project')
         const wantedStatus = flagValue(args, 'status')?.toLowerCase()
 
@@ -1526,7 +1720,7 @@ export const shipApp: AgentApp = {
             dropping the count when `--project` is passed would hide the gap in
             exactly the narrow queries somebody trusts most.
           */
-          coverage: await coverage(context, state.issues),
+          coverage: await coverage(query, state.issues),
         }
       },
     },
@@ -1599,7 +1793,7 @@ export const shipApp: AgentApp = {
 
         return {
           activity: shown.map((change) => ({
-            at: new Date(change.ts ?? change.createdAt * 1000).toISOString(),
+            at: new Date(changedAt(change)).toISOString(),
             by: who(directory, change.author),
             field: change.field,
             // Resolved by shape, the same rule `show` uses: any 64-character
@@ -1673,13 +1867,19 @@ export const shipApp: AgentApp = {
     {
       name: 'show',
       summary: 'one issue or project, folded, with its conversation and history',
-      usage: 'show <ref>',
+      usage: 'show <ref> [--history-text]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('show needs a reference — try `ship issues` first.')
+        const historyText = args.flags['history-text'] === true
+
+        const query = loadQuery(context)
+        const one = await oneFile(context, query, reference)
+        if (one?.issue) return showIssue(context, one.state, one.issue, historyText, one.readMore, one.threadsOf(one.issue.addr))
+        if (one?.project) return showProject(context, one.state, one.project, historyText, one.readMore, one.threadsOf(one.project.addr))
 
         // With the Folders, so `archived` agrees with what the listings hide.
-        const { state } = await loadWithFolders(context)
+        const { state } = await loadWithFolders(context, query)
 
         /*
           Asked of both kinds, then decided — rather than issues first with
@@ -1700,7 +1900,7 @@ export const shipApp: AgentApp = {
           )
         }
 
-        if ('found' in asProject) return showProject(context, state, asProject.found)
+        if ('found' in asProject) return showProject(context, state, asProject.found, historyText)
 
         if (!('found' in asIssue)) {
           // Whichever attempt had something to say says it. An ambiguity is a
@@ -1710,37 +1910,7 @@ export const shipApp: AgentApp = {
           throw new BadRequest(`No issue or project matches "${reference}".`)
         }
 
-        const issue = asIssue.found
-        const { directory, history, conversation } = await timelineFor(context, state, issue.addr, [
-          issue.author,
-          issue.assignee,
-          issue.archive?.by,
-        ])
-
-        return {
-          kind: 'issue' as const,
-          ...issueSummary(issue, directory, state.vocab.issue),
-          /*
-            A block document from Ship's editor is printed as text, one chunk
-            per block, because that is what `edit-issue --description` takes
-            back — and it keeps every block whose chunk comes back unchanged
-            (AGE-8). `descriptionFormat` says which it was.
-          */
-          description: descriptionText(issue.description, issue.descriptionFormat),
-          descriptionFormat: formatName(issue.descriptionFormat),
-          // How each link in it draws — chip, row, card or a link on words — which the text cannot say (WBD-9).
-          links: await descriptionLinks(context, state, issue),
-          createdAt: new Date(issue.createdAt * 1000).toISOString(),
-          folder: issue.folder,
-          /*
-            The change stream, not a derived summary. Who moved an issue and
-            when is the part a person asks about, and it is also the evidence
-            that somebody other than the author acted — which is the whole
-            reason the model is event-sourced rather than a mutable row.
-          */
-          history,
-          conversation,
-        }
+        return showIssue(context, state, asIssue.found, historyText)
       },
     },
     {

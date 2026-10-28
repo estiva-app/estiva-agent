@@ -14,6 +14,7 @@
 import { archivedLine } from '@estiva-app/conversation'
 import {
   buildActionEvent,
+  createLoadQuery,
   folderOf,
   KIND_CHANNEL_METADATA,
   resolveForeignObject,
@@ -42,6 +43,15 @@ export function published(result: { ok: boolean; reason?: string }, what: string
 
 export function relayQuery(context: AgentContext): QueryFn {
   return (filters) => context.relay.queryAll(filters as never)
+}
+
+/**
+ * One load's query (APP-2): each change read once between the reads it makes.
+ * `queryAll` pages every filter to its end, so every read it answers counts,
+ * the workspace's whole change kind included (APP-6). Make one per load.
+ */
+export function loadQuery(context: AgentContext): QueryFn {
+  return createLoadQuery(relayQuery(context), { paged: true })
 }
 
 /** The Folder a file's root names — where a change to it is published — or undefined when there is none or it is unreadable. */

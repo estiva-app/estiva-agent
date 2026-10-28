@@ -17,8 +17,8 @@
  * answer at about a hundred POSTs per command.
  */
 import {
+  contentFormatOf,
   conversationsOf,
-  createLoadQuery,
   createProjectionCache,
   folderOf,
   projectEvents,
@@ -31,9 +31,10 @@ import {
   type QueryFn,
   type ResolvedManifest,
 } from '@estiva-app/interop'
-import { byOrder, decorationsOf, trustedTs, type EditFold } from '@estiva-app/conversation'
+import { byOrder, decorationsOf, KIND_CHANGE, trustedTs, type EditFold } from '@estiva-app/conversation'
 import type { ContentFormat, SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../cli'
+import { loadQuery, relayQuery } from '../act-on-file'
 
 /** The kinds Ship's objects are — what `ship` lists. Everything else is the manifest's. */
 export const KIND = { PROJECT: 30850, ISSUE: 30851 } as const
@@ -42,9 +43,7 @@ const KIND_HANDLER_RECOMMENDATION = 31989
 
 const tagValue = (event: SignedEvent, name: string) => event.tags.find((tag) => tag[0] === name)?.[1]
 
-export function relayQuery(context: AgentContext): QueryFn {
-  return (filters) => context.relay.queryAll(filters as never)
-}
+export { relayQuery }
 
 /** One status vocabulary, as the manifest declares it. */
 export interface Vocabulary {
@@ -151,6 +150,8 @@ export interface Change {
   field: string
   value: string
   note: string
+  /** How `value` is written, when it is a text save — what prints it as text. */
+  format: ContentFormat
 }
 
 export interface Workspace {
@@ -178,29 +179,31 @@ const pointerOf = (address: string) => {
  * `resolveManifest` reads the author's own `kind:31989` first and falls back to
  * the newest manifest claiming the kind, so for an author who recommends
  * nothing the answer depends on the kind alone. Production has no
- * recommendation for Ship's kinds at all (2026-10-02). So: one read for every
- * author's recommendations, one resolution per kind shared by everybody who
- * has none, and a resolution of their own for anybody who does.
+ * recommendation for Ship's kinds at all (2026-10-02). So: one resolution per
+ * kind shared by everybody who has none, asked for a key that recommends
+ * nothing before the roots are in (APP-6); one read for every author's
+ * recommendations; and a resolution of their own for anybody who has one.
  */
-async function manifestsFor(roots: readonly SignedEvent[], query: QueryFn, cache: ProjectionCache) {
-  const authors = [...new Set(roots.map((root) => root.pubkey))]
-  const kinds = [KIND.PROJECT, KIND.ISSUE]
+async function manifestsFor(roots: Promise<readonly SignedEvent[]> | readonly SignedEvent[], query: QueryFn, cache: ProjectionCache) {
+  const kinds: number[] = [KIND.PROJECT, KIND.ISSUE]
+  // Resolved even when no root of the kind exists yet: an identity filing its first project acts with it.
+  const sharing = Promise.all(kinds.map((kind) => resolveManifest(pointerOf(`${kind}:${NOBODY}:`), query, cache)))
+  sharing.catch(() => {}) // a refusal is met where it is awaited
+  const authors = [...new Set((await roots).map((root) => root.pubkey))]
   const recommendations = authors.length
     ? await query([{ kinds: [KIND_HANDLER_RECOMMENDATION], authors, '#d': kinds.map(String) }])
     : []
   const recommends = new Set(recommendations.map((event) => `${tagValue(event, 'd')}:${event.pubkey}`))
 
   const resolved = new Map<string, ResolvedManifest | undefined>()
-  const shared = new Map<number, ResolvedManifest | undefined>()
-  for (const kind of kinds) {
-    // Resolved even when no root of the kind exists yet: an identity filing its first project acts with it.
-    const quiet = authors.find((author) => !recommends.has(`${kind}:${author}`)) ?? NOBODY
-    shared.set(kind, (await resolveManifest(pointerOf(`${kind}:${quiet}:`), query, cache)) ?? undefined)
-  }
-  for (const key of recommends) {
-    const [kind, author] = key.split(':')
-    resolved.set(`${kind}:${author}`, (await resolveManifest(pointerOf(`${kind}:${author}:`), query, cache)) ?? undefined)
-  }
+  // Side by side: each is a few round trips, and in sequence they were a second of `show` (APP-6).
+  await Promise.all(
+    [...recommends].map(async (key) => {
+      const [kind, author] = key.split(':')
+      resolved.set(`${kind}:${author}`, (await resolveManifest(pointerOf(`${kind}:${author}:`), query, cache)) ?? undefined)
+    }),
+  )
+  const shared = new Map((await sharing).map((manifest, i) => [kinds[i], manifest ?? undefined]))
   return {
     of: (pointer: { kind: number; pubkey: string }) =>
       recommends.has(`${pointer.kind}:${pointer.pubkey}`) ? resolved.get(`${pointer.kind}:${pointer.pubkey}`) : shared.get(pointer.kind),
@@ -236,20 +239,90 @@ const metaValue = (object: ForeignObject, field: string) => object.meta.find((sl
  * Every Ship project and issue, folded through Ship's manifest, with the change stream.
  * `query` is the load's, when the workspace is read beside other reads of the same load (APP-2).
  */
-export async function loadWorkspace(context: AgentContext, query: QueryFn = createLoadQuery(relayQuery(context))): Promise<Workspace> {
+export async function loadWorkspace(context: AgentContext, query: QueryFn = loadQuery(context)): Promise<Workspace> {
   const cache = createProjectionCache()
-  const roots = await query([{ kinds: [KIND.PROJECT, KIND.ISSUE] }])
+  // SPEC's change kind, which holds every file's archive, is asked beside the
+  // roots rather than after the manifests: a Folder listing in the same load
+  // asks its files' changes about two seconds in, and is answered from this
+  // read only if it has been asked by then (APP-6). The read below joins it.
+  const early = query([{ kinds: [KIND_CHANGE] }])
+  early.catch(() => {}) // a refusal is met by the read below
+  const roots = await readRoots(query)
   const manifests = await manifestsFor(roots, query, cache)
+  const changes = await query([{ kinds: changeKindsOf(manifests) }])
+  return foldWorkspace(roots, changes, manifests, cache)
+}
+
+/** Every Ship project and issue root — 903 were 2.7 MB on 28 Oct, against 41 MB of changes. */
+export function readRoots(query: QueryFn): Promise<SignedEvent[]> {
+  return query([{ kinds: [KIND.PROJECT, KIND.ISSUE] }])
+}
+
+/**
+ * A reader of some Ship files, each folded exactly as {@link loadWorkspace}
+ * folds it, from its own changes alone (APP-6). `roots` is
+ * {@link readRoots}' answer; the manifests that fold them are asked for at
+ * once, before the caller knows which files it wants. A call's answer holds
+ * only the files it names, so a project's issues are only those named with it.
+ * Each file's changes are asked once across calls: a later call asks only for
+ * the files no earlier one named.
+ */
+export function filesReader(
+  query: QueryFn,
+  roots: Promise<readonly SignedEvent[]>,
+  cache: ProjectionCache = createProjectionCache(),
+): (addresses: readonly string[]) => Promise<Workspace> {
+  const manifests = manifestsFor(roots, query, cache)
+  manifests.catch(() => {}) // a refusal is met by the read that awaits it
+  // Per change kind: the files asked for so far, and every read's answer.
+  const asked = new Map<number, { files: Set<string>; reads: Promise<SignedEvent[]>[] }>()
+  const changesTo = async (kind: number, wanted: Set<string>) => {
+    const read = asked.get(kind) ?? { files: new Set<string>(), reads: [] }
+    asked.set(kind, read)
+    const unasked = [...wanted].filter((addr) => !read.files.has(addr))
+    for (const addr of unasked) read.files.add(addr)
+    if (unasked.length) read.reads.push(query([{ kinds: [kind], '#a': unasked }]))
+    const seen = new Set<string>()
+    // What the relay answers `#a` with: an event any of whose `a` names a wanted file.
+    return (await Promise.all(read.reads))
+      .flat()
+      .filter((event) => !seen.has(event.id) && seen.add(event.id) && event.tags.some((t) => t[0] === 'a' && wanted.has(t[1])))
+  }
+  return async (addresses) => {
+    const wanted = new Set(addresses)
+    const theirs = (await roots).filter((root) => wanted.has(addressOf(root)))
+    const byTarget = async (kinds: number[]) => (wanted.size ? (await Promise.all(kinds.map((kind) => changesTo(kind, wanted)))).flat() : [])
+    // Each file's manifest as its own author resolves it, into the cache its conversation is read through next.
+    const owners = [...new Set(theirs.map((root) => `${root.kind}:${root.pubkey}:`))]
+    // The change kind is asked beside the manifests; one declaring another kind is read after.
+    const [resolved, changes] = await Promise.all([
+      manifests,
+      byTarget([KIND_CHANGE]),
+      ...owners.map((owner) => resolveManifest(pointerOf(owner), query, cache)),
+    ])
+    const more = await byTarget(changeKindsOf(resolved).filter((kind) => kind !== KIND_CHANGE))
+    return foldWorkspace(theirs, [...changes, ...more], resolved, cache)
+  }
+}
+
+const addressOf = (root: SignedEvent) => `${root.kind}:${root.pubkey}:${tagValue(root, 'd')}`
+
+/** SPEC's change kind, and any other every manifest in play declares — Ship's is one kind for both. */
+function changeKindsOf(manifests: Manifests): number[] {
+  return [
+    ...new Set([KIND_CHANGE, ...manifests.all().flatMap((resolved) => (resolved.manifest.records ? [resolved.manifest.records.changeKind] : []))]),
+  ]
+}
+
+type Manifests = Awaited<ReturnType<typeof manifestsFor>>
+
+function foldWorkspace(roots: readonly SignedEvent[], read: readonly SignedEvent[], manifests: Manifests, cache: ProjectionCache): Workspace {
   const manifestOf = manifests.of
-  // Changes by the change kind every manifest in play declares — Ship's is one kind for both.
-  const changeKinds = [...new Set(manifests.all().flatMap((resolved) => (resolved.manifest.records ? [resolved.manifest.records.changeKind] : [])))]
   // Every change to a Ship object, including one whose record is gone — a
   // deleted project's history is still history, and `activity` lists it.
   const shipKind = (target: string | undefined) =>
     target !== undefined && (target.startsWith(`${KIND.PROJECT}:`) || target.startsWith(`${KIND.ISSUE}:`))
-  const changes = changeKinds.length
-    ? (await query([{ kinds: changeKinds }])).filter((event) => shipKind(tagValue(event, 'a')))
-    : []
+  const changes = read.filter((event) => shipKind(tagValue(event, 'a')))
 
   const objects = new Map(projectEvents([...roots, ...changes], manifestOf).map((object) => [object.address!, object]))
   // The version `projectEvents` folded, so the author, date and Folder printed are that version's.
@@ -324,6 +397,7 @@ export async function loadWorkspace(context: AgentContext, query: QueryFn = crea
       field,
       value,
       note: event.content,
+      format: contentFormatOf(event),
     }]
   })
 
@@ -338,8 +412,7 @@ export async function loadWorkspace(context: AgentContext, query: QueryFn = crea
   const current = new Map(issues.map((issue) => [issue.addr, issue.status]))
   for (const change of activity) {
     if (change.field !== 'status' || change.value !== current.get(change.target)) continue
-    const trusted = change.ts !== undefined && Math.floor(change.ts / 1000) === change.createdAt
-    statusAt.set(change.target, trusted ? change.ts! : change.createdAt * 1000)
+    statusAt.set(change.target, changedAt(change))
   }
   for (const issue of issues) issue.statusChangedAt = statusAt.get(issue.addr)
 
@@ -353,6 +426,15 @@ export async function loadWorkspace(context: AgentContext, query: QueryFn = crea
     cache,
   }
 }
+
+/**
+ * When a change was made, epoch ms: its `ts` only when SPEC §6.2 trusts it
+ * (inside the event's own second, as the fold orders it), `created_at`
+ * otherwise. A planted `ts` would back-date a change, or, past what a date
+ * can hold, make the file unprintable.
+ */
+export const changedAt = (change: Pick<Change, 'ts' | 'createdAt'>): number =>
+  change.ts !== undefined && Math.floor(change.ts / 1000) === change.createdAt ? change.ts : change.createdAt * 1000
 
 /** One message of a conversation, as the agent prints it. */
 export interface Message {
@@ -402,15 +484,27 @@ export async function conversationsFor(
   workspace: Workspace,
   addresses: readonly string[],
 ): Promise<{ byObject: Map<string, Conversation[]>; edits: Record<string, EditFold> }> {
-  const query = relayQuery(context)
-  const objects = addresses.flatMap((addr) => {
-    const object = workspace.objects.get(addr)
-    return object ? [object] : []
-  })
-  const byObject = new Map<string, Conversation[]>()
-  if (objects.length === 0) return { byObject, edits: {} }
+  const byObject = await threadsFor(relayQuery(context), workspace.cache, addresses.filter((addr) => workspace.objects.has(addr)))
+  return { byObject, edits: await editsFor(context, byObject) }
+}
 
-  const rootsByObject = await conversationsOf(objects, query, workspace.cache)
+/**
+ * Reads 1 and 2 of {@link conversationsFor}, for files known by address alone:
+ * `show` asks them beside the file's own changes, before anything is folded
+ * (APP-6). Through the query and cache the files are read with, the manifest
+ * that names the comment kinds is resolved once.
+ */
+export async function threadsFor(
+  query: QueryFn,
+  cache: ProjectionCache,
+  addresses: readonly string[],
+): Promise<Map<string, Conversation[]>> {
+  // `conversationsOf` reads a file's identity and address only, and an address is a Ship file's identity.
+  const objects = addresses.map((address) => ({ ref: address, address }) as ForeignObject)
+  const byObject = new Map<string, Conversation[]>()
+  if (objects.length === 0) return byObject
+
+  const rootsByObject = await conversationsOf(objects, query, cache)
   const allRoots = [...new Set(Object.values(rootsByObject).flat().map((message) => message.id))]
   // One `#e` read per chunk of roots; the reference only selects the manifest's comment kinds.
   const roots: Record<string, SignedEvent> = {}
@@ -418,7 +512,7 @@ export async function conversationsFor(
   // `threadsOf` does not say when its limit cut the answer, so a chunk that comes
   // back full is split and read again rather than trusted.
   const read = async (chunk: string[]): Promise<void> => {
-    const threads = await threadsOf(objects[0].address!, chunk, query, workspace.cache, THREAD_LIMIT)
+    const threads = await threadsOf(objects[0].address!, chunk, query, cache, THREAD_LIMIT)
     const answered = Object.values(threads.replies).reduce((sum, list) => sum + list.length, 0)
     if (answered >= THREAD_LIMIT && chunk.length > 1) {
       const half = Math.ceil(chunk.length / 2)
@@ -442,12 +536,16 @@ export async function conversationsFor(
         .sort((a, b) => (b.root.ts ?? b.root.createdAt * 1000) - (a.root.ts ?? a.root.createdAt * 1000)),
     )
   }
+  return byObject
+}
 
+/** Read 3 of {@link conversationsFor}: each message's edits. */
+export async function editsFor(context: AgentContext, byObject: Map<string, Conversation[]>): Promise<Record<string, EditFold>> {
   const messages = [...byObject.values()].flat().flatMap((thread) => [thread.root, ...thread.replies])
   const decorations = messages.length
-    ? await decorationsOf(messages.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })), query)
+    ? await decorationsOf(messages.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })), relayQuery(context))
     : { byId: {} as Record<string, { edit?: EditFold }> }
   const edits: Record<string, EditFold> = {}
   for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit
-  return { byObject, edits }
+  return edits
 }
