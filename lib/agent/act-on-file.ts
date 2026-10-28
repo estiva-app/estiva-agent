@@ -73,8 +73,13 @@ async function nounOf(context: AgentContext, address: string, cache?: Projection
   const pointer = pointerOf(address)
   if (!pointer.pubkey || pointer.kind === KIND_CHANNEL_METADATA) return 'folder'
   const resolved = await resolveManifest(pointer, relayQuery(context), cache).catch(() => null)
-  return resolved?.manifest.projections?.[String(pointer.kind)]?.noun
+  const noun = resolved?.manifest.projections?.[String(pointer.kind)]?.noun?.trim()
+  // A manifest is anybody's event, and this noun becomes the agent's own error
+  // text: a word, never a sentence somebody planted (docs/untrusted-content.md).
+  return noun && NOUN.test(noun) ? noun : undefined
 }
+
+const NOUN = /^[a-z][a-z -]{0,23}$/
 
 /** Refuses a write on a file that is archived, itself or with a file above it, before anything is signed. */
 export async function refuseIfArchived(context: AgentContext, address: string, archive: Archive | undefined, cache?: ProjectionCache): Promise<void> {

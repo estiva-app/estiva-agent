@@ -78,6 +78,8 @@ const SENTENCE = 'Archived. Unarchive it to comment. Nothing was published.'
   const { context, published, events } = workspace(archived(true, 1_900_000_000))
   const reply = await refusal(run('reply', context, ['Planning', opening.id], { body: 'Still on it.' }))
   check('peek reply on an archived topic is refused with Peek’s sentence', reply === SENTENCE, reply)
+  const stray = await refusal(run('reply', context, ['Planning', 'f'.repeat(64)], { body: 'Still on it.' }))
+  check('peek reply naming no conversation there still says the topic is archived', stray === SENTENCE, stray)
   const say = await refusal(run('say', context, ['Planning'], { body: 'Still on it.' }))
   check('peek say there is refused with the same sentence', say === SENTENCE, say)
   const edit = await refusal(run('edit', context, ['Planning', opening.id], { message: mine.id, body: 'Rewritten.' }))

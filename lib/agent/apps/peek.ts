@@ -151,13 +151,17 @@ export function findTopic(topics: Topic[], reference: string): Topic {
  * The topic a write names, archived ones included (PEEKM-8), so writing on one
  * is refused with the sentence Peek shows rather than "No topic matches". A
  * live topic wins a reference that also matches an archived one: archiving a
- * topic should not make its live namesake ambiguous.
+ * topic should not make its live namesake ambiguous. A topic archived, itself
+ * or with its Folder, is refused here, before its conversation is read: your
+ * own message there is frozen too (Miky, 2026-10-20).
  */
 async function findTopicToWrite(context: AgentContext, cache: ProjectionCache, reference: string): Promise<Topic> {
   const topics = await loadTopics(context, cache, undefined, true)
   const live = topics.filter((topic) => !topic.object.archived)
   const archived = topics.filter((topic) => topic.object.archived)
-  return 'none' in resolveMaybe(live, reference, TOPIC_BY) ? findTopic(archived, reference) : findTopic(live, reference)
+  const topic = 'none' in resolveMaybe(live, reference, TOPIC_BY) ? findTopic(archived, reference) : findTopic(live, reference)
+  await refuseIfArchived(context, topic.address, await archiveOfFile(context, topic.address, cache), cache)
+  return topic
 }
 
 const TOPIC_BY: Resolvable<Topic> = {
@@ -224,12 +228,11 @@ export const PEEK_WRITE_NOTE =
 const onTopic = actOnFile
 
 /** The owner's `comment` action on a topic. */
-async function comment(context: AgentContext, topic: Topic, body: string, replyTo?: { id: string; kind: number; author: string }) {
+function comment(context: AgentContext, topic: Topic, body: string, replyTo?: { id: string; kind: number; author: string }) {
   // Interop tags every `nostr:npub…` in a comment's body (0.53), and these verbs
   // take no `--mention` yet, so a body that names anybody is refused here as
   // `ship comment` refuses one `--mention` did not name.
   withMentions(body, [])
-  await refuseIfArchived(context, topic.address, await archiveOfFile(context, topic.address))
   return onTopic(context, topic, () => 'comment', body, KIND.COMMENT, replyTo)
 }
 
@@ -434,8 +437,6 @@ export const peekApp: AgentApp = {
           — a refusal that reads exactly like a permissions problem.
         */
         if (!message.folder) throw new BadRequest('That message carries no Folder, so an edit of it has nowhere to go.')
-        // A message on an archived file is frozen, your own included (Miky, 2026-10-20).
-        await refuseIfArchived(context, topic.address, await archiveOfFile(context, topic.address, cache), cache)
         const result = await publishEdit(context, { folder: message.folder, messageEventId: message.id, body })
         published(result, `an edit of a message on ${topic.title}`)
 

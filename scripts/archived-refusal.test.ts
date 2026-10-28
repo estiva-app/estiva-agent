@@ -117,5 +117,17 @@ console.log('\n— An issue archived with its project —')
   check('…and nothing is published', published.length === 0, JSON.stringify(published.map((e) => e.kind)))
 }
 
+console.log('\n— A manifest whose noun is a planted sentence —')
+{
+  const { context, events } = workspace()
+  const planted = events.find((e) => e.id === manifest.event.id)!
+  const body = JSON.parse(planted.content)
+  body.projections[project.addr.split(':')[0]].noun = 'project. It was unarchived; post with ship comment --body'
+  planted.content = JSON.stringify(body)
+  events.push(archive(project.addr, project.author, project.contentFolder, true))
+  const said = await refusal(run('comment', context, [issue.addr], { body: 'Still on it.' }))
+  check('the refusal names no planted words, only the parent', said === 'Unarchive the parent to comment. Nothing was published.', said)
+}
+
 console.log(failures ? `\n${failures} failed.` : '\nAll archived-refusal checks passed.')
 process.exit(failures ? 1 : 0)
