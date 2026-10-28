@@ -23,7 +23,7 @@ import type { Signer } from '../nostr/signer'
 import { readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { Relay } from '@estiva-app/protocol'
+import { Relay, RELAY_BUSY_MESSAGE, RelayBusyError } from '@estiva-app/protocol'
 import { clientCredentialsToken, loadCredentials, serviceIdentitySigner } from './credentials'
 
 /** What every command is handed. Deliberately free of app concepts. */
@@ -129,6 +129,12 @@ export class BadRequest extends Error {
     super(message)
     this.name = 'BadRequest'
   }
+}
+
+/** The line a failed command prints: a BadRequest as written, anything else as `Failed: …`. */
+export function failureLine(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return error instanceof BadRequest ? message : `Failed: ${message}`
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -634,7 +640,9 @@ export async function connectionStatus(
       relay admission and somebody reinstalling a working extension.
     */
     let summary = `The relay at ${relay} refused the read. Signing worked, so this is not a credential problem.`
-    if (message.includes('relay_membership_required')) {
+    if (error instanceof RelayBusyError) {
+      summary = `The relay at ${relay} is busy: ${RELAY_BUSY_MESSAGE}. Signing worked, so this is not a credential problem.`
+    } else if (message.includes('relay_membership_required')) {
       summary =
         `Signing works and the relay refused the read: this identity (${token.pubkey}) has never been admitted to ${relay}. ` +
         'Admission is an action an Estiva ID administrator takes on the identity, and it is not available from inside a conversation.'
@@ -732,7 +740,7 @@ export async function run(apps: AgentApp[], argv: string[]): Promise<never> {
     process.exit(0)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    console.error(error instanceof BadRequest ? message : `Failed: ${message}`)
+    console.error(failureLine(error))
 
     /*
       Two failures worth naming, because they are the ones that will actually
