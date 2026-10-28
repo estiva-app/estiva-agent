@@ -13,7 +13,7 @@
  * issue, an issue moved between projects — live in one place, and if this CLI
  * and `ship.estiva.app` disagree, the manifest is what is wrong.
  */
-import { loadQuery, refuseIfArchived } from '../act-on-file'
+import { loadQuery, refuseIfArchived, refused } from '../act-on-file'
 import { describePlacing, placeFiles, uploadFiles, type PlacedFiles } from '../attachments'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
@@ -860,7 +860,7 @@ function published<T extends { ok: boolean; reason?: string; duplicate?: boolean
   result: T,
   what: string,
 ): void {
-  if (!result.ok) throw new BadRequest(`The relay refused ${what}: ${result.reason ?? 'no reason given'}`)
+  if (!result.ok) throw refused(what, result.reason)
 }
 
 interface PublishOutcome {
@@ -2218,9 +2218,10 @@ export const shipApp: AgentApp = {
         for (const edit of edits) {
           const result = await setField(context, state, { addr: issue.addr, author: issue.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat)
           if (!result.ok) {
-            throw new BadRequest(
-              `The relay refused ${edit.field} on ${issue.ref ?? issue.addr}: ${result.reason ?? 'no reason given'}. ` +
-                `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
+            throw refused(
+              `${edit.field} on ${issue.ref ?? issue.addr}`,
+              result.reason,
+              `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
             )
           }
           applied.push(appliedEdit(edit, result.eventId))
@@ -2309,9 +2310,10 @@ export const shipApp: AgentApp = {
         for (const edit of edits) {
           const result = await setField(context, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat)
           if (!result.ok) {
-            throw new BadRequest(
-              `The relay refused ${edit.field} on “${project.title}”: ${result.reason ?? 'no reason given'}. ` +
-                `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
+            throw refused(
+              `${edit.field} on “${project.title}”`,
+              result.reason,
+              `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
             )
           }
           applied.push(appliedEdit(edit, result.eventId))

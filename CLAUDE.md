@@ -413,6 +413,7 @@ misleading.
 | --- | --- |
 | `relay_membership_required` | The signing pubkey is not a relay member. Signing worked; the door is shut. Admission is an Estiva ID console action. |
 | `nip98_url_not_allowed` | Estiva ID refused to mint NIP-98, so nothing ever reached the relay. The credential's URL prefixes, or the deployment's. |
+| `the relay is busy, try again in a moment` | The relay could not reach its database and said so (`503`, `CLOSED "error: relay busy"`). The protocol already asked again over a few seconds; nothing is wrong with the credential or the request, and a write that says it was not saved was not. Ask again shortly. |
 | `invalid_client` | Wrong or rotated secret. Re-issuing a credential **replaces** the old one, so a secret that worked yesterday failing today is expected, not mysterious. |
 
 ### If you are editing an error message

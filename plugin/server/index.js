@@ -17248,6 +17248,56 @@ function parseQueryResponse(status2, text2) {
     return { ok: false, events: [], reason: `unparseable response: ${text2.slice(0, 200)}`, httpStatus: status2 };
   }
 }
+var RELAY_BUSY_MESSAGE = "the relay is busy, try again in a moment";
+var REFUSAL_PREFIX = /^(rate-limited|restricted|auth-required|blocked|invalid|pow|duplicate|mute):/;
+function isRelayBusyResponse(status2, text2) {
+  if (status2 === 502)
+    return true;
+  if (status2 !== 503)
+    return false;
+  let error2;
+  try {
+    error2 = JSON.parse(text2)?.error;
+  } catch {
+    error2 = text2;
+  }
+  if (typeof error2 === "string")
+    error2 = error2.trim();
+  if (typeof error2 === "string" && REFUSAL_PREFIX.test(error2))
+    return false;
+  return error2 !== "query timed out";
+}
+function retryAfterMsOf(header) {
+  if (!header || !/^\d+$/.test(header.trim()))
+    return void 0;
+  return Number(header.trim()) * 1e3;
+}
+var RelayBusyError = class extends Error {
+  httpStatus;
+  constructor(httpStatus) {
+    super(RELAY_BUSY_MESSAGE);
+    this.name = "RelayBusyError";
+    this.httpStatus = httpStatus;
+  }
+};
+var BUSY_RETRY_DELAYS_MS = [1e3, 2e3, 4e3];
+async function retryWhileBusy(send, delaysMs = BUSY_RETRY_DELAYS_MS) {
+  const budget = delaysMs.reduce((sum, delay) => sum + delay, 0);
+  let waited = 0;
+  for (const delay of delaysMs) {
+    const answer = await send();
+    if (!isRelayBusyResponse(answer.status, answer.text))
+      return answer;
+    const floor = answer.retryAfterMs ?? delay / 2;
+    const room = budget - waited - delay / 2;
+    if (waited > 0 && floor > room)
+      return answer;
+    const wait = Math.min(floor, room) + delay * Math.random() / 2;
+    waited += wait;
+    await new Promise((resolve3) => setTimeout(resolve3, wait));
+  }
+  return send();
+}
 function byFolder(filters) {
   const slot = /* @__PURE__ */ new Map();
   for (const [index, filter] of filters.entries()) {
@@ -17390,8 +17440,14 @@ var Relay = class {
     const opts = typeof options === "function" ? { headers: options } : options;
     this.headers = opts.headers ?? (() => ({}));
     this.transport = opts.fetch;
+    this.busyRetryDelaysMs = opts.busyRetryDelaysMs ?? BUSY_RETRY_DELAYS_MS;
   }
-  async post(path, payload) {
+  busyRetryDelaysMs;
+  /** {@link Relay.send} through {@link retryWhileBusy}. */
+  post(path, payload) {
+    return retryWhileBusy(() => this.send(path, payload), this.busyRetryDelaysMs);
+  }
+  async send(path, payload) {
     const url = `${this.url}${path}`;
     const body = JSON.stringify(payload);
     const auth = await authorizationHeader(this.signer, { url, method: "POST", body });
@@ -17412,10 +17468,12 @@ var Relay = class {
       },
       body
     });
-    return { status: res.status, text: await res.text() };
+    return { status: res.status, text: await res.text(), retryAfterMs: retryAfterMsOf(res.headers?.get("retry-after")) };
   }
   async publish(event) {
     const { status: status2, text: text2 } = await this.post("/events", event);
+    if (isRelayBusyResponse(status2, text2))
+      return { ok: false, reason: RELAY_BUSY_MESSAGE, httpStatus: status2 };
     return parsePublishResponse(status2, text2);
   }
   /**
@@ -17424,9 +17482,13 @@ var Relay = class {
    * Throws on a transport-level failure rather than returning an empty array,
    * because "no events" and "the relay refused you" are not the same answer and
    * a caller that cannot tell them apart renders an empty screen either way.
+   * A relay that stays busy through the quiet retries throws a
+   * {@link RelayBusyError}.
    */
   async query(filters) {
     const { status: status2, text: text2 } = await this.post("/query", filters);
+    if (isRelayBusyResponse(status2, text2))
+      throw new RelayBusyError(status2);
     const result = parseQueryResponse(status2, text2);
     if (!result.ok)
       throw new Error(`query failed: ${result.reason}`);
@@ -18993,7 +19055,9 @@ async function connectionStatus(app, { client } = {}) {
     const message = error2 instanceof Error ? error2.message : String(error2);
     hops.push({ hop: "relay", ok: false, detail: message });
     let summary = `The relay at ${relay} refused the read. Signing worked, so this is not a credential problem.`;
-    if (message.includes("relay_membership_required")) {
+    if (error2 instanceof RelayBusyError) {
+      summary = `The relay at ${relay} is busy: ${RELAY_BUSY_MESSAGE}. Signing worked, so this is not a credential problem.`;
+    } else if (message.includes("relay_membership_required")) {
       summary = `Signing works and the relay refused the read: this identity (${token.pubkey}) has never been admitted to ${relay}. Admission is an action an Estiva ID administrator takes on the identity, and it is not available from inside a conversation.`;
     } else if (message.includes("nip98")) {
       summary = "The identity service declined to mint the authentication header, so no request reached the relay. The cause is which destinations this credential is allowed to authenticate to, which is server-side configuration an administrator holds.";
@@ -22426,9 +22490,11 @@ function pointerOf(address) {
   return { kind: Number(kind), pubkey, identifier: rest.join(":"), relays: [] };
 }
 function published(result, what) {
-  if (!result.ok) {
-    throw new BadRequest(`The relay refused ${what}: ${result.reason ?? "no reason given"}`);
-  }
+  if (!result.ok) throw refused(what, result.reason);
+}
+function refused(what, reason, after) {
+  if (reason === RELAY_BUSY_MESSAGE) return new Error(`${RELAY_BUSY_MESSAGE}; ${what} was not saved.${after ? ` ${after}` : ""}`);
+  return new BadRequest(`The relay refused ${what}: ${reason ?? "no reason given"}${after ? `. ${after}` : ""}`);
 }
 function relayQuery(context2) {
   return (filters) => context2.relay.queryAll(filters);
@@ -23124,8 +23190,12 @@ async function publishMentionAdds(context2, plan, saved) {
     const signed = await context2.signer.sign(add);
     const result = await context2.relay.publish(signed);
     if (!result.ok) {
+      const before = `Added before it: ${out.map((entry) => entry.added).join(", ") || "nobody"}.`;
+      if (result.reason === RELAY_BUSY_MESSAGE) {
+        throw new Error(`${saved} was saved, but adding nostr:${encodeNpub(person)} was not: ${RELAY_BUSY_MESSAGE}. ${before}`);
+      }
       throw new BadRequest(
-        `${saved} was saved, but the relay refused adding nostr:${encodeNpub(person)}: ${result.reason ?? "no reason given"}. Added before it: ${out.map((entry) => entry.added).join(", ") || "nobody"}.`
+        `${saved} was saved, but the relay refused adding nostr:${encodeNpub(person)}: ${result.reason ?? "no reason given"}. ${before}`
       );
     }
     out.push({ added: `nostr:${encodeNpub(person)}`, eventId: result.eventId ?? signed.id });
@@ -23826,7 +23896,7 @@ function resolveTeamIn(teams, reference) {
   });
 }
 function published2(result, what) {
-  if (!result.ok) throw new BadRequest(`The relay refused ${what}: ${result.reason ?? "no reason given"}`);
+  if (!result.ok) throw refused(what, result.reason);
 }
 async function act(context2, workspace, target, actionId, value, signs, extra = {}) {
   const resolved = extra.manifest ?? workspace.manifestFor(target.addr);
@@ -24720,8 +24790,10 @@ Pass an address to say which.`
         for (const edit of edits) {
           const result = await setField(context2, state, { addr: issue2.addr, author: issue2.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat);
           if (!result.ok) {
-            throw new BadRequest(
-              `The relay refused ${edit.field} on ${issue2.ref ?? issue2.addr}: ${result.reason ?? "no reason given"}. Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`
+            throw refused(
+              `${edit.field} on ${issue2.ref ?? issue2.addr}`,
+              result.reason,
+              `Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`
             );
           }
           applied.push(appliedEdit(edit, result.eventId));
@@ -24762,8 +24834,10 @@ Pass an address to say which.`
         for (const edit of edits) {
           const result = await setField(context2, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat);
           if (!result.ok) {
-            throw new BadRequest(
-              `The relay refused ${edit.field} on \u201C${project.title}\u201D: ${result.reason ?? "no reason given"}. Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`
+            throw refused(
+              `${edit.field} on \u201C${project.title}\u201D`,
+              result.reason,
+              `Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`
             );
           }
           applied.push(appliedEdit(edit, result.eventId));

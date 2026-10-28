@@ -12,7 +12,7 @@
     "probe:manifest": "tsx scripts/manifest-reader.ts",
     "extension": "node scripts/build-extension.mjs",
     "extension:pack": "node scripts/build-extension.mjs --pack",
-    "test": "tsx scripts/nip19.test.ts && tsx scripts/signer.test.ts && tsx scripts/conformance.test.ts && tsx scripts/agent-cli.test.ts && tsx scripts/mentions.test.ts && tsx scripts/descriptions.test.ts && tsx scripts/attachments.test.ts && tsx scripts/summary.test.ts && tsx scripts/file.test.ts && tsx scripts/ship-mentions.test.ts && tsx scripts/comment-links.test.ts && tsx scripts/archived-refusal.test.ts && tsx scripts/ship-show.test.ts && tsx scripts/peek-archived.test.ts && tsx scripts/peek-topic.test.ts && tsx scripts/owner-attestation.test.ts && tsx scripts/token-request.test.ts && tsx scripts/mcp-server.test.ts && tsx scripts/extension.test.ts && tsx scripts/plugin.test.ts && tsx scripts/cursor.test.ts && tsx scripts/manifest-reader.test.ts",
+    "test": "tsx scripts/nip19.test.ts && tsx scripts/signer.test.ts && tsx scripts/conformance.test.ts && tsx scripts/agent-cli.test.ts && tsx scripts/mentions.test.ts && tsx scripts/descriptions.test.ts && tsx scripts/attachments.test.ts && tsx scripts/summary.test.ts && tsx scripts/file.test.ts && tsx scripts/ship-mentions.test.ts && tsx scripts/comment-links.test.ts && tsx scripts/archived-refusal.test.ts && tsx scripts/busy-relay.test.ts &&tsx scripts/ship-show.test.ts && tsx scripts/peek-archived.test.ts && tsx scripts/peek-topic.test.ts && tsx scripts/owner-attestation.test.ts && tsx scripts/token-request.test.ts && tsx scripts/mcp-server.test.ts && tsx scripts/extension.test.ts && tsx scripts/plugin.test.ts && tsx scripts/cursor.test.ts && tsx scripts/manifest-reader.test.ts",
     "test:signer:agent": "tsx scripts/agent-signer.test.ts",
     "soak:renewal": "tsx scripts/agent-renewal-soak.ts",
     "server:pin": "bash scripts/pin-server.sh",
@@ -22,7 +22,7 @@
     "@estiva-app/conversation": "^0.22.0",
     "@estiva-app/identity": "^0.2.2",
     "@estiva-app/interop": "^0.70.0",
-    "@estiva-app/protocol": "^0.45.1",
+    "@estiva-app/protocol": "^0.46.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@noble/curves": "1.9.2",
     "@noble/hashes": "1.8.0"

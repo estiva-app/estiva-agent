@@ -24,7 +24,7 @@ import {
   type QueryFn,
   type ResolvedManifest,
 } from '@estiva-app/interop'
-import { addrToNaddr, imetaTag, KIND, type Imeta } from '@estiva-app/protocol'
+import { addrToNaddr, imetaTag, KIND, RELAY_BUSY_MESSAGE, type Imeta } from '@estiva-app/protocol'
 import { BadRequest, type AgentContext } from './cli'
 import { commentLinkTags } from './links'
 
@@ -36,9 +36,18 @@ export function pointerOf(address: string) {
 
 /** A publish the relay refused, said in its own words. */
 export function published(result: { ok: boolean; reason?: string }, what: string): void {
-  if (!result.ok) {
-    throw new BadRequest(`The relay refused ${what}: ${result.reason ?? 'no reason given'}`)
-  }
+  if (!result.ok) throw refused(what, result.reason)
+}
+
+/**
+ * A refused publish as the error to throw. A busy relay has not refused
+ * anything — the protocol already asked it again — so it is not the caller's
+ * mistake and is said as the busy sentence, not "the relay refused …".
+ * `after` is what the caller adds about what did save before it.
+ */
+export function refused(what: string, reason: string | undefined, after?: string): Error {
+  if (reason === RELAY_BUSY_MESSAGE) return new Error(`${RELAY_BUSY_MESSAGE}; ${what} was not saved.${after ? ` ${after}` : ''}`)
+  return new BadRequest(`The relay refused ${what}: ${reason ?? 'no reason given'}${after ? `. ${after}` : ''}`)
 }
 
 export function relayQuery(context: AgentContext): QueryFn {

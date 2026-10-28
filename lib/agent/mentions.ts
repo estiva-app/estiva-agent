@@ -15,7 +15,7 @@
  * Generic rather than per-app: a person is the protocol's, not Ship's or
  * Peek's, and `peek say --mention` will want the same answer.
  */
-import { BLOCK_DOCUMENT_FORMAT, decodeNpub, encodeNpub, type UnsignedEvent } from '@estiva-app/protocol'
+import { BLOCK_DOCUMENT_FORMAT, decodeNpub, encodeNpub, RELAY_BUSY_MESSAGE, type UnsignedEvent } from '@estiva-app/protocol'
 import { MAX_MENTIONED_PEOPLE, mentionAddsFor, mentionTagsFor, newlyNamedPeople, peopleNamedInText, type FileText } from '@estiva-app/conversation'
 import { BadRequest, type AgentContext } from './cli'
 
@@ -192,9 +192,13 @@ export async function publishMentionAdds(
     const signed = await context.signer.sign(add)
     const result = await context.relay.publish(signed)
     if (!result.ok) {
+      const before = `Added before it: ${out.map((entry) => entry.added).join(', ') || 'nobody'}.`
+      // A busy relay refused nothing; it is said as busy, and it is not the caller's mistake.
+      if (result.reason === RELAY_BUSY_MESSAGE) {
+        throw new Error(`${saved} was saved, but adding nostr:${encodeNpub(person)} was not: ${RELAY_BUSY_MESSAGE}. ${before}`)
+      }
       throw new BadRequest(
-        `${saved} was saved, but the relay refused adding nostr:${encodeNpub(person)}: ${result.reason ?? 'no reason given'}. ` +
-          `Added before it: ${out.map((entry) => entry.added).join(', ') || 'nobody'}.`,
+        `${saved} was saved, but the relay refused adding nostr:${encodeNpub(person)}: ${result.reason ?? 'no reason given'}. ${before}`,
       )
     }
     out.push({ added: `nostr:${encodeNpub(person)}`, eventId: result.eventId ?? signed.id })
