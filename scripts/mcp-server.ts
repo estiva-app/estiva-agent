@@ -76,6 +76,10 @@ function callingClient(): string | undefined {
  *
  * A failed attempt is **not** cached: somebody who creates the credential file
  * and asks again should succeed without restarting Desktop.
+ *
+ * `main` starts one attempt in the background once the server is up, so the
+ * first call does not wait for the token (APP-6). Its failure is dropped, not
+ * reported: the call that follows tries again and explains it.
  */
 let pending: Promise<AgentContext> | null = null
 function context(): Promise<AgentContext> {
@@ -1007,6 +1011,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   await server.connect(new StdioServerTransport())
   console.error(`estiva mcp server ready (pid ${process.pid})`)
+  context().catch(() => {})
 }
 
 main().catch((error) => {

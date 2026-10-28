@@ -264,15 +264,34 @@ export function readRoots(query: QueryFn): Promise<SignedEvent[]> {
  * {@link readRoots}' answer; the manifests that fold them are asked for at
  * once, before the caller knows which files it wants. A call's answer holds
  * only the files it names, so a project's issues are only those named with it.
+ * Each file's changes are asked once across calls: a later call asks only for
+ * the files no earlier one named.
  */
-export function filesReader(query: QueryFn, roots: Promise<readonly SignedEvent[]>): (addresses: readonly string[]) => Promise<Workspace> {
-  const cache = createProjectionCache()
+export function filesReader(
+  query: QueryFn,
+  roots: Promise<readonly SignedEvent[]>,
+  cache: ProjectionCache = createProjectionCache(),
+): (addresses: readonly string[]) => Promise<Workspace> {
   const manifests = manifestsFor(roots, query, cache)
   manifests.catch(() => {}) // a refusal is met by the read that awaits it
+  // Per change kind: the files asked for so far, and every read's answer.
+  const asked = new Map<number, { files: Set<string>; reads: Promise<SignedEvent[]>[] }>()
+  const changesTo = async (kind: number, wanted: Set<string>) => {
+    const read = asked.get(kind) ?? { files: new Set<string>(), reads: [] }
+    asked.set(kind, read)
+    const unasked = [...wanted].filter((addr) => !read.files.has(addr))
+    for (const addr of unasked) read.files.add(addr)
+    if (unasked.length) read.reads.push(query([{ kinds: [kind], '#a': unasked }]))
+    const seen = new Set<string>()
+    // What the relay answers `#a` with: an event any of whose `a` names a wanted file.
+    return (await Promise.all(read.reads))
+      .flat()
+      .filter((event) => !seen.has(event.id) && seen.add(event.id) && event.tags.some((t) => t[0] === 'a' && wanted.has(t[1])))
+  }
   return async (addresses) => {
     const wanted = new Set(addresses)
     const theirs = (await roots).filter((root) => wanted.has(addressOf(root)))
-    const byTarget = (kinds: number[]) => (kinds.length && wanted.size ? query([{ kinds, '#a': [...wanted] }]) : Promise.resolve([]))
+    const byTarget = async (kinds: number[]) => (wanted.size ? (await Promise.all(kinds.map((kind) => changesTo(kind, wanted)))).flat() : [])
     // Each file's manifest as its own author resolves it, into the cache its conversation is read through next.
     const owners = [...new Set(theirs.map((root) => `${root.kind}:${root.pubkey}:`))]
     // The change kind is asked beside the manifests; one declaring another kind is read after.
@@ -465,15 +484,27 @@ export async function conversationsFor(
   workspace: Workspace,
   addresses: readonly string[],
 ): Promise<{ byObject: Map<string, Conversation[]>; edits: Record<string, EditFold> }> {
-  const query = relayQuery(context)
-  const objects = addresses.flatMap((addr) => {
-    const object = workspace.objects.get(addr)
-    return object ? [object] : []
-  })
-  const byObject = new Map<string, Conversation[]>()
-  if (objects.length === 0) return { byObject, edits: {} }
+  const byObject = await threadsFor(relayQuery(context), workspace.cache, addresses.filter((addr) => workspace.objects.has(addr)))
+  return { byObject, edits: await editsFor(context, byObject) }
+}
 
-  const rootsByObject = await conversationsOf(objects, query, workspace.cache)
+/**
+ * Reads 1 and 2 of {@link conversationsFor}, for files known by address alone:
+ * `show` asks them beside the file's own changes, before anything is folded
+ * (APP-6). Through the query and cache the files are read with, the manifest
+ * that names the comment kinds is resolved once.
+ */
+export async function threadsFor(
+  query: QueryFn,
+  cache: ProjectionCache,
+  addresses: readonly string[],
+): Promise<Map<string, Conversation[]>> {
+  // `conversationsOf` reads a file's identity and address only, and an address is a Ship file's identity.
+  const objects = addresses.map((address) => ({ ref: address, address }) as ForeignObject)
+  const byObject = new Map<string, Conversation[]>()
+  if (objects.length === 0) return byObject
+
+  const rootsByObject = await conversationsOf(objects, query, cache)
   const allRoots = [...new Set(Object.values(rootsByObject).flat().map((message) => message.id))]
   // One `#e` read per chunk of roots; the reference only selects the manifest's comment kinds.
   const roots: Record<string, SignedEvent> = {}
@@ -481,7 +512,7 @@ export async function conversationsFor(
   // `threadsOf` does not say when its limit cut the answer, so a chunk that comes
   // back full is split and read again rather than trusted.
   const read = async (chunk: string[]): Promise<void> => {
-    const threads = await threadsOf(objects[0].address!, chunk, query, workspace.cache, THREAD_LIMIT)
+    const threads = await threadsOf(objects[0].address!, chunk, query, cache, THREAD_LIMIT)
     const answered = Object.values(threads.replies).reduce((sum, list) => sum + list.length, 0)
     if (answered >= THREAD_LIMIT && chunk.length > 1) {
       const half = Math.ceil(chunk.length / 2)
@@ -505,12 +536,16 @@ export async function conversationsFor(
         .sort((a, b) => (b.root.ts ?? b.root.createdAt * 1000) - (a.root.ts ?? a.root.createdAt * 1000)),
     )
   }
+  return byObject
+}
 
+/** Read 3 of {@link conversationsFor}: each message's edits. */
+export async function editsFor(context: AgentContext, byObject: Map<string, Conversation[]>): Promise<Record<string, EditFold>> {
   const messages = [...byObject.values()].flat().flatMap((thread) => [thread.root, ...thread.replies])
   const decorations = messages.length
-    ? await decorationsOf(messages.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })), query)
+    ? await decorationsOf(messages.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })), relayQuery(context))
     : { byId: {} as Record<string, { edit?: EditFold }> }
   const edits: Record<string, EditFold> = {}
   for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit
-  return { byObject, edits }
+  return edits
 }

@@ -29,10 +29,12 @@ import {
   changedAt,
   type Change,
   conversationsFor,
+  editsFor,
   filesReader,
   loadWorkspace,
   readRoots,
   relayQuery,
+  threadsFor,
   type Conversation,
   type Issue,
   type Project,
@@ -1059,18 +1061,22 @@ async function timelineFor(
   state: Workspace,
   addr: string,
   extraPubkeys: (string | undefined)[],
-  { historyText = false }: { historyText?: boolean } = {},
+  { historyText = false, threads }: { historyText?: boolean; threads?: Promise<Map<string, Conversation[]>> } = {},
 ) {
-  const talk = await conversationsFor(context, state, [addr])
-  const conversations = talk.byObject.get(addr) ?? []
+  const threadsRead = threads ?? threadsFor(relayQuery(context), state.cache, [addr])
   const history = state.activity.filter((change) => change.target === addr)
   // The field the file's manifest folds its text from: a save of it is a version of the whole text.
   const kind = addr.split(':')[0]
   const slot = state.manifestFor(addr)?.manifest.projections?.[kind]?.slots?.[BODY_SLOT] as { fold?: string } | undefined
   const isText = (change: Change) => slot?.fold !== undefined && change.field === slot.fold
   const versions = new Map<string, number>()
+  // Printed while the conversation is read: the slowest part of `show` (0.4 s for 38 versions), and it needs no names.
+  const textVersions = new Map(history.filter(isText).map((change) => [change, textVersion(change, versions, historyText)]))
+  const byObject = await threadsRead
+  const conversations = byObject.get(addr) ?? []
 
-  const directory = await directoryFor(context, [
+  // The edits and the names are read side by side: every author is known once the threads are.
+  const [edits, directory] = await Promise.all([editsFor(context, byObject), directoryFor(context, [
     ...extraPubkeys,
     ...history.map((change) => change.author),
     // The values too, not just the actors — a `lead` or `assignee` change names
@@ -1081,7 +1087,7 @@ async function timelineFor(
       thread.root.author,
       ...thread.replies.map((reply) => reply.author),
     ]),
-  ])
+  ])])
 
   return {
     directory,
@@ -1093,14 +1099,12 @@ async function timelineFor(
         description were 1.5 MB of a 1.55 MB answer. why:
         https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-file-keeps-every-change-for-good.md
       */
-      ...(isText(change)
-        ? textVersion(change, versions, historyText)
-        : {
-            // Resolved by shape rather than by field name: any 64-character hex value
-            // is a key somebody may have a name for, and matching on the field name
-            // would silently miss the next field that carries one.
-            value: resolvePubkeys(directory, change.value),
-          }),
+      ...(textVersions.get(change) ?? {
+        // Resolved by shape rather than by field name: any 64-character hex value
+        // is a key somebody may have a name for, and matching on the field name
+        // would silently miss the next field that carries one.
+        value: resolvePubkeys(directory, change.value),
+      }),
       by: who(directory, change.author),
       // `ts` when the fold trusts it, `created_at` otherwise — the same
       // precedence the fold uses, because second-resolution timestamps tie for
@@ -1118,7 +1122,7 @@ async function timelineFor(
         id: message.id,
         by: who(directory, message.author),
         at: new Date(message.ts ?? message.createdAt * 1000).toISOString(),
-        ...edited(talk.edits, message),
+        ...edited(edits, message),
       })),
     })),
   }
@@ -1329,6 +1333,7 @@ async function showProject(
   project: Project,
   historyText: boolean,
   readMore?: (addresses: string[]) => Promise<Workspace>,
+  threads?: Promise<Map<string, Conversation[]>>,
 ) {
   const issues = state.issues.filter((issue) => issue.projectAddr === project.addr)
   const { directory, history, conversation } = await timelineFor(
@@ -1336,7 +1341,7 @@ async function showProject(
     state,
     project.addr,
     [project.author, project.lead, project.archive?.by, ...issues.map((issue) => issue.assignee), ...issues.map((issue) => issue.author)],
-    { historyText },
+    { historyText, threads },
   )
 
   return {
@@ -1366,13 +1371,14 @@ async function showIssue(
   issue: Issue,
   historyText: boolean,
   readMore?: (addresses: string[]) => Promise<Workspace>,
+  threads?: Promise<Map<string, Conversation[]>>,
 ) {
   const { directory, history, conversation } = await timelineFor(
     context,
     state,
     issue.addr,
     [issue.author, issue.assignee, issue.archive?.by],
-    { historyText },
+    { historyText, threads },
   )
 
   return {
@@ -1427,7 +1433,8 @@ async function oneFile(context: AgentContext, query: QueryFn, reference: string)
   const folders = listFolders(query, { recordChannels: false })
   folders.catch(() => {}) // a refusal is met by the read that awaits it
   const rootsRead = readRoots(query)
-  const readFiles = filesReader(query, rootsRead)
+  const cache = createProjectionCache()
+  const readFiles = filesReader(query, rootsRead, cache)
   const [roots, renamed] = await Promise.all([
     rootsRead,
     context.relay.query([{ kinds: [KIND_CHANGE], search: reference.trim(), search_mode: 'prefix', limit: RENAME_SEARCH_LIMIT }]),
@@ -1459,25 +1466,33 @@ async function oneFile(context: AgentContext, query: QueryFn, reference: string)
     const parent = root.kind === KIND.ISSUE && candidates.has(addressOf(root)) ? tag(root, 'a') : undefined
     return parent?.startsWith(`${KIND.PROJECT}:`) ? [parent] : []
   })
-  // Each project's issues, read with it rather than after: those whose root names it, and those moved
-  // in, by the move's `A` (SPEC §7.2). The fold decides which are still there.
+  // Each project's issues, read with it rather than after: those whose root names it now, and those
+  // moved in, by the move's `A` (SPEC §7.2), once that read names them. The fold decides which are still there.
   const asked = [...candidates].filter((addr) => addr.startsWith(`${KIND.PROJECT}:`))
-  const movedIn = asked.length ? await query([{ kinds: [KIND_CHANGE], [`#${MOVED_TO_TAG}`]: asked }]) : []
-  const theirIssues = [
-    ...roots.flatMap((root) => (root.kind === KIND.ISSUE && asked.includes(tag(root, 'a') ?? '') ? [addressOf(root)] : [])),
-    ...movedIn.flatMap((change) => tag(change, 'a') ?? []),
-  ]
+  const movedIn = asked.length ? query([{ kinds: [KIND_CHANGE], [`#${MOVED_TO_TAG}`]: asked }]) : Promise.resolve([])
+  const theirIssues = roots.flatMap((root) => (root.kind === KIND.ISSUE && asked.includes(tag(root, 'a') ?? '') ? [addressOf(root)] : []))
   const read = async (addresses: string[]) => {
     const [state, listed] = await Promise.all([readFiles(addresses), folders])
     cascadeArchives(state, listed)
     return state
   }
+  // The one candidate's conversation is asked beside the changes: it is the file shown, if any is.
+  const [only] = candidates.size === 1 ? candidates : []
+  const threads = only ? threadsFor(query, cache, [only]) : undefined
+  threads?.catch(() => {}) // a refusal is met by `show`, which awaits it
+  const threadsOf = (addr: string) => (addr === only ? threads : undefined)
   const scope = [...new Set([...candidates, ...projects, ...theirIssues])]
-  let state = await read(scope)
+  const [first, moved] = await Promise.all([read(scope), movedIn])
+  let state = first
+  const late = moved.flatMap((change) => tag(change, 'a') ?? []).filter((addr) => !scope.includes(addr))
+  if (late.length) {
+    scope.push(...new Set(late))
+    state = await read(scope)
+  }
   const asIssue = resolveMaybe(state.issues.filter((issue) => candidates.has(issue.addr)), reference, ISSUE_BY)
   const asProject = resolveMaybe(state.projects.filter((project) => candidates.has(project.addr)), reference, PROJECT_BY)
 
-  if ('found' in asProject && 'none' in asIssue) return { state, project: asProject.found, readMore: read }
+  if ('found' in asProject && 'none' in asIssue) return { state, project: asProject.found, readMore: read, threadsOf }
   if (!('found' in asIssue) || !('none' in asProject)) return undefined
 
   let issue = asIssue.found
@@ -1485,7 +1500,7 @@ async function oneFile(context: AgentContext, query: QueryFn, reference: string)
     state = await read([...scope, issue.projectAddr])
     issue = state.issues.find((each) => each.addr === issue.addr)!
   }
-  return { state, issue, readMore: read }
+  return { state, issue, readMore: read, threadsOf }
 }
 
 /** What one key has been seen doing, which is the only evidence this list has. */
@@ -1856,8 +1871,8 @@ export const shipApp: AgentApp = {
 
         const query = loadQuery(context)
         const one = await oneFile(context, query, reference)
-        if (one?.issue) return showIssue(context, one.state, one.issue, historyText, one.readMore)
-        if (one?.project) return showProject(context, one.state, one.project, historyText, one.readMore)
+        if (one?.issue) return showIssue(context, one.state, one.issue, historyText, one.readMore, one.threadsOf(one.issue.addr))
+        if (one?.project) return showProject(context, one.state, one.project, historyText, one.readMore, one.threadsOf(one.project.addr))
 
         // With the Folders, so `archived` agrees with what the listings hide.
         const { state } = await loadWithFolders(context, query)

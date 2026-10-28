@@ -22659,11 +22659,16 @@ function standIn(block) {
 }
 var cellText = (cell) => (childBlocks2(cell) ?? []).map((child) => childBlocks2(child) ? cellText(child) : inlineTextOf(child)).join(" ").replace(/\s+/g, " ").trim();
 var blockText = (block) => {
-  let text2 = printed.get(block);
-  if (text2 === void 0) printed.set(block, text2 = spellable(block) ? printable(block) : standIn(block));
+  const key = JSON.stringify(block);
+  let text2 = printed.get(key);
+  if (text2 === void 0) {
+    if (printed.size >= MOST_PRINTED) printed.clear();
+    printed.set(key, text2 = spellable(block) ? printable(block) : standIn(block));
+  }
   return text2;
 };
-var printed = /* @__PURE__ */ new WeakMap();
+var printed = /* @__PURE__ */ new Map();
+var MOST_PRINTED = 5e3;
 function descriptionText(value, format) {
   if (format !== "blocks") return value;
   try {
@@ -23256,15 +23261,24 @@ async function loadWorkspace(context2, query = loadQuery(context2)) {
 function readRoots(query) {
   return query([{ kinds: [KIND2.PROJECT, KIND2.ISSUE] }]);
 }
-function filesReader(query, roots) {
-  const cache = createProjectionCache();
+function filesReader(query, roots, cache = createProjectionCache()) {
   const manifests = manifestsFor(roots, query, cache);
   manifests.catch(() => {
   });
+  const asked = /* @__PURE__ */ new Map();
+  const changesTo = async (kind, wanted) => {
+    const read = asked.get(kind) ?? { files: /* @__PURE__ */ new Set(), reads: [] };
+    asked.set(kind, read);
+    const unasked = [...wanted].filter((addr2) => !read.files.has(addr2));
+    for (const addr2 of unasked) read.files.add(addr2);
+    if (unasked.length) read.reads.push(query([{ kinds: [kind], "#a": unasked }]));
+    const seen = /* @__PURE__ */ new Set();
+    return (await Promise.all(read.reads)).flat().filter((event) => !seen.has(event.id) && seen.add(event.id) && event.tags.some((t) => t[0] === "a" && wanted.has(t[1])));
+  };
   return async (addresses) => {
     const wanted = new Set(addresses);
     const theirs = (await roots).filter((root) => wanted.has(addressOf(root)));
-    const byTarget = (kinds) => kinds.length && wanted.size ? query([{ kinds, "#a": [...wanted] }]) : Promise.resolve([]);
+    const byTarget = async (kinds) => wanted.size ? (await Promise.all(kinds.map((kind) => changesTo(kind, wanted)))).flat() : [];
     const owners = [...new Set(theirs.map((root) => `${root.kind}:${root.pubkey}:`))];
     const [resolved, changes] = await Promise.all([
       manifests,
@@ -23386,19 +23400,19 @@ var asMessage2 = (event) => ({
   folder: tagValue3(event, "h")
 });
 async function conversationsFor(context2, workspace, addresses) {
-  const query = relayQuery(context2);
-  const objects = addresses.flatMap((addr2) => {
-    const object3 = workspace.objects.get(addr2);
-    return object3 ? [object3] : [];
-  });
+  const byObject = await threadsFor(relayQuery(context2), workspace.cache, addresses.filter((addr2) => workspace.objects.has(addr2)));
+  return { byObject, edits: await editsFor(context2, byObject) };
+}
+async function threadsFor(query, cache, addresses) {
+  const objects = addresses.map((address) => ({ ref: address, address }));
   const byObject = /* @__PURE__ */ new Map();
-  if (objects.length === 0) return { byObject, edits: {} };
-  const rootsByObject = await conversationsOf(objects, query, workspace.cache);
+  if (objects.length === 0) return byObject;
+  const rootsByObject = await conversationsOf(objects, query, cache);
   const allRoots = [...new Set(Object.values(rootsByObject).flat().map((message) => message.id))];
   const roots = {};
   const replies = {};
   const read = async (chunk) => {
-    const threads = await threadsOf(objects[0].address, chunk, query, workspace.cache, THREAD_LIMIT);
+    const threads = await threadsOf(objects[0].address, chunk, query, cache, THREAD_LIMIT);
     const answered = Object.values(threads.replies).reduce((sum, list) => sum + list.length, 0);
     if (answered >= THREAD_LIMIT && chunk.length > 1) {
       const half = Math.ceil(chunk.length / 2);
@@ -23417,11 +23431,14 @@ async function conversationsFor(context2, workspace, addresses) {
       ids.filter((id) => roots[id]).map((id) => ({ id, root: asMessage2(roots[id]), replies: (replies[id] ?? []).map(asMessage2) })).sort((a, b) => (b.root.ts ?? b.root.createdAt * 1e3) - (a.root.ts ?? a.root.createdAt * 1e3))
     );
   }
+  return byObject;
+}
+async function editsFor(context2, byObject) {
   const messages = [...byObject.values()].flat().flatMap((thread) => [thread.root, ...thread.replies]);
-  const decorations = messages.length ? await decorationsOf(messages.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })), query) : { byId: {} };
+  const decorations = messages.length ? await decorationsOf(messages.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })), relayQuery(context2)) : { byId: {} };
   const edits = {};
   for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit;
-  return { byObject, edits };
+  return edits;
 }
 
 // lib/agent/apps/ship.ts
@@ -23892,15 +23909,17 @@ function textVersion(change, versions, withText) {
   const text2 = descriptionText(change.value, change.format);
   return { version: version2, length: text2.length, ...withText ? { value: text2 } : {} };
 }
-async function timelineFor(context2, state, addr2, extraPubkeys, { historyText = false } = {}) {
-  const talk = await conversationsFor(context2, state, [addr2]);
-  const conversations = talk.byObject.get(addr2) ?? [];
+async function timelineFor(context2, state, addr2, extraPubkeys, { historyText = false, threads } = {}) {
+  const threadsRead = threads ?? threadsFor(relayQuery(context2), state.cache, [addr2]);
   const history = state.activity.filter((change) => change.target === addr2);
   const kind = addr2.split(":")[0];
   const slot = state.manifestFor(addr2)?.manifest.projections?.[kind]?.slots?.[BODY_SLOT];
   const isText = (change) => slot?.fold !== void 0 && change.field === slot.fold;
   const versions = /* @__PURE__ */ new Map();
-  const directory = await directoryFor(context2, [
+  const textVersions = new Map(history.filter(isText).map((change) => [change, textVersion(change, versions, historyText)]));
+  const byObject = await threadsRead;
+  const conversations = byObject.get(addr2) ?? [];
+  const [edits, directory] = await Promise.all([editsFor(context2, byObject), directoryFor(context2, [
     ...extraPubkeys,
     ...history.map((change) => change.author),
     // The values too, not just the actors — a `lead` or `assignee` change names
@@ -23911,7 +23930,7 @@ async function timelineFor(context2, state, addr2, extraPubkeys, { historyText =
       thread.root.author,
       ...thread.replies.map((reply) => reply.author)
     ])
-  ]);
+  ])]);
   return {
     directory,
     history: history.map((change) => ({
@@ -23922,7 +23941,7 @@ async function timelineFor(context2, state, addr2, extraPubkeys, { historyText =
         description were 1.5 MB of a 1.55 MB answer. why:
         https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-file-keeps-every-change-for-good.md
       */
-      ...isText(change) ? textVersion(change, versions, historyText) : {
+      ...textVersions.get(change) ?? {
         // Resolved by shape rather than by field name: any 64-character hex value
         // is a key somebody may have a name for, and matching on the field name
         // would silently miss the next field that carries one.
@@ -23945,7 +23964,7 @@ async function timelineFor(context2, state, addr2, extraPubkeys, { historyText =
         id: message.id,
         by: who(directory, message.author),
         at: new Date(message.ts ?? message.createdAt * 1e3).toISOString(),
-        ...edited(talk.edits, message)
+        ...edited(edits, message)
       }))
     }))
   };
@@ -24066,14 +24085,14 @@ async function descriptionLinks(context2, state, subject, readMore) {
   for (const file of [...more.issues, ...more.projects]) titles.set(file.addr, file.title);
   return links.map((link) => !link.title && titles.get(link.to) ? { ...link, title: titles.get(link.to) } : link);
 }
-async function showProject(context2, state, project, historyText, readMore) {
+async function showProject(context2, state, project, historyText, readMore, threads) {
   const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr);
   const { directory, history, conversation } = await timelineFor(
     context2,
     state,
     project.addr,
     [project.author, project.lead, project.archive?.by, ...issues.map((issue2) => issue2.assignee), ...issues.map((issue2) => issue2.author)],
-    { historyText }
+    { historyText, threads }
   );
   return {
     kind: "project",
@@ -24095,13 +24114,13 @@ async function showProject(context2, state, project, historyText, readMore) {
     conversation
   };
 }
-async function showIssue(context2, state, issue2, historyText, readMore) {
+async function showIssue(context2, state, issue2, historyText, readMore, threads) {
   const { directory, history, conversation } = await timelineFor(
     context2,
     state,
     issue2.addr,
     [issue2.author, issue2.assignee, issue2.archive?.by],
-    { historyText }
+    { historyText, threads }
   );
   return {
     kind: "issue",
@@ -24137,7 +24156,8 @@ async function oneFile(context2, query, reference) {
   folders.catch(() => {
   });
   const rootsRead = readRoots(query);
-  const readFiles = filesReader(query, rootsRead);
+  const cache = createProjectionCache();
+  const readFiles = filesReader(query, rootsRead, cache);
   const [roots, renamed] = await Promise.all([
     rootsRead,
     context2.relay.query([{ kinds: [KIND_CHANGE], search: reference.trim(), search_mode: "prefix", limit: RENAME_SEARCH_LIMIT }])
@@ -24162,28 +24182,36 @@ async function oneFile(context2, query, reference) {
     return parent?.startsWith(`${KIND2.PROJECT}:`) ? [parent] : [];
   });
   const asked = [...candidates].filter((addr2) => addr2.startsWith(`${KIND2.PROJECT}:`));
-  const movedIn = asked.length ? await query([{ kinds: [KIND_CHANGE], [`#${MOVED_TO_TAG}`]: asked }]) : [];
-  const theirIssues = [
-    ...roots.flatMap((root) => root.kind === KIND2.ISSUE && asked.includes(tag(root, "a") ?? "") ? [addressOf2(root)] : []),
-    ...movedIn.flatMap((change) => tag(change, "a") ?? [])
-  ];
+  const movedIn = asked.length ? query([{ kinds: [KIND_CHANGE], [`#${MOVED_TO_TAG}`]: asked }]) : Promise.resolve([]);
+  const theirIssues = roots.flatMap((root) => root.kind === KIND2.ISSUE && asked.includes(tag(root, "a") ?? "") ? [addressOf2(root)] : []);
   const read = async (addresses) => {
     const [state2, listed] = await Promise.all([readFiles(addresses), folders]);
     cascadeArchives(state2, listed);
     return state2;
   };
+  const [only] = candidates.size === 1 ? candidates : [];
+  const threads = only ? threadsFor(query, cache, [only]) : void 0;
+  threads?.catch(() => {
+  });
+  const threadsOf2 = (addr2) => addr2 === only ? threads : void 0;
   const scope = [.../* @__PURE__ */ new Set([...candidates, ...projects, ...theirIssues])];
-  let state = await read(scope);
+  const [first, moved] = await Promise.all([read(scope), movedIn]);
+  let state = first;
+  const late = moved.flatMap((change) => tag(change, "a") ?? []).filter((addr2) => !scope.includes(addr2));
+  if (late.length) {
+    scope.push(...new Set(late));
+    state = await read(scope);
+  }
   const asIssue = resolveMaybe(state.issues.filter((issue3) => candidates.has(issue3.addr)), reference, ISSUE_BY);
   const asProject = resolveMaybe(state.projects.filter((project) => candidates.has(project.addr)), reference, PROJECT_BY);
-  if ("found" in asProject && "none" in asIssue) return { state, project: asProject.found, readMore: read };
+  if ("found" in asProject && "none" in asIssue) return { state, project: asProject.found, readMore: read, threadsOf: threadsOf2 };
   if (!("found" in asIssue) || !("none" in asProject)) return void 0;
   let issue2 = asIssue.found;
   if (issue2.projectAddr && !state.projects.some((project) => project.addr === issue2.projectAddr)) {
     state = await read([...scope, issue2.projectAddr]);
     issue2 = state.issues.find((each) => each.addr === issue2.addr);
   }
-  return { state, issue: issue2, readMore: read };
+  return { state, issue: issue2, readMore: read, threadsOf: threadsOf2 };
 }
 function participants(state, members = []) {
   const seen = /* @__PURE__ */ new Map();
@@ -24448,8 +24476,8 @@ var shipApp = {
         const historyText = args2.flags["history-text"] === true;
         const query = loadQuery(context2);
         const one = await oneFile(context2, query, reference);
-        if (one?.issue) return showIssue(context2, one.state, one.issue, historyText, one.readMore);
-        if (one?.project) return showProject(context2, one.state, one.project, historyText, one.readMore);
+        if (one?.issue) return showIssue(context2, one.state, one.issue, historyText, one.readMore, one.threadsOf(one.issue.addr));
+        if (one?.project) return showProject(context2, one.state, one.project, historyText, one.readMore, one.threadsOf(one.project.addr));
         const { state } = await loadWithFolders(context2, query);
         const asIssue = resolveMaybe(state.issues, reference, ISSUE_BY);
         const asProject = resolveMaybe(state.projects, reference, PROJECT_BY);
@@ -26462,6 +26490,8 @@ Estiva ID declined to mint NIP-98 auth, so no request reached the relay. The cau
 async function main() {
   await server.connect(new StdioServerTransport());
   console.error(`estiva mcp server ready (pid ${process.pid})`);
+  context().catch(() => {
+  });
 }
 main().catch((error2) => {
   console.error(`estiva mcp server failed to start: ${error2.message}`);

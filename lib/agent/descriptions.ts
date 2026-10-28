@@ -310,12 +310,22 @@ const cellText = (cell: Block): string =>
 
 /** What one block reads as, in the text the agent is shown. */
 const blockText = (block: Block) => {
-  let text = printed.get(block)
-  if (text === undefined) printed.set(block, (text = spellable(block) ? printable(block)! : standIn(block)))
+  const key = JSON.stringify(block)
+  let text = printed.get(key)
+  if (text === undefined) {
+    if (printed.size >= MOST_PRINTED) printed.clear()
+    printed.set(key, (text = spellable(block) ? printable(block)! : standIn(block)))
+  }
   return text
 }
-/** `spellable` re-parses a block, and one block is printed several times per edit — and per project in `ship projects`. */
-const printed = new WeakMap<Block, string>()
+/**
+ * `spellable` re-parses a block, and one block is printed several times per edit, per project in
+ * `ship projects`, and once per saved version in `show`'s history — where each version is parsed
+ * anew but most of its blocks are the last version's (APP-6: 38 versions took 0.8 s). Keyed by the
+ * block's content, since that is all the text depends on; emptied when full, for a long-lived server.
+ */
+const printed = new Map<string, string>()
+const MOST_PRINTED = 5000
 
 /**
  * A description as the text the agent reads and sends back. A block document
