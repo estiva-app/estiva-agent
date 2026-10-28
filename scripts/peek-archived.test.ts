@@ -91,5 +91,15 @@ const SENTENCE = 'Archived. Unarchive it to comment. Nothing was published.'
   check('once unarchived, peek reply publishes the reply', published.length === 1 && published[0].kind === 1111, JSON.stringify(published.map((e) => e.kind)))
 }
 
+{
+  // A live topic and an archived one, both "Planning": the live one takes the write.
+  const LIVE = `30840:${SELF}:33333333-2222-4333-8444-555555555555`
+  const { context, published, events } = workspace(archived(true, 1_900_000_000))
+  events.push(event(30840, [['d', LIVE.split(':')[2]], ['title', 'Planning'], ['h', FOLDER]]))
+  events.find((e) => e.kind === 30890)!.tags.push(['a', LIVE])
+  const said = await refusal(run('say', context, ['Planning'], { body: 'On the live one.' }))
+  check('peek say by a title an archived topic shares goes to the live topic', said === '' && published.length === 1 && published[0].tags.some((t) => t[0] === 'A' && t[1] === LIVE), said || JSON.stringify(published.map((e) => e.tags.find((t) => t[0] === 'A'))))
+}
+
 console.log(failures ? `\n${failures} failed.` : '\nAll peek archived checks passed.')
 process.exit(failures ? 1 : 0)

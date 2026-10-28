@@ -117,6 +117,17 @@ console.log('\n— An issue archived with its project —')
   check('…and nothing is published', published.length === 0, JSON.stringify(published.map((e) => e.kind)))
 }
 
+console.log('\n— A project archived itself —')
+{
+  const { context, published, events } = workspace()
+  const onProject = fixture.events.find((e) => e.kind === 1111 && tag(e, 'A')?.startsWith('30850:') && tag(e, 'a') === tag(e, 'A') && projects.has(tag(e, 'A')!))!
+  const archivedProject = projects.get(tag(onProject, 'A')!)!
+  events.push(archive(archivedProject.addr, archivedProject.author, archivedProject.contentFolder, true))
+  const edit = await refusal(run('edit-comment', context, [archivedProject.addr], { message: onProject.id, body: 'Rewritten.' }))
+  check('ship edit-comment of a comment on an archived project is refused with Ship’s sentence', edit === 'Archived. Unarchive it to comment. Nothing was published.', edit)
+  check('…and nothing is published', published.length === 0, JSON.stringify(published.map((e) => e.kind)))
+}
+
 console.log('\n— A manifest whose noun is a planted sentence —')
 {
   const { context, events } = workspace()
