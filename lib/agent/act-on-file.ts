@@ -11,8 +11,19 @@
  * a manifest is anybody's event, so one declaring the action as anything else is
  * refused, as `ship`'s `act` refuses one.
  */
-import { buildActionEvent, folderOf, resolveManifest, type QueryFn, type ResolvedManifest } from '@estiva-app/interop'
-import { imetaTag, type Imeta } from '@estiva-app/protocol'
+import { archivedLine } from '@estiva-app/conversation'
+import {
+  buildActionEvent,
+  folderOf,
+  KIND_CHANNEL_METADATA,
+  resolveForeignObject,
+  resolveManifest,
+  type Archive,
+  type ProjectionCache,
+  type QueryFn,
+  type ResolvedManifest,
+} from '@estiva-app/interop'
+import { addrToNaddr, imetaTag, KIND, type Imeta } from '@estiva-app/protocol'
 import { BadRequest, type AgentContext } from './cli'
 import { commentLinkTags } from './links'
 
@@ -38,6 +49,48 @@ export async function folderOfFile(context: AgentContext, address: string): Prom
   const pointer = pointerOf(address)
   const [root] = await relayQuery(context)([{ kinds: [pointer.kind], authors: [pointer.pubkey], '#d': [pointer.identifier], limit: 1 }])
   return (root && folderOf(root)) || undefined
+}
+
+/**
+ * The refusal on an archived file (PEEKM-8): nothing is written on one, comments
+ * and edits of comments included, and the agent says why in the words the
+ * file's app shows in its comment box's place — `archivedLine`, one sentence
+ * for every app. A file archived itself says so ("Archived. Unarchive it to
+ * comment."), and a Leaf page "in Peek", since Leaf has no Unarchive; one
+ * archived with a file above it names that file by its app's noun ("Unarchive
+ * the project to comment."). Undefined when the file is not archived.
+ *
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-file-is-archived-with-the-closest-archived-file-above-it.md
+ */
+export async function archivedRefusal(context: AgentContext, address: string, archive: Archive | undefined, cache?: ProjectionCache): Promise<string | undefined> {
+  if (!archive) return undefined
+  if (!archive.with) return archivedLine(archive, undefined, pointerOf(address).kind === KIND.DOCUMENT ? { in: 'Peek' } : {})
+  return archivedLine(archive, await nounOf(context, archive.with, cache))
+}
+
+/** What a file's app calls it — its manifest's projection noun — and a Folder a Folder, whether named by address or by id. */
+async function nounOf(context: AgentContext, address: string, cache?: ProjectionCache): Promise<string | undefined> {
+  const pointer = pointerOf(address)
+  if (!pointer.pubkey || pointer.kind === KIND_CHANNEL_METADATA) return 'folder'
+  const resolved = await resolveManifest(pointer, relayQuery(context), cache).catch(() => null)
+  const noun = resolved?.manifest.projections?.[String(pointer.kind)]?.noun?.trim()
+  // A manifest is anybody's event, and this noun becomes the agent's own error
+  // text: a word, never a sentence somebody planted (docs/untrusted-content.md).
+  return noun && NOUN.test(noun) ? noun : undefined
+}
+
+const NOUN = /^[a-z][a-z -]{0,23}$/
+
+/** Refuses a write on a file that is archived, itself or with a file above it, before anything is signed. */
+export async function refuseIfArchived(context: AgentContext, address: string, archive: Archive | undefined, cache?: ProjectionCache): Promise<void> {
+  const line = await archivedRefusal(context, address, archive, cache)
+  if (line) throw new BadRequest(`${line} Nothing was published.`)
+}
+
+/** A file's archive as every app reads it, its parents' included (`archivedWith`) — undefined when it is not archived or not readable. */
+export async function archiveOfFile(context: AgentContext, address: string, cache?: ProjectionCache): Promise<Archive | undefined> {
+  const file = await resolveForeignObject(addrToNaddr(address), relayQuery(context), async () => ({}), undefined, cache, { archivedWith: true })
+  return file?.archived
 }
 
 export async function actOnFile(

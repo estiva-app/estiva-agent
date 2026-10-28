@@ -43,7 +43,7 @@ import {
   type ContentFormat,
 } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
-import { actOnFile, folderOfFile, pointerOf, published, relayQuery } from '../act-on-file'
+import { actOnFile, archiveOfFile, folderOfFile, pointerOf, published, refuseIfArchived, relayQuery } from '../act-on-file'
 import { describePlacing, uploadFiles } from '../attachments'
 import { BadRequest, flagValue, refuseUnsignable, type AgentApp, type AgentContext } from '../cli'
 import { edited, findThread, readConversation, replyToOf, type Conversation } from '../conversation'
@@ -448,6 +448,7 @@ export const fileApp: AgentApp = {
         const cache = createProjectionCache()
         const file = await readFile(context, address, cache)
         const title = file.slots.title?.value ?? address
+        await refuseIfArchived(context, address, await archiveOfFile(context, address, cache), cache)
         const replyRef = flagValue(args, 'reply')
         let thread: Conversation | undefined
         if (replyRef !== undefined) {
