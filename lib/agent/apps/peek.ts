@@ -35,7 +35,6 @@
 import {
   buildActionEvents,
   conversationsOf,
-  createLoadQuery,
   createProjectionCache,
   FOLDER_ACTIONS_ADDRESS,
   KIND_BARE_FILE,
@@ -51,7 +50,7 @@ import {
 } from '@estiva-app/interop'
 import { KIND } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
-import { actOnFile, archiveOfFile, pointerOf, published, refuseIfArchived, relayQuery } from '../act-on-file'
+import { actOnFile, archiveOfFile, loadQuery, pointerOf, published, refuseIfArchived, relayQuery } from '../act-on-file'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { edited, findMessage, findThread, publishEdit, readConversation, replyToOf } from '../conversation'
 import { withMentions } from '../mentions'
@@ -99,7 +98,7 @@ export interface Topic {
  */
 async function loadTopics(context: AgentContext, cache: ProjectionCache, folderRef?: string, includeArchived = false): Promise<Topic[]> {
   // One load: the listing and every Folder's contents share what they have read (APP-2).
-  const query = createLoadQuery(relayQuery(context))
+  const query = loadQuery(context)
   const all = await listFolders(query, { recordChannels: false })
   const queue = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all)
   const byId = new Map(all.map((folder) => [folder.id, folder]))
@@ -471,7 +470,7 @@ export const peekApp: AgentApp = {
         // Folder that exists but no drawn Folder lists would take the topic
         // somewhere nobody can reach — this ticket's bug again.
         const query = relayQuery(context)
-        const folder = findFolder(topLevelFolders(await listFolders(createLoadQuery(query), { recordChannels: false })), folderRef)
+        const folder = findFolder(topLevelFolders(await listFolders(loadQuery(context), { recordChannels: false })), folderRef)
 
         /*
           The Folder's built-in `create-file` (SPEC §3.2), as Peek's launcher

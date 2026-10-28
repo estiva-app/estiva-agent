@@ -13,7 +13,7 @@
  * issue, an issue moved between projects — live in one place, and if this CLI
  * and `ship.estiva.app` disagree, the manifest is what is wrong.
  */
-import { refuseIfArchived } from '../act-on-file'
+import { loadQuery, refuseIfArchived } from '../act-on-file'
 import { describePlacing, placeFiles, uploadFiles, type PlacedFiles } from '../attachments'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
@@ -41,7 +41,6 @@ import { KIND_CHANGE, KIND_COMMENT, KIND_DELETION, KIND_EDIT } from '@estiva-app
 import {
   KIND_CHANNEL_METADATA,
   buildActionEvents,
-  createLoadQuery,
   createProjectionCache,
   listFolders,
   planArchiveFolder,
@@ -53,6 +52,7 @@ import {
   type FolderSummary,
   type MovableFile,
   type MoveRefusal,
+  type QueryFn,
   type ResolvedManifest,
 } from '@estiva-app/interop'
 
@@ -254,10 +254,11 @@ export function archivedRemoved<T extends { archived?: boolean }>(projects: T[])
 }
 
 async function coverage(
-  context: AgentContext,
+  query: QueryFn,
   reachable: Issue[],
 ): Promise<{ reachable: number; unreachable: number; total: number; note?: string }> {
-  const events = await context.relay.queryAll([{ kinds: [KIND.ISSUE] }])
+  // The load's query: the workspace read every issue root already (APP-6).
+  const events = await query([{ kinds: [KIND.ISSUE] }])
 
   const everything = new Set<string>()
   for (const event of events) {
@@ -825,7 +826,7 @@ async function stateAfter(
  * file, and everything already in it disappears.
  */
 function readFolders(context: AgentContext): Promise<FolderSummary[]> {
-  return listFolders(createLoadQuery(relayQuery(context)))
+  return listFolders(loadQuery(context))
 }
 
 /**
@@ -956,7 +957,7 @@ async function publishUnsigned(context: AgentContext, unsigned: Parameters<Agent
  */
 async function readListings(context: AgentContext, sources: readonly FolderRef[]): Promise<Map<string, MovableFile[]> | { unread: string }> {
   const cache = createProjectionCache()
-  const query = createLoadQuery(relayQuery(context))
+  const query = loadQuery(context)
   const read = await Promise.all(
     sources.map((folder) =>
       resolveFolderContents(folder.id, query, noPeople, cache, { includeArchived: true }).then(
@@ -1106,10 +1107,10 @@ async function timelineFor(
  * load's query so a read both make is asked once (APP-2).
  */
 async function loadWithFolders(context: AgentContext) {
-  const query = createLoadQuery(relayQuery(context))
+  const query = loadQuery(context)
   const [state, folders] = await Promise.all([loadWorkspace(context, query), listFolders(query)])
   cascadeArchives(state, folders)
-  return { state, folders }
+  return { state, folders, query }
 }
 
 const FOLDER_BY = {
@@ -1480,7 +1481,7 @@ export const shipApp: AgentApp = {
       },
       async run(context, args) {
         // An issue of a project in an archived Folder is hidden with both, as Ship hides it.
-        const { state } = await loadWithFolders(context)
+        const { state, query } = await loadWithFolders(context)
         const wantedProject = flagValue(args, 'project')
         const wantedStatus = flagValue(args, 'status')?.toLowerCase()
 
@@ -1526,7 +1527,7 @@ export const shipApp: AgentApp = {
             dropping the count when `--project` is passed would hide the gap in
             exactly the narrow queries somebody trusts most.
           */
-          coverage: await coverage(context, state.issues),
+          coverage: await coverage(query, state.issues),
         }
       },
     },

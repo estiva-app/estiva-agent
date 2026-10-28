@@ -18,7 +18,6 @@
  */
 import {
   conversationsOf,
-  createLoadQuery,
   createProjectionCache,
   folderOf,
   projectEvents,
@@ -31,9 +30,10 @@ import {
   type QueryFn,
   type ResolvedManifest,
 } from '@estiva-app/interop'
-import { byOrder, decorationsOf, trustedTs, type EditFold } from '@estiva-app/conversation'
+import { byOrder, decorationsOf, KIND_CHANGE, trustedTs, type EditFold } from '@estiva-app/conversation'
 import type { ContentFormat, SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../cli'
+import { loadQuery, relayQuery } from '../act-on-file'
 
 /** The kinds Ship's objects are — what `ship` lists. Everything else is the manifest's. */
 export const KIND = { PROJECT: 30850, ISSUE: 30851 } as const
@@ -42,9 +42,7 @@ const KIND_HANDLER_RECOMMENDATION = 31989
 
 const tagValue = (event: SignedEvent, name: string) => event.tags.find((tag) => tag[0] === name)?.[1]
 
-export function relayQuery(context: AgentContext): QueryFn {
-  return (filters) => context.relay.queryAll(filters as never)
-}
+export { relayQuery }
 
 /** One status vocabulary, as the manifest declares it. */
 export interface Vocabulary {
@@ -236,20 +234,26 @@ const metaValue = (object: ForeignObject, field: string) => object.meta.find((sl
  * Every Ship project and issue, folded through Ship's manifest, with the change stream.
  * `query` is the load's, when the workspace is read beside other reads of the same load (APP-2).
  */
-export async function loadWorkspace(context: AgentContext, query: QueryFn = createLoadQuery(relayQuery(context))): Promise<Workspace> {
+export async function loadWorkspace(context: AgentContext, query: QueryFn = loadQuery(context)): Promise<Workspace> {
   const cache = createProjectionCache()
+  // SPEC's change kind, which holds every file's archive, is asked beside the
+  // roots rather than after the manifests: a Folder listing in the same load
+  // asks its files' changes about two seconds in, and is answered from this
+  // read only if it has been asked by then (APP-6). The read below joins it.
+  const early = query([{ kinds: [KIND_CHANGE] }])
+  early.catch(() => {}) // a refusal is met by the read below
   const roots = await query([{ kinds: [KIND.PROJECT, KIND.ISSUE] }])
   const manifests = await manifestsFor(roots, query, cache)
   const manifestOf = manifests.of
   // Changes by the change kind every manifest in play declares — Ship's is one kind for both.
-  const changeKinds = [...new Set(manifests.all().flatMap((resolved) => (resolved.manifest.records ? [resolved.manifest.records.changeKind] : [])))]
+  const changeKinds = [
+    ...new Set([KIND_CHANGE, ...manifests.all().flatMap((resolved) => (resolved.manifest.records ? [resolved.manifest.records.changeKind] : []))]),
+  ]
   // Every change to a Ship object, including one whose record is gone — a
   // deleted project's history is still history, and `activity` lists it.
   const shipKind = (target: string | undefined) =>
     target !== undefined && (target.startsWith(`${KIND.PROJECT}:`) || target.startsWith(`${KIND.ISSUE}:`))
-  const changes = changeKinds.length
-    ? (await query([{ kinds: changeKinds }])).filter((event) => shipKind(tagValue(event, 'a')))
-    : []
+  const changes = (await query([{ kinds: changeKinds }])).filter((event) => shipKind(tagValue(event, 'a')))
 
   const objects = new Map(projectEvents([...roots, ...changes], manifestOf).map((object) => [object.address!, object]))
   // The version `projectEvents` folded, so the author, date and Folder printed are that version's.
