@@ -387,9 +387,13 @@ reply is belongs in the package.
 
 **Reads are metered.** `topics` costs about 40 relay requests (one
 `resolveFolderContents` per Folder in the tree), against a key allowed ~300 a
-minute that other sessions share. `topic`, `say`, `reply` and `edit` each start
-with the same listing to resolve the title — pass the topic's id and it still
-does, so do not loop.
+minute that other sessions share. `say`, `reply` and `edit` each start with the
+same listing to resolve the title — pass the topic's id and it still does, so do
+not loop. `topic` does not (APP-6): it finds candidates among the topic roots
+and the relay's search for a renamed title, takes the Folder that lists one
+from the Folder states, reads only that Folder and, beside it, the
+conversation — about 20 requests and 2 s. A topic two Folders list, an
+ambiguous reference or a miss walks the tree, so the answer is the walk's.
 
 ### The open part: attribution
 
@@ -465,8 +469,9 @@ so gather what you need in one `show` rather than looping.
 **`show` reads the one file** (APP-6): every root (2.7 MB), the relay's search
 for a renamed title or ref, then only the candidates' own changes — and a
 project's issues, found by their roots and by the `A` every move carries
-(SPEC §7.2; the moves from before it were re-posted with it on 28 Oct). About
-2 s and 2–5 MB where the whole read was 8 s and 96 MB. An ambiguous reference,
+(SPEC §7.2; the moves from before it were re-posted with it on 28 Oct) — with
+the one candidate's conversation read beside them. About 2 s and 2–5 MB where
+the whole read was 8 s and 96 MB. An ambiguous reference,
 or one nothing matches by a word's start, is read whole, so the refusal lists
 every candidate and a mid-word match still resolves. History prints a save of
 the text as a numbered version with its length; `--history-text` (MCP

@@ -227,8 +227,8 @@ async function creatorOf(context: AgentContext, channel: string, type: string, c
 }
 
 /** A file's conversation, printed as Leaf's comments column draws it: by thread, each with its place. */
-async function printedComments(context: AgentContext, file: ForeignObject, address: string, cache: ProjectionCache, text: ReturnType<typeof textOf>) {
-  const { conversations, edits, resolved } = await readConversation(context, { object: file, address }, cache)
+async function printedComments(context: AgentContext, address: string, cache: ProjectionCache, text: ReturnType<typeof textOf>) {
+  const { conversations, edits, resolved } = await readConversation(context, { address }, cache)
   const directory = await profilesOf(
     relayQuery(context),
     conversations.flatMap((thread) => [thread.root, ...thread.replies].map((message) => message.author)),
@@ -377,7 +377,7 @@ export const fileApp: AgentApp = {
           text: descriptionText(text.value, text.format),
           // How each link in it draws — chip, row, card or a link on words — which the text cannot say (WBD-9).
           links: await printedLinks(context, text.value, text.format),
-          comments: await printedComments(context, file, address, cache, text),
+          comments: await printedComments(context, address, cache, text),
         }
       },
     },
@@ -416,7 +416,7 @@ export const fileApp: AgentApp = {
 
         // Which comments now sit on blocks that are gone, so whoever wrote them can be told (§13.6).
         const detached = next.blocks?.removed.length
-          ? detachedBy((await readConversation(context, { object: file, address }, cache)).conversations, before, next.value)
+          ? detachedBy((await readConversation(context, { address }, cache)).conversations, before, next.value)
           : []
         return {
           changed: { file: title, address, url: file.openUrl, version: versionOf({ value: next.value, format: next.contentFormat ? 'blocks' : before.format }) },
@@ -452,7 +452,7 @@ export const fileApp: AgentApp = {
         const replyRef = flagValue(args, 'reply')
         let thread: Conversation | undefined
         if (replyRef !== undefined) {
-          const { conversations, edits } = await readConversation(context, { object: file, address }, cache)
+          const { conversations, edits } = await readConversation(context, { address }, cache)
           if (!conversations.length) throw new BadRequest(`${title} has no comments to reply to. Nothing was published.`)
           thread = findThread(
             conversations.map((conversation) => ({ id: conversation.root.id, opening: edited(edits, conversation.root).body, conversation })),

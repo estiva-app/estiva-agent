@@ -22987,24 +22987,31 @@ var asMessage = (event) => ({
   folder: event.tags.find((tag) => tag[0] === "h")?.[1],
   tags: event.tags
 });
-async function readConversation(context2, file, cache) {
+async function readConversation(context2, file, cache, beside = async () => void 0) {
   const query = relayQuery(context2);
-  const rootIds = ((await conversationsOf([file.object], query, cache))[file.address] ?? []).map((message) => message.id);
-  if (!rootIds.length) return { conversations: [], edits: {}, resolved: /* @__PURE__ */ new Set() };
+  const object3 = { ref: file.address, address: file.address };
+  const rootIds = ((await conversationsOf([object3], query, cache))[file.address] ?? []).map((message) => message.id);
+  if (!rootIds.length) {
+    return { conversations: [], edits: {}, resolved: /* @__PURE__ */ new Set(), besides: await beside([]) };
+  }
   const threads = await threadsOf(file.address, rootIds, query, cache, 1e3);
   const conversations = rootIds.filter((id) => threads.roots[id]).map((id) => ({ root: asMessage(threads.roots[id]), replies: (threads.replies[id] ?? []).map(asMessage) }));
   const all = conversations.flatMap((thread) => [thread.root, ...thread.replies]);
-  const decorations = await decorationsOf(
-    all.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })),
-    query
-  );
+  const [decorations, besides] = await Promise.all([
+    decorationsOf(
+      all.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })),
+      query
+    ),
+    beside(conversations)
+  ]);
   const isResolved = (id) => decorations.byId[id]?.resolutions.at(-1)?.action === "resolved";
   const edits = {};
   for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit;
   return {
     conversations,
     edits,
-    resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved))
+    resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved)),
+    besides
   };
 }
 var replyToOf = (message) => {
@@ -25056,8 +25063,7 @@ Pass an address to say which.`
 // lib/agent/apps/peek.ts
 var noPeople2 = async () => ({});
 var TOPIC_TREE_KINDS = [KIND_BARE_FILE, KIND_CHANNEL_METADATA];
-async function loadTopics(context2, cache, folderRef, includeArchived = false) {
-  const query = loadQuery(context2);
+async function loadTopics(context2, cache, folderRef, includeArchived = false, query = loadQuery(context2)) {
   const all = await listFolders(query, { recordChannels: false });
   let level = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all);
   const byId = new Map(all.map((folder) => [folder.id, folder]));
@@ -25081,20 +25087,79 @@ async function loadTopics(context2, cache, folderRef, includeArchived = false) {
           continue;
         }
         if (file.kind !== KIND_BARE_FILE || topics.has(file.address)) continue;
-        topics.set(file.address, {
-          address: file.address,
-          title: file.slots.title?.value ?? "(untitled)",
-          // Every file kind's `subtitle` is its summary (SPEC §7.2), built into interop.
-          summary: file.slots.subtitle?.value,
-          folder: { id: folder.id, name: folder.name },
-          url: file.openUrl,
-          object: file
-        });
+        topics.set(file.address, topicOf(file, folder));
       }
     }
     level = next;
   }
   return [...topics.values()];
+}
+var RENAME_SEARCH_LIMIT2 = 32;
+async function oneTopic(context2, query, cache, reference, early) {
+  const needle = reference.trim().toLowerCase();
+  if (!needle) return void 0;
+  const listed = listFolders(query, { recordChannels: false });
+  listed.catch(() => {
+  });
+  const [roots, renamed] = await Promise.all([
+    query([{ kinds: [KIND_BARE_FILE] }]),
+    context2.relay.query([{ kinds: [KIND_CHANGE], search: reference.trim(), search_mode: "prefix", limit: RENAME_SEARCH_LIMIT2 }])
+  ]);
+  if (renamed.length >= RENAME_SEARCH_LIMIT2) return void 0;
+  const tag = (event, name) => event.tags.find((t) => t[0] === name)?.[1];
+  const candidates = /* @__PURE__ */ new Set();
+  for (const root of roots) {
+    const d = tag(root, "d") ?? "";
+    const address = `${root.kind}:${root.pubkey}:${d}`;
+    const named = address.toLowerCase() === needle || d.toLowerCase() === needle || needle.length >= 4 && d.toLowerCase().startsWith(needle) || tag(root, "title")?.toLowerCase().includes(needle);
+    if (named) candidates.add(address);
+  }
+  for (const change of renamed) {
+    const target = tag(change, "a");
+    if (target?.startsWith(`${KIND_BARE_FILE}:`) && tag(change, "field") === "title") candidates.add(target);
+  }
+  if (candidates.size === 0) return void 0;
+  if (candidates.size === 1) early([...candidates][0]);
+  const all = await listed;
+  const byId = new Map(all.map((folder) => [folder.id, folder]));
+  const top = new Set(topLevelFolders(all).map((folder) => folder.id));
+  const reached = /* @__PURE__ */ new Map();
+  const reaches = (folder) => {
+    if (!reached.has(folder.id)) {
+      reached.set(folder.id, false);
+      const parents = (folder.listedIn ?? []).flatMap((id) => byId.get(id) ?? []);
+      reached.set(folder.id, !folder.archived && (top.has(folder.id) || parents.some(reaches)));
+    }
+    return reached.get(folder.id);
+  };
+  const listing = /* @__PURE__ */ new Map();
+  for (const address of candidates) {
+    const folders2 = all.filter((folder) => folder.addresses?.includes(address) && reaches(folder));
+    if (folders2.length > 1) return void 0;
+    if (folders2.length === 1) listing.set(address, folders2[0]);
+  }
+  const folders = [...new Set(listing.values())];
+  const contents = await Promise.all(
+    folders.map((folder) => resolveFolderContents(folder.id, query, noPeople2, cache, { kinds: TOPIC_TREE_KINDS }))
+  );
+  const topics = [];
+  for (const [address, folder] of listing) {
+    const file = contents[folders.indexOf(folder)].files.find((each) => each.address === address && each.kind === KIND_BARE_FILE);
+    if (file) topics.push(topicOf(file, folder));
+  }
+  const resolved = resolveMaybe(topics, reference, TOPIC_BY);
+  return "found" in resolved ? resolved.found : void 0;
+}
+function topicOf(file, folder) {
+  return {
+    address: file.address,
+    title: file.slots.title?.value ?? "(untitled)",
+    // Every file kind's `subtitle` is its summary (SPEC §7.2), built into interop.
+    summary: file.slots.subtitle?.value,
+    folder: { id: folder.id, name: folder.name },
+    url: file.openUrl,
+    object: file
+  };
 }
 function who2(directory, pubkey) {
   return directory.get(pubkey)?.name ?? `${pubkey.slice(0, 8)}\u2026`;
@@ -25193,10 +25258,25 @@ var peekApp = {
         const reference = args2.positional[0];
         if (!reference) throw new BadRequest("topic needs a title \u2014 try `peek topics` first.");
         const cache = createProjectionCache();
-        const topic = findTopic(await loadTopics(context2, cache), reference);
-        const { conversations, edits, resolved } = await readConversation(context2, topic, cache);
-        const speakers = conversations.flatMap((thread) => [thread.root, ...thread.replies].map((message) => message.author));
-        const directory = await profilesOf(relayQuery(context2), speakers);
+        const query = loadQuery(context2);
+        const reads2 = /* @__PURE__ */ new Map();
+        const conversationOf = (address) => readConversation(
+          context2,
+          { address },
+          cache,
+          (threads) => profilesOf(relayQuery(context2), threads.flatMap((thread) => [thread.root, ...thread.replies].map((message) => message.author)))
+        );
+        const read = (address) => {
+          if (!reads2.has(address)) {
+            const reading = conversationOf(address);
+            reading.catch(() => {
+            });
+            reads2.set(address, reading);
+          }
+          return reads2.get(address);
+        };
+        const topic = await oneTopic(context2, query, cache, reference, read) ?? findTopic(await loadTopics(context2, cache, void 0, false, query), reference);
+        const { conversations, edits, resolved, besides: directory } = await read(topic.address);
         return {
           id: topic.address.split(":")[2],
           title: topic.title,
@@ -25508,8 +25588,8 @@ async function creatorOf(context2, channel, type, cache) {
   const [[kind, creator]] = [...found];
   return { kind, ...creator };
 }
-async function printedComments(context2, file, address, cache, text2) {
-  const { conversations, edits, resolved } = await readConversation(context2, { object: file, address }, cache);
+async function printedComments(context2, address, cache, text2) {
+  const { conversations, edits, resolved } = await readConversation(context2, { address }, cache);
   const directory = await profilesOf(
     relayQuery(context2),
     conversations.flatMap((thread) => [thread.root, ...thread.replies].map((message) => message.author))
@@ -25646,7 +25726,7 @@ var fileApp = {
           text: descriptionText(text2.value, text2.format),
           // How each link in it draws — chip, row, card or a link on words — which the text cannot say (WBD-9).
           links: await printedLinks(context2, text2.value, text2.format),
-          comments: await printedComments(context2, file, address, cache, text2)
+          comments: await printedComments(context2, address, cache, text2)
         };
       }
     },
@@ -25678,7 +25758,7 @@ var fileApp = {
         const result = await actOnFile(context2, { address, title }, describeAction, next.value, KIND_CHANGE, void 0, changeShape(address, "description", next.value, formatTag(next.contentFormat)), next.contentFormat);
         published(result, `the text of ${title}`);
         const mentioned = await publishMentionAdds(context2, adds, `The text of ${title}`);
-        const detached = next.blocks?.removed.length ? detachedBy((await readConversation(context2, { object: file, address }, cache)).conversations, before, next.value) : [];
+        const detached = next.blocks?.removed.length ? detachedBy((await readConversation(context2, { address }, cache)).conversations, before, next.value) : [];
         return {
           changed: { file: title, address, url: file.openUrl, version: versionOf({ value: next.value, format: next.contentFormat ? "blocks" : before.format }) },
           ...next.blocks ? { blocks: next.blocks } : {},
@@ -25710,7 +25790,7 @@ var fileApp = {
         const replyRef = flagValue(args2, "reply");
         let thread;
         if (replyRef !== void 0) {
-          const { conversations, edits } = await readConversation(context2, { object: file, address }, cache);
+          const { conversations, edits } = await readConversation(context2, { address }, cache);
           if (!conversations.length) throw new BadRequest(`${title} has no comments to reply to. Nothing was published.`);
           thread = findThread(
             conversations.map((conversation) => ({ id: conversation.root.id, opening: edited(edits, conversation.root).body, conversation })),
