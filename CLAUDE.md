@@ -127,6 +127,14 @@ reference, and a `q` for each message, read by interop's `linkReader` as every
 app reads them; a URL in code links nothing. An edit (`edit-comment`, `peek
 edit`) carries the whole `a`/`q` set its new words earn, never a `p`.
 
+**Nothing is written on an archived file** (PEEKM-8): `ship comment`,
+`ship edit-comment`, `file comment` and `peek say`/`reply`/`edit` on a file
+archived itself, or with a file above it, are refused with the sentence the
+file's app shows in its comment box's place (`archivedLine`, from
+`@estiva-app/conversation`) — "Archived. Unarchive it to comment.",
+"Unarchive the project to comment." — and publish nothing. Your own message
+there is frozen too. Unarchive it first, if the person asked for that.
+
 `ship archive <ref> --resolution "…"` archives one project, issue or Folder the
 way Ship does (FOL-46): a `kind:1851` `archived` change, the resolution as its
 note, shown first when the file is opened; `--unarchive` brings it back.

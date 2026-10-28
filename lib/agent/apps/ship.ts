@@ -13,6 +13,7 @@
  * issue, an issue moved between projects — live in one place, and if this CLI
  * and `ship.estiva.app` disagree, the manifest is what is wrong.
  */
+import { refuseIfArchived } from '../act-on-file'
 import { describePlacing, placeFiles, uploadFiles, type PlacedFiles } from '../attachments'
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
@@ -1812,7 +1813,10 @@ export const shipApp: AgentApp = {
         const mentioned = mention === undefined ? [] : await mentionedKeys(mention, { relayUrl: context.relayUrl, members: () => relayMembers(context) })
         const body = withMentions(text, mentioned)
 
-        const { state, issue } = await resolveIssueFor(context, reference)
+        // With the Folder half of the cascade, so an issue archived with its project's Folder is refused as Ship refuses it.
+        const { state } = await loadWithFolders(context)
+        const issue = findIssue(state.issues, reference)
+        await refuseIfArchived(context, issue.addr, issue.archive, state.cache)
         // Uploaded before the comment names them: the relay refuses a comment naming a file it does not hold.
         const attach = flagValue(args, 'attach')
         const files = attach === undefined ? [] : await uploadFiles(context, attach)
@@ -1851,7 +1855,7 @@ export const shipApp: AgentApp = {
         const body = flagValue(args, 'body')
         if (!body) throw new BadRequest('edit-comment needs --body — the whole new text, not a patch.')
 
-        const state = await loadWorkspace(context)
+        const { state } = await loadWithFolders(context)
 
         /*
           Both kinds, asked and then decided, exactly as `show` does — and for
@@ -1871,9 +1875,9 @@ export const shipApp: AgentApp = {
           )
         }
         const object = 'found' in asIssue
-          ? { addr: asIssue.found.addr, label: asIssue.found.ref ?? asIssue.found.addr }
+          ? { addr: asIssue.found.addr, label: asIssue.found.ref ?? asIssue.found.addr, archive: asIssue.found.archive }
           : 'found' in asProject
-            ? { addr: asProject.found.addr, label: asProject.found.title }
+            ? { addr: asProject.found.addr, label: asProject.found.title, archive: asProject.found.archive }
             : undefined
 
         if (!object) {
@@ -1883,6 +1887,8 @@ export const shipApp: AgentApp = {
           if ('ambiguous' in asProject) throw new BadRequest(asProject.ambiguous)
           throw new BadRequest(`No issue or project matches "${reference}".`)
         }
+        // A message on an archived file is frozen, your own included (Miky, 2026-10-20).
+        await refuseIfArchived(context, object.addr, object.archive, state.cache)
 
         /*
           The candidate set is this one object's conversations and nothing

@@ -298,6 +298,28 @@ console.log('\n— Replying —')
   check('file comment without --reply starts a thread on the whole document', top?.kind === 1111 && tag(top, 'a') === created!.address && tag(top, 'block') === undefined && tag(top, 'e') === undefined, JSON.stringify(top?.tags))
 }
 
+console.log('\n— Nothing is written on an archived file (PEEKM-8) —')
+{
+  const { context, published, events, comment } = fixture()
+  const archived = (address: string, on: boolean, at: number) =>
+    event(1851, [['a', address], ['field', 'archived'], ['value', on ? 'true' : ''], ['h', FOLDER], ['ts', String(at * 1000)]], '', SELF, at)
+  const childD = '66666666-2222-4333-8444-555555555555'
+  const child = `30842:${QA2}:${childD}`
+  events.push(event(30842, [['d', childD], ['h', FOLDER], ['a', created!.address]], '', QA2), archived(created!.address, true, 1_950_000_000))
+
+  const said = await refusal(run('comment', context, [created!.address], { body: 'Still on it.' }))
+  check('file comment on an archived Leaf page is refused with Leaf’s sentence', said === 'Archived. Unarchive it in Peek to comment. Nothing was published.', said)
+  const reply = await refusal(run('comment', context, [created!.address], { body: 'Still on it.', reply: comment.id }))
+  check('…and so is a reply in one of its threads', reply === said, reply)
+  const under = await refusal(run('comment', context, [child], { body: 'Still on it.' }))
+  check('file comment on a page under it names the document above', under === 'Unarchive the document to comment. Nothing was published.', under)
+  check('…and nothing is published', published.length === 0, JSON.stringify(published.map((e) => e.kind)))
+
+  events.push(archived(created!.address, false, 1_950_000_100))
+  await run('comment', context, [child], { body: 'Back on it.' })
+  check('once the page above is unarchived, file comment on the page under it publishes', published.length === 1 && tag(published[0], 'a') === child, JSON.stringify(published.map((e) => e.kind)))
+}
+
 console.log('\n— A mention in the text adds the person (WBD-9) —')
 const QA2_NPUB = encodeNpub(QA2)
 /** The membership change that adds `person` to `file`, as the Add button writes it (§11.8). */

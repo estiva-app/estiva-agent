@@ -51,12 +51,12 @@ import {
 } from '@estiva-app/interop'
 import { KIND } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
-import { actOnFile, pointerOf, published, relayQuery } from '../act-on-file'
+import { actOnFile, archiveOfFile, pointerOf, published, refuseIfArchived, relayQuery } from '../act-on-file'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { edited, findMessage, findThread, publishEdit, readConversation, replyToOf } from '../conversation'
 import { withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
-import { resolveOne } from '../resolve'
+import { resolveMaybe, resolveOne, type Resolvable } from '../resolve'
 import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../summary'
 
 /** A listing names nobody, so it asks the relay for nobody's profile. */
@@ -97,7 +97,7 @@ export interface Topic {
  * comes with its whole change history, and Peek's tree on production took
  * 3 min 19 s that way, past the MCP client's 60 s (43e9a775).
  */
-async function loadTopics(context: AgentContext, cache: ProjectionCache, folderRef?: string): Promise<Topic[]> {
+async function loadTopics(context: AgentContext, cache: ProjectionCache, folderRef?: string, includeArchived = false): Promise<Topic[]> {
   // One load: the listing and every Folder's contents share what they have read (APP-2).
   const query = createLoadQuery(relayQuery(context))
   const all = await listFolders(query, { recordChannels: false })
@@ -106,7 +106,7 @@ async function loadTopics(context: AgentContext, cache: ProjectionCache, folderR
   const visited = new Set(queue.map((folder) => folder.id))
   const topics = new Map<string, Topic>()
   for (let folder = queue.shift(); folder; folder = queue.shift()) {
-    const content = await resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS })
+    const content = await resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS, includeArchived })
     for (const file of content.files) {
       if (!file.address) continue
       if (file.kind === KIND_CHANNEL_METADATA) {
@@ -144,16 +144,31 @@ function who(directory: Directory, pubkey: string): string {
  * wrong conversation, and nothing afterwards reveals it did.
  */
 export function findTopic(topics: Topic[], reference: string): Topic {
-  return resolveOne(topics, reference, {
-    noun: 'topic',
-    exact: (topic) => [topic.address, topic.address.split(':')[2], topic.title],
-    text: (topic) => topic.title,
-    // The eight characters the label prints resolve back, as a short id does
-    // in `ship` (MAK-1).
-    prefix: (topic) => [topic.address.split(':')[2]],
-    label: (topic) => `${topic.title} (in ${topic.folder.name ?? topic.folder.id.slice(0, 8)}, ${topic.address.split(':')[2].slice(0, 8)})`,
-    hint: 'Pass a topic title, or its id from `peek topics`.',
-  })
+  return resolveOne(topics, reference, TOPIC_BY)
+}
+
+/**
+ * The topic a write names, archived ones included (PEEKM-8), so writing on one
+ * is refused with the sentence Peek shows rather than "No topic matches". A
+ * live topic wins a reference that also matches an archived one: archiving a
+ * topic should not make its live namesake ambiguous.
+ */
+async function findTopicToWrite(context: AgentContext, cache: ProjectionCache, reference: string): Promise<Topic> {
+  const topics = await loadTopics(context, cache, undefined, true)
+  const live = topics.filter((topic) => !topic.object.archived)
+  const archived = topics.filter((topic) => topic.object.archived)
+  return 'none' in resolveMaybe(live, reference, TOPIC_BY) ? findTopic(archived, reference) : findTopic(live, reference)
+}
+
+const TOPIC_BY: Resolvable<Topic> = {
+  noun: 'topic',
+  exact: (topic) => [topic.address, topic.address.split(':')[2], topic.title],
+  text: (topic) => topic.title,
+  // The eight characters the label prints resolve back, as a short id does
+  // in `ship` (MAK-1).
+  prefix: (topic) => [topic.address.split(':')[2]],
+  label: (topic) => `${topic.title} (in ${topic.folder.name ?? topic.folder.id.slice(0, 8)}, ${topic.address.split(':')[2].slice(0, 8)})`,
+  hint: 'Pass a topic title, or its id from `peek topics`.',
 }
 
 /** A Folder by name or id, among the ones Peek draws. */
@@ -209,11 +224,12 @@ export const PEEK_WRITE_NOTE =
 const onTopic = actOnFile
 
 /** The owner's `comment` action on a topic. */
-function comment(context: AgentContext, topic: Topic, body: string, replyTo?: { id: string; kind: number; author: string }) {
+async function comment(context: AgentContext, topic: Topic, body: string, replyTo?: { id: string; kind: number; author: string }) {
   // Interop tags every `nostr:npub…` in a comment's body (0.53), and these verbs
   // take no `--mention` yet, so a body that names anybody is refused here as
   // `ship comment` refuses one `--mention` did not name.
   withMentions(body, [])
+  await refuseIfArchived(context, topic.address, await archiveOfFile(context, topic.address))
   return onTopic(context, topic, () => 'comment', body, KIND.COMMENT, replyTo)
 }
 
@@ -324,7 +340,7 @@ export const peekApp: AgentApp = {
         const body = flagValue(args, 'body')
         if (!body) throw new BadRequest('say needs --body.')
 
-        const topic = findTopic(await loadTopics(context, createProjectionCache()), reference)
+        const topic = await findTopicToWrite(context, createProjectionCache(), reference)
         const result = await comment(context, topic, body)
         published(result, `a comment on ${topic.title}`)
 
@@ -345,7 +361,7 @@ export const peekApp: AgentApp = {
         if (!body) throw new BadRequest('reply needs --body.')
 
         const cache = createProjectionCache()
-        const topic = findTopic(await loadTopics(context, cache), topicRef)
+        const topic = await findTopicToWrite(context, cache, topicRef)
         const { conversations, edits } = await readConversation(context, topic, cache)
         const thread = findThread(
           conversations.map((conversation) => ({
@@ -391,7 +407,7 @@ export const peekApp: AgentApp = {
         if (!body) throw new BadRequest('edit needs --body — the whole new text, not a patch.')
 
         const cache = createProjectionCache()
-        const topic = findTopic(await loadTopics(context, cache), topicRef)
+        const topic = await findTopicToWrite(context, cache, topicRef)
         const { conversations, edits } = await readConversation(context, topic, cache)
         const thread = findThread(
           conversations.map((conversation) => ({
@@ -418,6 +434,8 @@ export const peekApp: AgentApp = {
           — a refusal that reads exactly like a permissions problem.
         */
         if (!message.folder) throw new BadRequest('That message carries no Folder, so an edit of it has nowhere to go.')
+        // A message on an archived file is frozen, your own included (Miky, 2026-10-20).
+        await refuseIfArchived(context, topic.address, await archiveOfFile(context, topic.address, cache), cache)
         const result = await publishEdit(context, { folder: message.folder, messageEventId: message.id, body })
         published(result, `an edit of a message on ${topic.title}`)
 
