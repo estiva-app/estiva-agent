@@ -17248,6 +17248,39 @@ function parseQueryResponse(status2, text2) {
     return { ok: false, events: [], reason: `unparseable response: ${text2.slice(0, 200)}`, httpStatus: status2 };
   }
 }
+var RELAY_BUSY_MESSAGE = "the relay is busy, try again in a moment";
+function isRelayBusyResponse(status2, text2) {
+  if (status2 === 502)
+    return true;
+  if (status2 !== 503)
+    return false;
+  let error2;
+  try {
+    error2 = JSON.parse(text2)?.error;
+  } catch {
+    error2 = text2.trim();
+  }
+  return error2 !== "query timed out";
+}
+var RelayBusyError = class extends Error {
+  httpStatus;
+  constructor(httpStatus) {
+    super(RELAY_BUSY_MESSAGE);
+    this.name = "RelayBusyError";
+    this.httpStatus = httpStatus;
+  }
+};
+var BUSY_RETRY_DELAYS_MS = [1e3, 2e3, 4e3];
+async function retryWhileBusy(send, delaysMs = BUSY_RETRY_DELAYS_MS) {
+  for (const delay of delaysMs) {
+    const answer = await send();
+    if (!isRelayBusyResponse(answer.status, answer.text))
+      return answer;
+    const jittered = delay * (0.5 + Math.random() / 2);
+    await new Promise((resolve3) => setTimeout(resolve3, jittered));
+  }
+  return send();
+}
 function byFolder(filters) {
   const slot = /* @__PURE__ */ new Map();
   for (const [index, filter] of filters.entries()) {
@@ -17390,8 +17423,14 @@ var Relay = class {
     const opts = typeof options === "function" ? { headers: options } : options;
     this.headers = opts.headers ?? (() => ({}));
     this.transport = opts.fetch;
+    this.busyRetryDelaysMs = opts.busyRetryDelaysMs ?? BUSY_RETRY_DELAYS_MS;
   }
-  async post(path, payload) {
+  busyRetryDelaysMs;
+  /** {@link Relay.send} through {@link retryWhileBusy}. */
+  post(path, payload) {
+    return retryWhileBusy(() => this.send(path, payload), this.busyRetryDelaysMs);
+  }
+  async send(path, payload) {
     const url = `${this.url}${path}`;
     const body = JSON.stringify(payload);
     const auth = await authorizationHeader(this.signer, { url, method: "POST", body });
@@ -17416,6 +17455,8 @@ var Relay = class {
   }
   async publish(event) {
     const { status: status2, text: text2 } = await this.post("/events", event);
+    if (isRelayBusyResponse(status2, text2))
+      return { ok: false, reason: RELAY_BUSY_MESSAGE, httpStatus: status2 };
     return parsePublishResponse(status2, text2);
   }
   /**
@@ -17424,9 +17465,13 @@ var Relay = class {
    * Throws on a transport-level failure rather than returning an empty array,
    * because "no events" and "the relay refused you" are not the same answer and
    * a caller that cannot tell them apart renders an empty screen either way.
+   * A relay that stays busy through the quiet retries throws a
+   * {@link RelayBusyError}.
    */
   async query(filters) {
     const { status: status2, text: text2 } = await this.post("/query", filters);
+    if (isRelayBusyResponse(status2, text2))
+      throw new RelayBusyError(status2);
     const result = parseQueryResponse(status2, text2);
     if (!result.ok)
       throw new Error(`query failed: ${result.reason}`);
