@@ -279,6 +279,31 @@ or `none` to clear it; a display name is refused for the reason `assign` refuses
 one. Each field is a separate change event, so a refusal part-way leaves the
 earlier fields standing and the answer says which those were.
 
+**A project is written field by field** (ALO-7, SPEC §6.2). Each change names
+the one it follows (`prev`), through interop's `writeChange`:
+
+- **`--description` needs `--version`**, as `show` printed it, like `file
+  describe`. It must be a save of this project's text or its record, or nothing
+  is published. Made on an older text, the change is merged onto what was saved
+  since (§13.3) and the answer's `merged` says whose change it kept.
+- **When somebody changed the same block** (or edited one you deleted),
+  nothing is saved — no other field of that edit either, since the text goes
+  first — and the refusal names them and when, and shows both versions. Read
+  the project again, rewrite your change keeping their words, and ask the
+  person you are working with before dropping any (Miky, 2026-11-02).
+- **Any other field set again keeps the later**: a status written from an
+  older copy is written after the newer one and stands, as people's do.
+- **A delete is a `deleted` change** (§6.5) where the relay keeps projects in
+  order (NIP-11 `files`), or refuses a `kind:5` on one (the QA fence): the
+  project leaves every list and search, keeps its id, opens by it, and
+  `delete-project <id> --restore` brings it back whole. Elsewhere it is still a
+  `kind:5`, until Ship reads the field.
+
+**An agent below the minimum version refuses every write** and still reads
+(Miky, 2026-11-02): `minimum-version.json` on `main`, read at most once an hour
+and cached under `~/.cache/estiva-agent/`; unreachable, the agent runs. Raise it
+when the workspace starts expecting something of every writer.
+
 **These write to production immediately.** There is no draft and no undo —
 other people and other apps read the result as fact, and NIP-09 deletion is a
 request rather than a reversal.
@@ -460,13 +485,14 @@ when you need to be sure you are talking about the same object twice.
 ## Cost
 
 `loadWorkspace` (`lib/agent/apps/ship-workspace.ts`) reads every Ship project
-and issue, every change to them, and the manifests that fold them on every call
-— no cache across calls, by design (within one call, interop's `createLoadQuery`
-asks a read the call repeats once, and counts a whole read of the change kind
-for every file it covers, APP-2/APP-6), and `--project` filters the answer, not
-the read. On 28 Oct that was 44 MB in ~5 s for `ship issues`: every change once
-(41 MB) and every root (2.7 MB). Three commands in a row is three full scans,
-so gather what you need in one `show` rather than looping.
+and issue on every call — no cache across calls, by design — and `--project`
+filters the answer, not the read. **Where the relay advertises the list read**
+(NIP-11 `file_list`, SPEC §6.13; ALO-7) it is that read: each file's record and
+each field's current change, never the text and no deleted file — 4.8 MB in
+~5 s for `ship projects` on 2 Nov, where every change was 44 MB. A listing
+therefore prints no description, and a deleted project is in no listing. A
+relay without it is read as before: every change, folded here. `activity`
+always reads every change, since it is the change stream.
 
 **`show` reads the one file** (APP-6): every root (2.7 MB), the relay's search
 for a renamed title or ref, then only the candidates' own changes — and a
@@ -477,9 +503,17 @@ the whole read was 8 s and 96 MB — for a ref, a short id, an address or a
 project's whole title. An issue's title or part of any title, an ambiguous
 reference, or one nothing matches by a word's start, is read whole, so the
 refusal lists every candidate and a mid-word match still resolves or refuses
-as before: pass the short id when speed matters. History prints a save of
-the text as a numbered version with its length; `--history-text` (MCP
-`historyText`) adds the old text.
+as before: pass the short id when speed matters. A project is also found by a
+word of its current text, summary or key, the relay's search (§6.13), and
+never by a word only an older text held.
+
+**Opening a file reads its fields and its current text** (ALO-7): one text
+however long its history — 70 KB for this ticket's own project on 2 Nov, where
+its changes were 1.2 MB. A project prints `version`, which `edit-project
+--description` takes back. History is then each field's current change
+(`historyNote` says so); `--history` (MCP `history`) reads every change, a save
+of the text as a numbered version with its length, and `--history-text` adds
+the old text.
 
 ## If you are changing the agent tooling
 

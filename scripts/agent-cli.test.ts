@@ -77,6 +77,7 @@ const issue = (over: Partial<Issue>): Issue => ({
   folder: 'f',
   status: 'todo',
   archived: false,
+  rootId: 'root',
   ...over,
 })
 
@@ -240,6 +241,7 @@ const project = (over: Partial<Project>): Project => ({
   contentFolder: 'f',
   status: 'planned',
   archived: false,
+  rootId: 'root',
   ...over,
 })
 
@@ -538,6 +540,7 @@ console.log('— editing a project —')
     contentFolder: 'f',
     status: 'planned',
     archived: false,
+    rootId: 'root',
     ...over,
   })
 
@@ -590,8 +593,8 @@ console.log('— editing an issue —')
     string that matches no project, and no reader would report it.
   */
   const projects: Project[] = [
-    { addr: '30850:abc:p1', id: 'p1', author: 'abc', createdAt: 0, title: 'Peek: Feedback & Bugs', description: '', contentFolder: 'f1', status: 'planned', archived: false },
-    { addr: '30850:abc:p2', id: 'p2', author: 'abc', createdAt: 0, title: 'Ship: Feedback & Bugs', description: '', contentFolder: 'f2', status: 'planned', archived: false },
+    { addr: '30850:abc:p1', id: 'p1', author: 'abc', createdAt: 0, title: 'Peek: Feedback & Bugs', description: '', contentFolder: 'f1', status: 'planned', archived: false, rootId: 'r1' },
+    { addr: '30850:abc:p2', id: 'p2', author: 'abc', createdAt: 0, title: 'Ship: Feedback & Bugs', description: '', contentFolder: 'f2', status: 'planned', archived: false, rootId: 'r2' },
   ]
 
   const subject = issue({ addr: '30851:abc:9', title: 'Old title', description: 'old body', projectAddr: '30850:abc:p1' })
@@ -1098,7 +1101,7 @@ console.log('\n— archives: own, with the project, with the Folder (e2898086) �
   const own = { by: 'abc', at: 1, resolution: 'Shipped.' }
   const project = (addr: string, over: Partial<Project> = {}): Project => ({
     addr, id: addr.split(':')[2], author: 'abc', createdAt: 0, title: `Project ${addr.split(':')[2]}`, description: '',
-    status: 'planned', archived: false, contentFolder: 'record', ...over,
+    status: 'planned', archived: false, contentFolder: 'record', rootId: 'root', ...over,
   })
   const folder = (id: string, addresses: string[], archived?: boolean) => ({
     id, name: `Folder ${id}`, hasState: true, channel: `39000:relay:${id}`, addresses,
