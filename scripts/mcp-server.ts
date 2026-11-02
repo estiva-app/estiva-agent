@@ -42,6 +42,7 @@ import {
   type AgentContext,
   type ParsedArgs,
 } from '../lib/agent/cli'
+import { refuseOutdated } from '../lib/agent/minimum-version'
 import { shipApp } from '../lib/agent/apps/ship'
 import { peekApp, PEEK_WRITE_NOTE } from '../lib/agent/apps/peek'
 import { fileApp } from '../lib/agent/apps/file'
@@ -231,13 +232,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         'For "where is this issue now" ask `ship_status` instead: this returns the whole description and conversation every time, and most calls to it were that question. ' +
         'Accepts a display ref (PEE-1), a short id (the first eight characters of the `d`, printed in every listing), a project name, a full address, or part of a title. The answer says which kind it found. ' +
         'If the reference matches more than one issue, more than one project, or one of each, this returns the candidates instead of choosing — pick one and ask again rather than guessing, because the wrong object is indistinguishable from the right one once reported. ' +
-        'History lists who changed which field and when; a save of the description is a numbered version with its length, and its old text only with `historyText`.',
+        'A project prints the `version` of its text, which `ship_edit_project` takes back with a new description. ' +
+        'History lists who changed which field and when. Opening a project reads only each field\'s current change, which is what history lists then; `history` reads every change, a save of the description as a numbered version with its length, and its old text only with `historyText`.',
       inputSchema: {
         type: 'object',
         properties: {
           ref: {
             type: 'string',
             description: 'Display ref, project name, address, or a distinctive fragment of a title.',
+          },
+          history: {
+            type: 'boolean',
+            description: 'Optional. List every change in history, not only each field\'s current one.',
           },
           historyText: {
             type: 'boolean',
@@ -472,8 +478,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ship_delete_project',
       description:
-        'Ask the relay to drop one Estiva Ship project record. **`ship_archive_project` is almost always the right tool instead** — it hides the project, is reversible, and records who did it. ' +
-        'IRREVERSIBLE, and the only tool here that is. Every other write is a change a later change supersedes; this asks the relay to drop the event, and republishing does not undo it. ' +
+        'Delete one Estiva Ship project. **`ship_archive_project` is almost always the right tool instead** — it hides the project, is reversible, and records who did it. ' +
+        'Where the relay keeps projects in order, a delete is a change: the project leaves every list and search, keeps its id, and `restore: true` with its id or address brings it back whole. Elsewhere it is IRREVERSIBLE: it asks the relay to drop the event, and republishing does not undo it. ' +
         'Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. ' +
         'It removes the project record, not the work: its issues are separate events, are not deleted, and keep appearing in the issue listing with no project. ' +
         WRITE_NOTE,
@@ -492,6 +498,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Optional. Recorded on the deletion request.',
           },
+          restore: {
+            type: 'boolean',
+            description: 'Optional. Bring back a project deleted by a change; `ref` is then its id or address, since it is on no list.',
+          },
         },
         required: ['ref'],
         additionalProperties: false,
@@ -501,6 +511,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'ship_edit_project',
       description:
         'Change one Estiva Ship project: its title, summary, description, status or lead. Pass only the fields to change — anything omitted is left alone. Each field is published as its own change, so a partial failure leaves the earlier ones standing and the answer says which landed. ' +
+        'A `description` needs the `version` `ship_get_issue` printed with the text you changed. If somebody saved the text since, your change is merged onto theirs and the answer says whose words it kept; if you both changed the same part, nothing is saved, no other field either, and the answer names them and shows both versions: keep their words, and ask the person you are working with before dropping any. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
@@ -515,6 +526,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Optional. What the project is for. An empty string clears it.',
           },
+          version: { type: 'string', description: 'With `description`: the `version` `ship_get_issue` printed for the text your change was made on.' },
           mention: MENTION_PROPERTY,
           status: {
             type: 'string',
@@ -822,6 +834,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         (await context()).allowedKinds,
       )
       if (refusal) return failure(refusal)
+      // An agent older than the workspace's minimum writes nothing, and still reads (ALO-7).
+      const outdated = await refuseOutdated(command(wanted.command, wanted.app))
+      if (outdated) return failure(outdated)
     }
 
     switch (request.params.name) {
@@ -865,7 +880,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'ship_get_issue': {
         const ref = typeof input.ref === 'string' ? input.ref : ''
-        return await dispatch(command('show'), args(input.historyText === true ? { 'history-text': true } : {}, [ref]))
+        return await dispatch(
+          command('show'),
+          args({ ...(input.history === true ? { history: true as const } : {}), ...(input.historyText === true ? { 'history-text': true as const } : {}) }, [ref]),
+        )
       }
 
       case 'ship_status':
@@ -919,6 +937,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const flags: Record<string, string | true> = {}
         if (input.confirm === true) flags.yes = true
         if (typeof input.reason === 'string' && input.reason) flags.reason = input.reason
+        if (request.params.name === 'ship_delete_project' && input.restore === true) flags.restore = true
         const which = request.params.name === 'ship_delete_issue' ? 'delete-issue' : 'delete-project'
         return await dispatch(command(which), args(flags, [str(input.ref)]))
       }
@@ -931,7 +950,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           command reads the difference as "leave alone" versus "clear".
         */
         const flags: Record<string, string | true> = {}
-        for (const name of ['title', 'summary', 'description', 'mention', 'status', 'lead']) {
+        for (const name of ['title', 'summary', 'description', 'version', 'mention', 'status', 'lead']) {
           const value = input[name]
           if (typeof value === 'string') flags[name] = value
         }

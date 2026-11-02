@@ -30,11 +30,15 @@ import {
   type Change,
   conversationsFor,
   editsFor,
+  fieldsReader,
+  fileReadsFor,
   filesReader,
   loadWorkspace,
   readRoots,
   relayQuery,
+  textUnread,
   threadsFor,
+  TYPE_OF,
   type Conversation,
   type Issue,
   type Project,
@@ -42,14 +46,22 @@ import {
   type Workspace,
 } from './ship-workspace'
 import { randomUUID } from 'node:crypto'
-import { KIND as PROTOCOL_KIND, imetaTag, type Imeta, type SignedEvent } from '@estiva-app/protocol'
+import { BLOCK_DOCUMENT_FORMAT, KIND as PROTOCOL_KIND, imetaTag, type Imeta, type MergeAsk, type SignedEvent } from '@estiva-app/protocol'
 import { KIND_CHANGE, KIND_COMMENT, KIND_DELETION, KIND_EDIT } from '@estiva-app/conversation'
 import {
   BODY_SLOT,
   KIND_CHANNEL_METADATA,
   MOVED_TO_TAG,
+  TEXT_FIELD,
+  buildActionEvent,
   buildActionEvents,
+  changedAt as fieldChangedAt,
   createProjectionCache,
+  fieldsSetBy,
+  openFile,
+  textOf,
+  writeChange,
+  type WriteChangeResult,
   listFolders,
   planArchiveFolder,
   planMoveFromFolders,
@@ -177,9 +189,14 @@ function projectSummary(project: Project, directory: Directory, vocab: Vocabular
       projects of that size is not a listing anybody wants back. Empty and
       truncated are both visibly different from a value, which is the property
       that was missing.
+
+      A list read by fields (SPEC §6.13) carries no text, so a listing from
+      one has none to show; `edit-project --description` takes the `version`
+      `show` printed, so a brief is never overwritten unread.
     */
-    description: text.length > BLURB ? `${text.slice(0, BLURB)}…` : text,
-    descriptionTruncated: text.length > BLURB || undefined,
+    ...(!textUnread(project)
+      ? { description: text.length > BLURB ? `${text.slice(0, BLURB)}…` : text, descriptionTruncated: text.length > BLURB || undefined }
+      : {}),
     issues: undefined as number | undefined,
   }
 }
@@ -1017,6 +1034,31 @@ export async function moveFile(
   return { added, moved: plan.moved, removed }
 }
 
+/** The field whose `true` takes a file off every list (SPEC §6.5). */
+const DELETED_FIELD = 'deleted'
+
+/**
+ * The action that sets `field` on this object, as Ship's own UI writes it.
+ * `deleted` is SPEC §6.5's, the same on every type, so where the manifest
+ * declares no action for it, it is written on the manifest's own change rule.
+ */
+function fieldAction(workspace: Workspace, addr: string, field: string) {
+  const resolved = workspace.manifestFor(addr)
+  const kind = addr.split(':')[0]
+  const actions = resolved?.manifest.actions ?? []
+  const action = actions.find(
+    (candidate) =>
+      candidate.emits?.field === field &&
+      (Array.isArray(candidate.appliesTo) ? candidate.appliesTo.includes(kind) : candidate.appliesTo === kind),
+  )
+  if (resolved && action) return { manifest: resolved.manifest, action }
+  if (resolved?.manifest.records && field === DELETED_FIELD) {
+    const deletion = { id: 'delete', label: 'Delete', appliesTo: kind, emits: { kind: resolved.manifest.records.changeKind, field }, input: { type: 'string' } }
+    return { manifest: { ...resolved.manifest, actions: [...actions, deletion as (typeof actions)[number]] }, action: deletion }
+  }
+  throw new BadRequest(`Ship's manifest declares no action that sets ${field} on this object.`)
+}
+
 /** A change to one field, as Ship's own UI writes it — the action that declares the field. */
 async function setField(
   context: AgentContext,
@@ -1027,16 +1069,198 @@ async function setField(
   note: string,
   contentFormat?: string,
 ): Promise<PublishOutcome> {
-  const resolved = workspace.manifestFor(target.addr)
-  const kind = target.addr.split(':')[0]
-  const action = (resolved?.manifest.actions ?? []).find(
-    (candidate) =>
-      candidate.emits?.field === field &&
-      (Array.isArray(candidate.appliesTo) ? candidate.appliesTo.includes(kind) : candidate.appliesTo === kind),
-  )
-  if (!action) throw new BadRequest(`Ship's manifest declares no action that sets ${field} on this object.`)
+  const { action } = fieldAction(workspace, target.addr, field)
   const [outcome] = await act(context, workspace, target, action.id, value, [KIND_CHANGE], { note, contentFormat })
   return outcome
+}
+
+/**
+ * One field's change, written after the one it follows (SPEC §6.2), by
+ * interop's `writeChange`: it answers the relay's `conflict:` as every app
+ * does — a field set again keeps the later, and the text merges by §13.3's
+ * rule or asks, never written over somebody's newer words.
+ *
+ * `prev` is the field's current change as read, or the first record's id for
+ * its first change; for the text it is also the base the merge starts from —
+ * the version the agent read.
+ *
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-file-is-its-fields-each-kept-in-order-by-the-relay.md
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/merging-two-changes-to-one-text-never-loses-words.md
+ */
+async function writeField(
+  context: AgentContext,
+  workspace: Workspace,
+  target: { addr: string; author: string; folder: string },
+  field: string,
+  value: string,
+  note: string,
+  prev: string,
+  contentFormat?: string,
+): Promise<WriteChangeResult> {
+  const { manifest, action } = fieldAction(workspace, target.addr, field)
+  const [kind, pubkey, ...rest] = target.addr.split(':')
+  const query = relayQuery(context)
+  return writeChange({
+    field,
+    value,
+    prev,
+    ...(contentFormat ? { format: contentFormat } : {}),
+    build: (input) => {
+      const built = buildActionEvent({
+        manifest,
+        kind: Number(kind),
+        address: target.addr,
+        objectAuthor: target.author,
+        folder: target.folder,
+        actionId: action.id,
+        value: input.value,
+        note,
+        contentFormat: input.format,
+        prev: input.prev,
+        pubkey: context.signer.pubkey,
+        createdAtMs: input.createdAtMs,
+      })
+      // The manifest is anybody's event (`act`): only the change this command signs is written.
+      if (typeof built !== 'string' && built.kind !== KIND_CHANGE) {
+        return `The manifest read for ${target.addr} declares "${action.id}" as a kind:${built.kind}, which this command does not write. Nothing was published.`
+      }
+      return built
+    },
+    sign: (event) => context.signer.sign(event),
+    publish: async (event) => {
+      const result = await context.relay.publish(event)
+      return { ok: result.ok, reason: result.reason, eventId: result.eventId ?? event.id }
+    },
+    query,
+    current: async (name) =>
+      (await openFile(query, { kind: Number(kind), pubkey, d: rest.join(':') }, { text: name === TEXT_FIELD && (await fileReadsFor(context)).text }))?.fields[name]
+        ?.event,
+  })
+}
+
+/** A person's change as an answer names it: who, and when. */
+async function changeBy(context: AgentContext, change: SignedEvent) {
+  const directory = await directoryFor(context, [change.pubkey])
+  return { by: who(directory, change.pubkey) ?? change.pubkey, at: new Date(fieldChangedAt(change)).toISOString() }
+}
+
+/** What a text save merged onto somebody's newer change says: whose words it kept. */
+async function mergedLine(context: AgentContext, result: WriteChangeResult) {
+  if (!result.ok || !result.mergedOnto) return undefined
+  const { by, at } = await changeBy(context, result.mergedOnto)
+  return 'unchanged' in result
+    ? `Nothing to save: ${by}'s change at ${at} already has everything yours did.`
+    : `Merged: the text had been changed by ${by} at ${at}, after the version you read. Their change is kept as it is, with yours where it touched nothing of theirs.`
+}
+
+const askedBlock = (text: string | undefined) => (text === undefined ? '(deleted)' : JSON.stringify(text))
+
+/**
+ * Why a text save wrote nothing (Miky, 2026-11-02): somebody changed the same
+ * block since the version read, or edited a block one side deleted. Names who
+ * and when, shows both versions of each block, and says to keep their words.
+ */
+async function textAsks(context: AgentContext, title: string, asks: readonly MergeAsk[], theirs: SignedEvent, alsoNotSaved: readonly string[]): Promise<BadRequest> {
+  const { by, at } = await changeBy(context, theirs)
+  const blocks = asks.map((ask) =>
+    [
+      `- ${ask.block === null ? 'The text' : `Block ${ask.block}`}: ${ask.why === 'changed-by-both' ? 'changed by both of you' : 'edited by one of you and deleted by the other'}.`,
+      `  theirs: ${askedBlock(ask.theirs)}`,
+      `  yours:  ${askedBlock(ask.mine)}`,
+    ].join('\n'),
+  )
+  return new BadRequest(
+    [
+      `Nothing was saved${alsoNotSaved.length ? `, ${alsoNotSaved.join(', ')} included` : ''}: the text of “${title}” is now as ${by} left it at ${at}, and your change and theirs meet in ${asks.length === 1 ? 'one place' : `${asks.length} places`}.`,
+      ...blocks,
+      `Keep ${by}'s words: read the project again, rewrite your change on top of the text as it is now, and save it with the new version. Ask the person you are working with before dropping any of their words.`,
+      // A block they deleted holds no words of theirs to keep: whether it stays deleted is the person's call.
+      ...(asks.some((ask) => ask.theirs === undefined)
+        ? [`${by} deleted a block you changed: ask the person you are working with whether it stays deleted or comes back with your change.`]
+        : []),
+    ].join('\n'),
+  )
+}
+
+/**
+ * The projects the relay finds by a word of their current fields — title,
+ * summary, key and text (SPEC §6.13) — best first. None where it does not
+ * search projects: §5.2's search by title is then all there is.
+ *
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/search-finds-a-file-by-the-words-of-its-current-fields.md
+ */
+async function projectsByWords(context: AgentContext, reference: string): Promise<string[]> {
+  const words = reference.trim()
+  if (!words || !(await fileReadsFor(context)).search.includes(TYPE_OF[KIND.PROJECT])) return []
+  const { matches } = await context.relay.queryWithMatches([{ fields: 'newest', kinds: [KIND.PROJECT], search: words }])
+  return matches.map((match) => match.a)
+}
+
+/**
+ * The one project a reference names: `resolve.ts`'s rule over the projects
+ * read, and for a read, when nothing is named so, the projects the relay
+ * finds by a word of their current text — one is the answer, several are
+ * listed. A command that writes takes a title, ref or id only: anybody in a
+ * Folder can put a word in a project's text, and so pick what is written to
+ * (`docs/untrusted-content.md`).
+ */
+async function findProjectIn(context: AgentContext, projects: Project[], reference: string, { writes = false } = {}): Promise<Project> {
+  const resolved = resolveMaybe(projects, reference, PROJECT_BY)
+  if ('found' in resolved) return resolved.found
+  if ('ambiguous' in resolved) throw new BadRequest(resolved.ambiguous)
+  const found = writes ? [] : (await projectsByWords(context, reference)).flatMap((addr) => projects.filter((project) => project.addr === addr))
+  if (found.length === 1) return found[0]
+  if (found.length > 1) {
+    throw new BadRequest(
+      `"${reference}" is in the words of ${found.length} projects:\n${found.slice(0, 8).map((project) => `  ${PROJECT_BY.label(project)}`).join('\n')}\n${PROJECT_BY.hint}`,
+    )
+  }
+  throw new BadRequest(`No project matches "${reference}".`)
+}
+
+/**
+ * The file with its current text, for printing or editing it: a file read by
+ * its fields without its text is opened (SPEC §6.13, one text however long its
+ * history), and from a relay that does not open text, its every change is read.
+ * Its fields' current changes come back fresh with it, read just now.
+ */
+async function withText<T extends Project | Issue>(context: AgentContext, query: QueryFn, cache: Workspace['cache'], file: T): Promise<T> {
+  if (!textUnread(file)) return file
+  const reads = await fileReadsFor(context)
+  const opened = reads.text
+    ? await fieldsReader(context, query, cache)([file.addr], [file.addr])
+    : await filesReader(query, readRoots(query), cache)([file.addr])
+  const read = [...opened.projects, ...opened.issues].find((candidate) => candidate.addr === file.addr)
+  if (!read) throw new BadRequest(`“${file.title}” could not be read again. Nothing was published.`)
+  return {
+    ...file,
+    description: read.description,
+    descriptionFormat: read.descriptionFormat,
+    heads: read.heads,
+    version: read.version,
+    ...('deleted' in read && read.deleted ? { deleted: read.deleted } : {}),
+  }
+}
+
+/**
+ * The text a `--version` names, checked to be one of this file's: a save of
+ * its description, or its first record (whose text is the seed). Anything
+ * else is refused before it could become a merge's base.
+ */
+async function textAtVersion(context: AgentContext, file: Pick<Project, 'addr' | 'rootId' | 'title' | 'contentFolder'>, version: string) {
+  const [event] = await relayQuery(context)([{ ids: [version] }])
+  const first = (name: string) => event?.tags.find((tag) => tag[0] === name)?.[1]
+  // A change in this file's own line, as a reader folds one (SPEC §6.2): its first `a` names it, its `O` (if any) is its id, its `h` its home.
+  const inLine =
+    event?.kind === KIND_CHANGE &&
+    first('a') === file.addr &&
+    (first('O') === undefined || first('O') === file.addr.split(':').slice(2).join(':')) &&
+    first('h') === file.contentFolder &&
+    fieldsSetBy(event).some((set) => set.field === TEXT_FIELD)
+  const ours = event?.id === version && (event.id === file.rootId || inLine)
+  const text = ours ? textOf(event) : undefined
+  if (!text) throw new BadRequest(`--version ${version} is not a saved version of the text of “${file.title}”. Pass the \`version\` \`ship show\` printed for it. Nothing was published.`)
+  return { description: text.value, descriptionFormat: text.format === BLOCK_DOCUMENT_FORMAT ? ('blocks' as const) : ('marker' as const) }
 }
 
 /** One save of a file's text as history prints it: which version, how long, and the text only when asked for. */
@@ -1061,17 +1285,33 @@ async function timelineFor(
   state: Workspace,
   addr: string,
   extraPubkeys: (string | undefined)[],
-  { historyText = false, threads }: { historyText?: boolean; threads?: Promise<Map<string, Conversation[]>> } = {},
+  {
+    historyText = false,
+    threads,
+    every,
+  }: {
+    historyText?: boolean
+    threads?: Promise<Map<string, Conversation[]>>
+    /** Every change to the file, read for `--history` when the workspace was read by its fields. */
+    every?: Change[]
+  } = {},
 ) {
   const threadsRead = threads ?? threadsFor(relayQuery(context), state.cache, [addr])
-  const history = state.activity.filter((change) => change.target === addr)
+  const history = (every ?? state.activity).filter((change) => change.target === addr)
+  // Read by its fields, a file's history is each field's current change: a text save is then not numbered.
+  const numbered = !state.byFields || every !== undefined
   // The field the file's manifest folds its text from: a save of it is a version of the whole text.
   const kind = addr.split(':')[0]
   const slot = state.manifestFor(addr)?.manifest.projections?.[kind]?.slots?.[BODY_SLOT] as { fold?: string } | undefined
   const isText = (change: Change) => slot?.fold !== undefined && change.field === slot.fold
   const versions = new Map<string, number>()
   // Printed while the conversation is read: the slowest part of `show` (0.4 s for 38 versions), and it needs no names.
-  const textVersions = new Map(history.filter(isText).map((change) => [change, textVersion(change, versions, historyText)]))
+  const textVersions = new Map(
+    history.filter(isText).map((change) => {
+      const { version, ...rest } = textVersion(change, versions, historyText)
+      return [change, numbered ? { version, ...rest } : rest]
+    }),
+  )
   const byObject = await threadsRead
   const conversations = byObject.get(addr) ?? []
 
@@ -1091,6 +1331,7 @@ async function timelineFor(
 
   return {
     directory,
+    ...(numbered ? {} : { historyNote: 'Only the latest change to each field. Pass --history for every change.' }),
     history: history.map((change) => ({
       field: change.field,
       /*
@@ -1141,7 +1382,14 @@ async function timelineFor(
  * load's query so a read both make is asked once (APP-2).
  */
 async function loadWithFolders(context: AgentContext, query: QueryFn = loadQuery(context)) {
-  const [state, folders] = await Promise.all([loadWorkspace(context, query), listFolders(query)])
+  /*
+    Only the Folders' own archives: the cascade never counts a record
+    channel's (it is archived "with" its own project, whose change says so),
+    and placing a record channel reads every change to every file a Folder
+    lists — 38 MB of the 43 MB `projects` read on 2 Nov, once the whole change
+    kind was no longer read to answer it (ALO-7).
+  */
+  const [state, folders] = await Promise.all([loadWorkspace(context, query), listFolders(query, { recordChannels: false })])
   cascadeArchives(state, folders)
   return { state, folders, query }
 }
@@ -1281,9 +1529,15 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
     const folder = target.kind === 'project' ? target.file.contentFolder : target.file.folder
     if (!folder) throw new BadRequest(`“${name}” names no Folder, so a change to it has nowhere to be published.`)
     const action = target.kind === 'project' ? 'archive-project' : 'archive-issue'
-    ;[result] = await act(context, state, { addr: target.file.addr, author: target.file.author, folder }, action, archived ? 'true' : '', [KIND_CHANGE], {
-      note: typeof resolution === 'string' ? resolution : '',
-    })
+    const note = typeof resolution === 'string' ? resolution : ''
+    const file = { addr: target.file.addr, author: target.file.author, folder }
+    if (target.kind === 'project' && target.file.heads) {
+      // After the change it follows (ALO-7): set again by somebody since, the later stands.
+      const written = await writeField(context, state, file, 'archived', archived ? 'true' : '', note, target.file.heads.archived ?? target.file.rootId)
+      result = written.ok ? { ok: true, eventId: written.id } : { ok: false, reason: 'refused' in written ? written.refused : undefined }
+    } else {
+      ;[result] = await act(context, state, file, action, archived ? 'true' : '', [KIND_CHANGE], { note })
+    }
     if (target.kind === 'project') {
       const project = target.file
       const issues = state.issues.filter((issue) => issue.projectAddr === project.addr).length
@@ -1303,6 +1557,57 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
       ? `Hidden from Ship's lists and from \`ship issues\` / \`ship projects\` unless --archived: ${hides}. A link still opens it, with the resolution first. Reverse with --unarchive; nothing is deleted.`
       : 'Back in the lists, with what was hidden with it.',
   }
+}
+
+/**
+ * Delete or restore a project as SPEC §6.5 has it where the relay keeps
+ * projects in order: a change setting `deleted` to `true`, or to the empty
+ * value, after the one it follows. It leaves every list and search and keeps
+ * its id, record and changes, so a restore brings it back whole — and nothing
+ * else is written either way, no unlisting.
+ *
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-file-is-its-fields-each-kept-in-order-by-the-relay.md
+ */
+async function setDeleted(context: AgentContext, state: Workspace, project: Project, deleted: boolean, reason?: string) {
+  const target = { addr: project.addr, author: project.author, folder: project.contentFolder }
+  const prev = project.heads?.[DELETED_FIELD] ?? project.rootId
+  const result = await writeField(context, state, target, DELETED_FIELD, deleted ? 'true' : '', reason ?? (deleted ? 'Delete' : 'Restore'), prev)
+  if (!result.ok) throw refused(`${deleted ? 'deleting' : 'restoring'} “${project.title}”`, 'refused' in result ? result.refused : undefined)
+  const changed = { title: project.title, addr: project.addr }
+  return deleted
+    ? {
+        deleted: changed,
+        eventId: result.id,
+        survives:
+          "It keeps its id, its record, its issues and every change: it is off the agent's lists and out of the relay's search, still opens by its id, and --restore brings it back whole. Ship still shows it until Ship reads deletes this way.",
+      }
+    : { restored: changed, eventId: result.id, note: 'Back in the lists and in search, as it was.' }
+}
+
+/**
+ * Bring a deleted project back (SPEC §6.5). It is on no list and in no
+ * search, so it is named by its address or id and read by its record.
+ */
+async function restoreProject(context: AgentContext, query: QueryFn, reference: string) {
+  const needle = reference.trim().toLowerCase()
+  const roots = await query([{ kinds: [KIND.PROJECT] }])
+  const addresses = [...new Set(roots.map((root) => `${root.kind}:${root.pubkey}:${root.tags.find((t) => t[0] === 'd')?.[1] ?? ''}`))]
+  const named = addresses.filter((addr) => {
+    const d = addr.split(':').slice(2).join(':').toLowerCase()
+    return addr.toLowerCase() === needle || d === needle || (needle.length >= 4 && d.startsWith(needle))
+  })
+  if (named.length !== 1) {
+    throw new BadRequest(
+      named.length
+        ? `"${reference}" is the start of ${named.length} projects' ids. Pass the whole address.`
+        : `No project has the id or address "${reference}". A deleted project is named by its id, as \`ship show\` or the delete printed it.`,
+    )
+  }
+  const state = await fieldsReader(context, query)(named)
+  const project = state.projects[0]
+  if (!project) throw new BadRequest(`The project ${named[0]} could not be read. Nothing was published.`)
+  if (!project.deleted) return { unchanged: { title: project.title, addr: project.addr }, note: 'That project is not deleted, so there is nothing to restore.' }
+  return setDeleted(context, state, project, false)
 }
 
 /**
@@ -1327,21 +1632,27 @@ async function descriptionLinks(
   return links.map((link) => (!link.title && titles.get(link.to) ? { ...link, title: titles.get(link.to)! } : link))
 }
 
+/** What `show` was asked for beyond the file: old texts, and every change rather than each field's current one. */
+interface ShowOptions {
+  historyText: boolean
+  every?: Change[]
+}
+
 async function showProject(
   context: AgentContext,
   state: Workspace,
   project: Project,
-  historyText: boolean,
+  { historyText, every }: ShowOptions,
   readMore?: (addresses: string[]) => Promise<Workspace>,
   threads?: Promise<Map<string, Conversation[]>>,
 ) {
   const issues = state.issues.filter((issue) => issue.projectAddr === project.addr)
-  const { directory, history, conversation } = await timelineFor(
+  const { directory, historyNote, history, conversation } = await timelineFor(
     context,
     state,
     project.addr,
-    [project.author, project.lead, project.archive?.by, ...issues.map((issue) => issue.assignee), ...issues.map((issue) => issue.author)],
-    { historyText, threads },
+    [project.author, project.lead, project.archive?.by, project.deleted?.by, ...issues.map((issue) => issue.assignee), ...issues.map((issue) => issue.author)],
+    { historyText, threads, every },
   )
 
   return {
@@ -1354,12 +1665,25 @@ async function showProject(
     lead: who(directory, project.lead),
     author: who(directory, project.author),
     archived: archiveSummary(directory, project.archive),
+    // SPEC §6.5: off every list and out of search, and still opened by its id.
+    ...(project.deleted
+      ? {
+          deleted: {
+            by: who(directory, project.deleted.by),
+            at: new Date(project.deleted.at).toISOString(),
+            note: 'Deleted: on no list and in no search. It keeps its record and changes, and delete-project --restore brings it back whole.',
+          },
+        }
+      : {}),
+    // The text's version: `edit-project --description` takes it back, and merges onto anything saved since.
+    ...(project.version !== undefined ? { version: project.version } : {}),
     description: descriptionText(project.description, project.descriptionFormat),
     descriptionFormat: formatName(project.descriptionFormat),
     links: await descriptionLinks(context, state, project, readMore),
     createdAt: new Date(project.createdAt * 1000).toISOString(),
     folder: project.contentFolder,
     issues: issues.map((issue) => issueSummary(issue, directory, state.vocab.issue)),
+    ...(historyNote ? { historyNote } : {}),
     history,
     conversation,
   }
@@ -1369,16 +1693,16 @@ async function showIssue(
   context: AgentContext,
   state: Workspace,
   issue: Issue,
-  historyText: boolean,
+  { historyText, every }: ShowOptions,
   readMore?: (addresses: string[]) => Promise<Workspace>,
   threads?: Promise<Map<string, Conversation[]>>,
 ) {
-  const { directory, history, conversation } = await timelineFor(
+  const { directory, historyNote, history, conversation } = await timelineFor(
     context,
     state,
     issue.addr,
     [issue.author, issue.assignee, issue.archive?.by],
-    { historyText, threads },
+    { historyText, threads, every },
   )
 
   return {
@@ -1402,6 +1726,7 @@ async function showIssue(
       that somebody other than the author acted — which is the whole
       reason the model is event-sourced rather than a mutable row.
     */
+    ...(historyNote ? { historyNote } : {}),
     history,
     conversation,
   }
@@ -1436,10 +1761,14 @@ async function oneFile(context: AgentContext, query: QueryFn, reference: string)
   folders.catch(() => {}) // a refusal is met by the read that awaits it
   const rootsRead = readRoots(query)
   const cache = createProjectionCache()
-  const readFiles = filesReader(query, rootsRead, cache)
-  const [roots, renamed] = await Promise.all([
+  // By their fields where the relay reads them so (SPEC §6.13): each file's current changes, and none of its older ones.
+  const readFiles: (addresses: readonly string[], text?: readonly string[]) => Promise<Workspace> = (await fileReadsFor(context)).list
+    ? fieldsReader(context, query, cache)
+    : filesReader(query, rootsRead, cache)
+  const [roots, renamed, byWords] = await Promise.all([
     rootsRead,
     context.relay.query([{ kinds: [KIND_CHANGE], search: reference.trim(), search_mode: 'prefix', limit: RENAME_SEARCH_LIMIT }]),
+    projectsByWords(context, reference),
   ])
   if (renamed.length >= RENAME_SEARCH_LIMIT) return undefined
 
@@ -1460,6 +1789,8 @@ async function oneFile(context: AgentContext, query: QueryFn, reference: string)
     const target = tag(change, 'a')
     if (target && ['title', 'ref'].includes(tag(change, 'field') ?? '')) candidates.add(target)
   }
+  // Named by nothing else: the projects the relay finds by a word of their current fields, text included (SPEC §6.13).
+  if (candidates.size === 0) for (const addr of byWords) candidates.add(addr)
   if (candidates.size === 0 || candidates.size > MOST_CANDIDATES) return undefined
 
   const addressOf = (root: SignedEvent) => `${root.kind}:${root.pubkey}:${tag(root, 'd')}`
@@ -1473,13 +1804,13 @@ async function oneFile(context: AgentContext, query: QueryFn, reference: string)
   const asked = [...candidates].filter((addr) => addr.startsWith(`${KIND.PROJECT}:`))
   const movedIn = asked.length ? query([{ kinds: [KIND_CHANGE], [`#${MOVED_TO_TAG}`]: asked }]) : Promise.resolve([])
   const theirIssues = roots.flatMap((root) => (root.kind === KIND.ISSUE && asked.includes(tag(root, 'a') ?? '') ? [addressOf(root)] : []))
+  // The one candidate's conversation is asked beside the changes, and its text with its fields: it is the file shown, if any is.
+  const [only] = candidates.size === 1 ? candidates : []
   const read = async (addresses: string[]) => {
-    const [state, listed] = await Promise.all([readFiles(addresses), folders])
+    const [state, listed] = await Promise.all([readFiles(addresses, only ? [only] : []), folders])
     cascadeArchives(state, listed)
     return state
   }
-  // The one candidate's conversation is asked beside the changes: it is the file shown, if any is.
-  const [only] = candidates.size === 1 ? candidates : []
   const threads = only ? threadsFor(query, cache, [only]) : undefined
   threads?.catch(() => {}) // a refusal is met by `show`, which awaits it
   const threadsOf = (addr: string) => (addr === only ? threads : undefined)
@@ -1495,6 +1826,11 @@ async function oneFile(context: AgentContext, query: QueryFn, reference: string)
   const asProject = resolveMaybe(state.projects.filter((project) => candidates.has(project.addr)), reference, PROJECT_BY)
   // A match on part of a title is settled only against every title as it is now, which only the whole read has.
   if (('found' in asIssue && asIssue.by === 'part') || ('found' in asProject && asProject.by === 'part')) return undefined
+  if ('none' in asIssue && 'none' in asProject) {
+    // Named by no title, but in the words of exactly one project's current fields; several are listed by the whole read.
+    const byText = byWords.flatMap((addr) => state.projects.filter((project) => project.addr === addr))
+    return byText.length === 1 ? { state, project: byText[0], readMore: read, threadsOf } : undefined
+  }
 
   if ('found' in asProject && 'none' in asIssue) return { state, project: asProject.found, readMore: read, threadsOf }
   if (!('found' in asIssue) || !('none' in asProject)) return undefined
@@ -1682,7 +2018,7 @@ export const shipApp: AgentApp = {
 
         let issues = state.issues
         if (wantedProject) {
-          const project = findProject(state.projects, wantedProject)
+          const project = await findProjectIn(context, state.projects, wantedProject)
           issues = issues.filter((issue) => issue.projectAddr === project.addr)
         }
         if (wantedStatuses) {
@@ -1720,7 +2056,8 @@ export const shipApp: AgentApp = {
             dropping the count when `--project` is passed would hide the gap in
             exactly the narrow queries somebody trusts most.
           */
-          coverage: await coverage(query, state.issues),
+          // Read by fields, every issue record readable is in the read and folded: nothing is unreachable, and nothing to read again.
+          coverage: state.byFields ? { reachable: state.issues.length, unreachable: 0, total: state.issues.length } : await coverage(query, state.issues),
         }
       },
     },
@@ -1729,7 +2066,8 @@ export const shipApp: AgentApp = {
       summary: 'what changed, newest first',
       usage: 'activity [--since <2d|2026-08-29>] [--project <ref>] [--by <pubkey|me>] [--limit <n>]',
       async run(context, args) {
-        const state = await loadWorkspace(context)
+        // Every change, not each field's current one: this is the change stream itself.
+        const state = await loadWorkspace(context, undefined, { history: true })
 
         const since = flagValue(args, 'since')
         const cutoff = since ? parseSince(since, Date.now()) : undefined
@@ -1752,7 +2090,7 @@ export const shipApp: AgentApp = {
         }
 
         const wantedProject = flagValue(args, 'project')
-        const project = wantedProject ? findProject(state.projects, wantedProject) : undefined
+        const project = wantedProject ? await findProjectIn(context, state.projects, wantedProject) : undefined
 
         const by = flagValue(args, 'by')
         const author = by === 'me' ? context.signer.pubkey : by
@@ -1839,8 +2177,12 @@ export const shipApp: AgentApp = {
           state, the PR if one is named, and the last comment clipped; `show`
           is still there for the rest.
         */
-        const { state, issue } = await resolveIssueFor(context, reference)
-        const comments = commentsOn(await conversationsFor(context, state, [issue.addr]), issue.addr)
+        const query = loadQuery(context)
+        const state = await loadWorkspace(context, query)
+        // The text is read for the PR link it may name; a list carries none (SPEC §6.13).
+        const found = findIssue(state.issues, reference)
+        const [issue, talk] = await Promise.all([withText(context, query, state.cache, found), conversationsFor(context, state, [found.addr])])
+        const comments = commentsOn(talk, issue.addr)
         const last = comments[comments.length - 1]
         const directory = await directoryFor(context, [issue.assignee, last?.author])
 
@@ -1867,16 +2209,33 @@ export const shipApp: AgentApp = {
     {
       name: 'show',
       summary: 'one issue or project, folded, with its conversation and history',
-      usage: 'show <ref> [--history-text]',
+      usage: 'show <ref> [--history] [--history-text]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('show needs a reference — try `ship issues` first.')
         const historyText = args.flags['history-text'] === true
 
         const query = loadQuery(context)
+        /*
+          Opening a file read by its fields reads each field's current change
+          and its current text, none of its older ones (ALO-7); every change is
+          read only when asked for, by `--history` or `--history-text`.
+        */
+        const options = async (state: Workspace, addr: string): Promise<ShowOptions> => {
+          if (!state.byFields || !(args.flags.history === true || historyText)) return { historyText }
+          const [kind, pubkey, ...d] = addr.split(':')
+          const record = query([{ kinds: [Number(kind)], authors: [pubkey], '#d': [d.join(':')] }])
+          return { historyText, every: (await filesReader(query, record, state.cache)([addr])).activity }
+        }
         const one = await oneFile(context, query, reference)
-        if (one?.issue) return showIssue(context, one.state, one.issue, historyText, one.readMore, one.threadsOf(one.issue.addr))
-        if (one?.project) return showProject(context, one.state, one.project, historyText, one.readMore, one.threadsOf(one.project.addr))
+        if (one?.issue) {
+          const issue = await withText(context, query, one.state.cache, one.issue)
+          return showIssue(context, one.state, issue, await options(one.state, issue.addr), one.readMore, one.threadsOf(issue.addr))
+        }
+        if (one?.project) {
+          const project = await withText(context, query, one.state.cache, one.project)
+          return showProject(context, one.state, project, await options(one.state, project.addr), one.readMore, one.threadsOf(project.addr))
+        }
 
         // With the Folders, so `archived` agrees with what the listings hide.
         const { state } = await loadWithFolders(context, query)
@@ -1900,17 +2259,30 @@ export const shipApp: AgentApp = {
           )
         }
 
-        if ('found' in asProject) return showProject(context, state, asProject.found, historyText)
+        const opened = async (project: Project) => {
+          const read = await withText(context, query, state.cache, project)
+          return showProject(context, state, read, await options(state, read.addr))
+        }
+        if ('found' in asProject) return opened(asProject.found)
 
         if (!('found' in asIssue)) {
           // Whichever attempt had something to say says it. An ambiguity is a
           // real finding — "three issues match" — where a miss is just a miss.
           if ('ambiguous' in asIssue) throw new BadRequest(asIssue.ambiguous)
           if ('ambiguous' in asProject) throw new BadRequest(asProject.ambiguous)
+          // Named by no title: a project the relay finds by a word of its current fields, or a list of them.
+          const byText = (await projectsByWords(context, reference)).flatMap((addr) => state.projects.filter((project) => project.addr === addr))
+          if (byText.length === 1) return opened(byText[0])
+          if (byText.length > 1) {
+            throw new BadRequest(
+              `"${reference}" is in the words of ${byText.length} projects:\n${byText.slice(0, 8).map((project) => `  ${PROJECT_BY.label(project)}`).join('\n')}\n${PROJECT_BY.hint}`,
+            )
+          }
           throw new BadRequest(`No issue or project matches "${reference}".`)
         }
 
-        return showIssue(context, state, asIssue.found, historyText)
+        const issue = await withText(context, query, state.cache, asIssue.found)
+        return showIssue(context, state, issue, await options(state, issue.addr))
       },
     },
     {
@@ -2193,8 +2565,11 @@ export const shipApp: AgentApp = {
         if (!reference) throw new BadRequest('edit-issue needs an issue reference.')
         const asked = await descriptionMentions(context, args)
 
-        const state = await loadWorkspace(context)
-        const issue = findIssue(state.issues, reference)
+        const query = loadQuery(context)
+        const state = await loadWorkspace(context, query)
+        // Its current text when it is being changed: a list carries none (SPEC §6.13).
+        const found = findIssue(state.issues, reference)
+        const issue = flagValue(args, 'description') === undefined ? found : await withText(context, query, state.cache, found)
         const edits = issueEdits(issue, args, state.projects, await filesIn(context, args, issue))
 
         /*
@@ -2255,15 +2630,37 @@ export const shipApp: AgentApp = {
       name: 'edit-project',
       signs: [KIND_CHANGE],
       summary: 'change a project’s title, summary, description, status or lead',
-      usage: 'edit-project <ref> [--title "..."] [--summary "..."] [--description "..."] [--mention <key|npub|handle>[,…]] [--status <s>] [--lead <key|me|none>]',
+      usage: 'edit-project <ref> [--title "..."] [--summary "..."] [--description "..." --version <from show>] [--mention <key|npub|handle>[,…]] [--status <s>] [--lead <key|me|none>]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('edit-project needs a project reference.')
         const asked = await descriptionMentions(context, args)
 
-        const state = await loadWorkspace(context)
-        const project = findProject(state.projects, reference)
-        const edits = projectEdits(project, args, context.signer.pubkey, state.vocab.project, await filesIn(context, args, project))
+        const query = loadQuery(context)
+        const state = await loadWorkspace(context, query)
+        const description = flagValue(args, 'description')
+        const version = flagValue(args, 'version')
+        if (version !== undefined && description === undefined) throw new BadRequest('--version goes with --description: it is the version of the text your change was made on.')
+        // Its current text, and each field's current change, read just before writing.
+        const project = description === undefined
+          ? await findProjectIn(context, state.projects, reference, { writes: true })
+          : await withText(context, query, state.cache, await findProjectIn(context, state.projects, reference, { writes: true }))
+        /*
+          The text the change was made on (ALO-7): a project read by its fields
+          says its version, and a change made on an older one is merged onto
+          whatever was saved since, with that version as the base — so it must
+          be the one the agent read, never the current text taken on trust.
+        */
+        let subject: Project = project
+        if (description !== undefined && project.version !== undefined) {
+          if (!version) {
+            throw new BadRequest(
+              `edit-project --description needs --version, as \`ship show\` printed it for “${project.title}”: a change made on an older text is merged onto what was saved since, never written over it. Nothing was published.`,
+            )
+          }
+          if (version !== project.version) subject = { ...project, ...(await textAtVersion(context, project, version)) }
+        }
+        const edits = projectEdits(subject, args, context.signer.pubkey, state.vocab.project, await filesIn(context, args, subject))
 
         /*
           A change to the project *record* carries the Folder that record
@@ -2304,19 +2701,28 @@ export const shipApp: AgentApp = {
           answer names the ones that landed rather than reporting the whole call
           as failed and leaving a person guessing about half of it.
         */
-        const plan = addsFor(context, { addr: project.addr, folder }, project, edits, asked)
-        const applied: ReturnType<typeof appliedEdit>[] = []
+        const plan = addsFor(context, { addr: project.addr, folder }, subject, edits, asked)
+        const applied: (ReturnType<typeof appliedEdit> & { merged?: string })[] = []
         let mentioned = {}
-        for (const edit of edits) {
-          const result = await setField(context, state, { addr: project.addr, author: project.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat)
-          if (!result.ok) {
-            throw refused(
-              `${edit.field} on “${project.title}”`,
-              result.reason,
-              `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`,
-            )
+        const target = { addr: project.addr, author: project.author, folder }
+        // The text first (ALO-7): a text that asks writes nothing, and no other field either.
+        const ordered = [...edits.filter((edit) => edit.field === TEXT_FIELD), ...edits.filter((edit) => edit.field !== TEXT_FIELD)]
+        for (const edit of ordered) {
+          const standing = `Already published and standing: ${applied.map((entry) => entry.field).join(', ') || 'nothing'}.`
+          if (project.heads) {
+            // Each change names the one it follows: the field's current change, or the record for its first.
+            const prev = edit.field === TEXT_FIELD ? version ?? project.version ?? project.rootId : project.heads[edit.field] ?? project.rootId
+            const result = await writeField(context, state, target, edit.field, edit.value, edit.note, prev, edit.contentFormat)
+            if (!result.ok && 'asks' in result) {
+              throw await textAsks(context, project.title, result.asks, result.theirs, ordered.slice(1).map((other) => other.field))
+            }
+            if (!result.ok) throw refused(`${edit.field} on “${project.title}”`, result.refused, standing)
+            applied.push({ ...appliedEdit(edit, result.id), merged: await mergedLine(context, result) })
+          } else {
+            const result = await setField(context, state, target, edit.field, edit.value, edit.note, edit.contentFormat)
+            if (!result.ok) throw refused(`${edit.field} on “${project.title}”`, result.reason, standing)
+            applied.push(appliedEdit(edit, result.eventId))
           }
-          applied.push(appliedEdit(edit, result.eventId))
           // Straight after the save it goes with, so a later field's refusal cannot leave a mention without its Add.
           if (edit.field === 'description') mentioned = await publishMentionAdds(context, plan, `The description of “${project.title}”`)
         }
@@ -2345,7 +2751,7 @@ export const shipApp: AgentApp = {
         if (!target) throw new BadRequest('move-project needs --folder: a top-level Folder name or id.')
 
         const state = await loadWorkspace(context)
-        const project = findProject(state.projects, reference)
+        const project = await findProjectIn(context, state.projects, reference, { writes: true })
         const teams = topLevelFolders(await readFolders(context))
         const to = resolveTeamIn(teams, target)
 
@@ -2471,16 +2877,21 @@ export const shipApp: AgentApp = {
     },
     {
       name: 'delete-project',
-      signs: [KIND_DELETION, PROTOCOL_KIND.FOLDER_COMMAND],
-      summary: 'ask the relay to drop a project record — irreversible; prefer archive-project',
-      usage: 'delete-project <ref> [--yes] [--reason "…"]',
+      // The `deleted` change where the relay keeps projects in order (SPEC §6.5); a `kind:5` and its unlistings until then.
+      signs: [KIND_DELETION, PROTOCOL_KIND.FOLDER_COMMAND, KIND_CHANGE],
+      summary: 'delete a project — a `deleted` change --restore undoes where the relay keeps projects in order, else an irreversible request; prefer archive-project',
+      usage: 'delete-project <ref> [--yes] [--reason "…"] [--restore]',
       async run(context, args) {
         const reference = args.positional[0]
         if (!reference) throw new BadRequest('delete-project needs a project reference.')
+        const query = loadQuery(context)
+        if (args.flags.restore) return restoreProject(context, query, reference)
 
-        const state = await loadWorkspace(context)
-        const project = findProject(state.projects, reference)
+        const state = await loadWorkspace(context, query)
+        const project = await findProjectIn(context, state.projects, reference, { writes: true })
         const issues = state.issues.filter((issue) => issue.projectAddr === project.addr).length
+        const reads = await fileReadsFor(context)
+        const byField = reads.switched && reads.inOrder.includes(TYPE_OF[KIND.PROJECT])
 
         /*
           `archive-project` refuses without an origin Folder because a change
@@ -2498,9 +2909,13 @@ export const shipApp: AgentApp = {
           return {
             wouldDelete: { title: project.title, addr: project.addr, folder },
             survives,
-            note: 'Nothing was published. Archiving is reversible and usually what is wanted — see `archive-project`. Pass --yes to send the deletion request.',
+            note: byField
+              ? "Nothing was published. A delete takes it off the agent's lists and out of the relay's search (Ship still shows it until Ship reads deletes this way); it keeps its id, record and changes, still opens by its id, and --restore brings it back whole. Archiving is usually what is wanted — see `archive-project`. Pass --yes to delete it."
+              : 'Nothing was published. Archiving is reversible and usually what is wanted — see `archive-project`. Pass --yes to send the deletion request.',
           }
         }
+        const reason = flagValue(args, 'reason')
+        if (byField) return setDeleted(context, state, project, true, reason)
 
         /*
           Then unlisted from its team (FOL-48): a Folder with state lists what
@@ -2517,9 +2932,11 @@ export const shipApp: AgentApp = {
         const from = folders.map((f) => f.folder).join(', ')
         // Ship's `delete-project` action: the `kind:5`, then a remove from each listing (`listed: true`).
         const [result, ...unlists] = await act(context, state, { addr: project.addr, author: project.author, folder }, 'delete-project', '', [KIND_DELETION, PROTOCOL_KIND.FOLDER_COMMAND], {
-          reason: flagValue(args, 'reason'),
+          reason,
           listedIn: folders.map((f) => ({ id: f.folder, hasState: f.hasState })),
         })
+        // A relay keeping this project in order refuses the `kind:5` (§6.5), before any unlisting: there, deleting is the field.
+        if (!result.ok && /deleted by its deleted field/.test(result.reason ?? '')) return setDeleted(context, state, project, true, reason)
         published(result, `deleting “${project.title}”`)
         const unlisted = unlists.find((answer) => !answer.ok) ?? unlists.at(-1)
 
@@ -2607,14 +3024,18 @@ export const shipApp: AgentApp = {
         )
         const created = { result, placed, addr: `${KIND.PROJECT}:${context.signer.pubkey}:${id}` }
         published(created.result, `a new project "${title}"`)
-        const described = body?.contentFormat
-          ? await setField(context, state, { addr: created.addr, author: context.signer.pubkey, folder: team.id }, 'description', body.value, 'Description', body.contentFormat)
-          : undefined
+        /*
+          Each field's first change follows the record (SPEC §6.2), named by the
+          id the relay took it under; from a relay that does not keep files in
+          order, `prev` is still the right word, so it is always sent.
+        */
+        const first = async (field: string, value: string, note: string, contentFormat?: string): Promise<PublishOutcome> => {
+          const written = await writeField(context, state, { addr: created.addr, author: context.signer.pubkey, folder: team.id }, field, value, note, created.result.eventId!, contentFormat)
+          return written.ok ? { ok: true, eventId: written.id } : { ok: false, reason: 'refused' in written ? written.refused : 'a change crossed it' }
+        }
+        const described = body?.contentFormat ? await first('description', body.value, 'Description', body.contentFormat) : undefined
         if (described) published(described, `the description of "${title}" — the project itself was created, ${created.addr}, without one`)
-        const summarized =
-          route === 'change'
-            ? await setField(context, state, { addr: created.addr, author: context.signer.pubkey, folder: team.id }, 'summary', summary, 'Summary')
-            : undefined
+        const summarized = route === 'change' ? await first('summary', summary, 'Summary') : undefined
         if (summarized) published(summarized, `the summary of "${title}" — the project itself was created, ${created.addr}, without one`)
         const mentioned = await publishMentionAdds(context, adds, `The project "${title}" (${created.addr})`)
 
@@ -2649,7 +3070,7 @@ export const shipApp: AgentApp = {
         const asked = await descriptionMentions(context, args)
 
         const state = await loadWorkspace(context)
-        const project = findProject(state.projects, projectRef)
+        const project = await findProjectIn(context, state.projects, projectRef, { writes: true })
 
         /*
           No ref (Miky, 2026-10-02, PER-21). A display key is derived from the

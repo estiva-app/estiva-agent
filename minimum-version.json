@@ -1,0 +1,4 @@
+{
+  "minimum": "0.28.0",
+  "why": "0.28.0 writes each project change after the one it follows and merges a text change made on an older copy (ALO-7). Raise this when the workspace starts expecting something every writer must do; an agent below it refuses writes and still reads."
+}

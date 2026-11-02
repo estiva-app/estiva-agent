@@ -20,11 +20,16 @@ import {
   contentFormatOf,
   conversationsOf,
   createProjectionCache,
+  filesOf,
   folderOf,
+  listFiles,
+  openFile,
   projectEvents,
   resolveManifest,
+  TEXT_FIELD,
   threadsOf,
   type Archive,
+  type FileFields,
   type FolderSummary,
   type ForeignObject,
   type ProjectionCache,
@@ -32,7 +37,7 @@ import {
   type ResolvedManifest,
 } from '@estiva-app/interop'
 import { byOrder, decorationsOf, KIND_CHANGE, trustedTs, type EditFold } from '@estiva-app/conversation'
-import type { ContentFormat, SignedEvent } from '@estiva-app/protocol'
+import { relayFileReadsOf, type ContentFormat, type RelayFileReads, type SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../cli'
 import { loadQuery, relayQuery } from '../act-on-file'
 
@@ -76,6 +81,23 @@ export interface Project {
   ownArchive?: Archive
   /** The Folder the record names (`buzz-channel`, else `h`) — where changes to it are published. */
   contentFolder: string
+  /** Its first record's id: the `prev` of each field's first change (SPEC §6.2). */
+  rootId: string
+  /**
+   * Each field's current change, by field, when the file was read by its
+   * fields (SPEC §6.13): what a change to that field follows. Absent from a
+   * read of every change.
+   */
+  heads?: Record<string, string>
+  /**
+   * The text's current change, or the first record's id when it was never
+   * changed — what `edit-project --description --version` takes back. Absent
+   * when the text was not read: a list never carries it, so `description` is
+   * then the record's seed, not the text.
+   */
+  version?: string
+  /** Set by a `deleted` change (SPEC §6.5): who, and when in ms. A deleted project is read only by its id. */
+  deleted?: { by: string; at: number }
 }
 
 export interface Issue {
@@ -105,7 +127,20 @@ export interface Issue {
   ownArchive?: Archive
   /** When the status change that won was made, epoch ms — absent if it never changed. */
   statusChangedAt?: number
+  /** As a project's: its first record's id. */
+  rootId: string
+  /** As a project's: each field's current change, when read by fields. */
+  heads?: Record<string, string>
+  /** As a project's: the text's current change when the text was read by fields. */
+  version?: string
 }
+
+/**
+ * Whether a file was read by its fields without its text (SPEC §6.13): its
+ * `description` is then the record's seed, never something to print as its
+ * text or to edit from.
+ */
+export const textUnread = (file: Pick<Project, 'heads' | 'version'>): boolean => file.heads !== undefined && file.version === undefined
 
 /**
  * FOL-46's cascade, read and never written: an issue is archived with its
@@ -165,6 +200,12 @@ export interface Workspace {
   /** The projected objects themselves, by address — for interop calls that want one. */
   objects: Map<string, ForeignObject>
   cache: ProjectionCache
+  /**
+   * Whether this was read by fields (SPEC §6.13): `activity` then holds only
+   * each field's current change, and a file's `description` is its text only
+   * where `version` says it was read.
+   */
+  byFields: boolean
 }
 
 const pointerOf = (address: string) => {
@@ -235,12 +276,44 @@ function rawStatus(object: ForeignObject, vocab: Vocabulary): string {
 
 const metaValue = (object: ForeignObject, field: string) => object.meta.find((slot) => slot.field === field)?.value || undefined
 
+const NO_FILE_READS: RelayFileReads = { list: false, text: false, switched: false, inOrder: [], search: [] }
+const fileReads = new WeakMap<AgentContext, { at: number; reads: Promise<RelayFileReads> }>()
+/** How long a NIP-11 answer is trusted: an MCP server lives for days, and a relay makes the switch once. */
+const FILE_READS_FOR_MS = 10 * 60_000
+
 /**
- * Every Ship project and issue, folded through Ship's manifest, with the change stream.
- * `query` is the load's, when the workspace is read beside other reads of the same load (APP-2).
+ * What the relay's NIP-11 says it reads and keeps (SPEC §6.13), asked again
+ * every ten minutes per connection. A relay that cannot say reads as offering
+ * nothing, which is always safe: every change is read and folded here.
  */
-export async function loadWorkspace(context: AgentContext, query: QueryFn = loadQuery(context)): Promise<Workspace> {
+export function fileReadsFor(context: AgentContext): Promise<RelayFileReads> {
+  const held = fileReads.get(context)
+  if (held && Date.now() - held.at < FILE_READS_FOR_MS) return held.reads
+  const reads = Promise.resolve()
+    .then(() => context.relay.info())
+    .then(relayFileReadsOf, () => NO_FILE_READS)
+  fileReads.set(context, { at: Date.now(), reads })
+  return reads
+}
+
+/** The type a Ship kind is, as NIP-11 names it (TYPES.md). */
+export const TYPE_OF: Record<number, string> = { [KIND.PROJECT]: 'osnova.project', [KIND.ISSUE]: 'osnova.issue' }
+
+/**
+ * Every Ship project and issue, folded through Ship's manifest.
+ * `query` is the load's, when the workspace is read beside other reads of the same load (APP-2).
+ *
+ * Where the relay advertises the list read (`file_list`), it is that: each
+ * file's first record and its fields' current changes, never the text and no
+ * deleted file — 4.7 MB for every project and issue on 2 Nov where every
+ * change was 41 MB. `history` asks for every change instead, for `activity`.
+ */
+export async function loadWorkspace(context: AgentContext, query: QueryFn = loadQuery(context), { history = false } = {}): Promise<Workspace> {
   const cache = createProjectionCache()
+  if (!history && (await fileReadsFor(context)).list) {
+    const files = (await Promise.all([KIND.PROJECT, KIND.ISSUE].map((kind) => listFiles(query, { kinds: [kind] })))).flat()
+    return foldFiles(files, query, cache, new Set())
+  }
   // SPEC's change kind, which holds every file's archive, is asked beside the
   // roots rather than after the manifests: a Folder listing in the same load
   // asks its files' changes about two seconds in, and is answered from this
@@ -305,6 +378,69 @@ export function filesReader(
   }
 }
 
+/**
+ * A reader of some Ship files by their fields (SPEC §6.13), the
+ * {@link filesReader} of a relay advertising `file_list`: each named file's
+ * first record and its fields' current changes, and none of its older ones.
+ * The files in `text` are opened with their current text and `version`, where
+ * the relay says `file_list.text`; any other's `description` is unread
+ * ({@link textUnread}). A deleted file is read too, by its id, with `deleted`.
+ */
+export function fieldsReader(
+  context: AgentContext,
+  query: QueryFn,
+  cache: ProjectionCache = createProjectionCache(),
+): (addresses: readonly string[], text?: readonly string[]) => Promise<Workspace> {
+  return async (addresses, text = []) => {
+    const reads = await fileReadsFor(context)
+    const opened = new Set(reads.text ? text : [])
+    const listed = new Map<number, string[]>()
+    for (const address of new Set(addresses)) {
+      if (opened.has(address)) continue
+      const { kind, identifier } = pointerOf(address)
+      listed.set(kind, [...(listed.get(kind) ?? []), identifier])
+    }
+    const owners = [...new Set([...addresses, ...opened].map((address) => `${pointerOf(address).kind}:${pointerOf(address).pubkey}:`))]
+    const [lists, opens] = await Promise.all([
+      Promise.all([...listed].map(([kind, ds]) => listFiles(query, { kinds: [kind], '#d': ds }))),
+      Promise.all([...opened].map((address) => {
+        const { kind, pubkey, identifier } = pointerOf(address)
+        return openFile(query, { kind, pubkey, d: identifier }, { text: true })
+      })),
+      // Each file's manifest as its own author resolves it, into the cache its conversation is read through next.
+      ...owners.map((owner) => resolveManifest(pointerOf(owner), query, cache)),
+    ])
+    const wanted = new Set([...addresses, ...opened])
+    // `#d` names an id, not an author: keep only the files asked for.
+    const files = [...lists.flat(), ...opens.flatMap((file) => (file ? [file] : []))].filter((file) => wanted.has(file.address))
+    /*
+      A deleted file is left out of this read even by its id (§6.13), and stays
+      readable by its record and its changes (§6.5): those are read for it,
+      every change, and folded by the same rule — text included.
+    */
+    const missing = [...wanted].filter((address) => !files.some((file) => file.address === address))
+    if (missing.length) {
+      const events = await query([
+        ...missing.map((address) => ({ kinds: [pointerOf(address).kind], authors: [pointerOf(address).pubkey], '#d': [pointerOf(address).identifier] })),
+        { kinds: [KIND_CHANGE], '#a': missing },
+      ])
+      for (const file of filesOf(events, { withText: true })) {
+        if (!missing.includes(file.address)) continue
+        files.push(file)
+        opened.add(file.address)
+      }
+    }
+    return foldFiles(files, query, cache, opened)
+  }
+}
+
+async function foldFiles(files: readonly FileFields[], query: QueryFn, cache: ProjectionCache, withText: ReadonlySet<string>): Promise<Workspace> {
+  const roots = files.map((file) => file.root)
+  const manifests = await manifestsFor(roots, query, cache)
+  const changes = files.flatMap((file) => file.events.filter((event) => event !== file.root))
+  return foldWorkspace(roots, changes, manifests, cache, { files, withText })
+}
+
 const addressOf = (root: SignedEvent) => `${root.kind}:${root.pubkey}:${tagValue(root, 'd')}`
 
 /** SPEC's change kind, and any other every manifest in play declares — Ship's is one kind for both. */
@@ -316,7 +452,15 @@ function changeKindsOf(manifests: Manifests): number[] {
 
 type Manifests = Awaited<ReturnType<typeof manifestsFor>>
 
-function foldWorkspace(roots: readonly SignedEvent[], read: readonly SignedEvent[], manifests: Manifests, cache: ProjectionCache): Workspace {
+function foldWorkspace(
+  roots: readonly SignedEvent[],
+  read: readonly SignedEvent[],
+  manifests: Manifests,
+  cache: ProjectionCache,
+  /** When read by fields: each file as read, and the ones whose text was. */
+  byFields?: { files: readonly FileFields[]; withText: ReadonlySet<string> },
+): Workspace {
+  const fileOf = new Map(byFields?.files.map((file) => [file.address, file]))
   const manifestOf = manifests.of
   // Every change to a Ship object, including one whose record is gone — a
   // deleted project's history is still history, and `activity` lists it.
@@ -346,6 +490,7 @@ function foldWorkspace(roots: readonly SignedEvent[], read: readonly SignedEvent
   const issues: Issue[] = []
   for (const [addr, object] of objects) {
     const root = rootOf.get(addr)!
+    const file = fileOf.get(addr)
     const base = {
       addr,
       id: pointerOf(addr).identifier,
@@ -357,7 +502,16 @@ function foldWorkspace(roots: readonly SignedEvent[], read: readonly SignedEvent
       summary: object.slots.subtitle?.value,
       description: object.slots.body?.value ?? '',
       descriptionFormat: object.slots.body?.format,
+      rootId: root.id,
+      ...(file
+        ? {
+            heads: Object.fromEntries(Object.entries(file.fields).map(([field, current]) => [field, current.id])),
+            ...(byFields?.withText.has(addr) ? { version: file.fields[TEXT_FIELD]?.id ?? root.id } : {}),
+          }
+        : {}),
     }
+    // SPEC §6.5: a file whose current `deleted` is `true`. Only an opened one can be: a list leaves it out.
+    const deleted = file?.fields.deleted?.value === 'true' ? { by: file.fields.deleted.pubkey, at: file.fields.deleted.at } : undefined
     if (object.kind === KIND.PROJECT) {
       projects.push({
         ...base,
@@ -367,6 +521,7 @@ function foldWorkspace(roots: readonly SignedEvent[], read: readonly SignedEvent
         archived: Boolean(object.archived),
         ownArchive: object.archived,
         contentFolder: folderOf(root) ?? '',
+        ...(deleted ? { deleted } : {}),
       })
     } else {
       issues.push({
@@ -424,6 +579,7 @@ function foldWorkspace(roots: readonly SignedEvent[], read: readonly SignedEvent
     manifestFor: (addr) => manifestOf(pointerOf(addr)),
     objects,
     cache,
+    byFields: Boolean(byFields),
   }
 }
 

@@ -105,7 +105,8 @@ async function fileArg(context: AgentContext, args: { positional: string[] }, co
  */
 function changeShape(address: string, field: string, value: string, extra: Record<string, string> = {}) {
   return (tags: string[][], folder: string): string | undefined => {
-    const expected: Record<string, string> = { a: address, field, value, h: folder, ...extra }
+    // `O` is the file's id beside its address (SPEC §6.2), which interop writes on every change.
+    const expected: Record<string, string> = { a: address, O: address.split(':').slice(2).join(':'), field, value, h: folder, ...extra }
     const names = tags.map((tag) => tag[0])
     for (const [name, wanted] of Object.entries(expected)) {
       const found = tags.filter((tag) => tag[0] === name)

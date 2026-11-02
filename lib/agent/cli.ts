@@ -25,6 +25,7 @@ import { dirname, join, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { Relay, RELAY_BUSY_MESSAGE, RelayBusyError } from '@estiva-app/protocol'
 import { clientCredentialsToken, loadCredentials, serviceIdentitySigner } from './credentials'
+import { refuseOutdated } from './minimum-version'
 
 /** What every command is handed. Deliberately free of app concepts. */
 export interface AgentContext {
@@ -722,6 +723,9 @@ export async function run(apps: AgentApp[], argv: string[]): Promise<never> {
     */
     const unsignable = refuseUnsignable(command, context.allowedKinds)
     if (unsignable) throw new BadRequest(unsignable)
+    // An agent older than the workspace's minimum writes nothing, and still reads (ALO-7).
+    const outdated = await refuseOutdated(command)
+    if (outdated) throw new BadRequest(outdated)
 
     // The app and command names are consumed here so a command sees only its
     // own arguments — `show <ref>` reads positional[0], not positional[2].
