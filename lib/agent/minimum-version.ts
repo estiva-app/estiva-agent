@@ -73,5 +73,5 @@ export async function refuseOutdated(
   if (!command.signs?.length) return undefined
   const minimum = await read()
   if (!minimum || !olderThan(version, minimum)) return undefined
-  return `This Estiva agent is version ${version}, and the workspace now takes changes only from version ${minimum} or later, so nothing was published. Update the agent to write again; reading still works.`
+  return `This Estiva plugin is version ${version}, and the workspace takes changes only from version ${minimum} on, so nothing was saved. Update the Estiva plugin (or the Claude Desktop extension) to save again; reading still works.`
 }

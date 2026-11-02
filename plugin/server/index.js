@@ -19222,7 +19222,7 @@ async function refuseOutdated(command2, version2 = AGENT_VERSION, read = minimum
   if (!command2.signs?.length) return void 0;
   const minimum = await read();
   if (!minimum || !olderThan(version2, minimum)) return void 0;
-  return `This Estiva agent is version ${version2}, and the workspace now takes changes only from version ${minimum} or later, so nothing was published. Update the agent to write again; reading still works.`;
+  return `This Estiva plugin is version ${version2}, and the workspace takes changes only from version ${minimum} on, so nothing was saved. Update the Estiva plugin (or the Claude Desktop extension) to save again; reading still works.`;
 }
 
 // lib/agent/cli.ts
@@ -23889,12 +23889,12 @@ function rawStatus(object3, vocab) {
 var metaValue = (object3, field) => object3.meta.find((slot) => slot.field === field)?.value || void 0;
 var NO_FILE_READS = { list: false, text: false, switched: false, inOrder: [], search: [] };
 var fileReads = /* @__PURE__ */ new WeakMap();
+var FILE_READS_FOR_MS = 10 * 6e4;
 function fileReadsFor(context2) {
-  let reads2 = fileReads.get(context2);
-  if (!reads2) {
-    reads2 = Promise.resolve().then(() => context2.relay.info()).then(relayFileReadsOf, () => NO_FILE_READS);
-    fileReads.set(context2, reads2);
-  }
+  const held = fileReads.get(context2);
+  if (held && Date.now() - held.at < FILE_READS_FOR_MS) return held.reads;
+  const reads2 = Promise.resolve().then(() => context2.relay.info()).then(relayFileReadsOf, () => NO_FILE_READS);
+  fileReads.set(context2, { at: Date.now(), reads: reads2 });
   return reads2;
 }
 var TYPE_OF = { [KIND2.PROJECT]: "osnova.project", [KIND2.ISSUE]: "osnova.issue" };
@@ -24668,7 +24668,7 @@ async function changeBy(context2, change) {
 async function mergedLine(context2, result) {
   if (!result.ok || !result.mergedOnto) return void 0;
   const { by, at } = await changeBy(context2, result.mergedOnto);
-  return "unchanged" in result ? `Nothing was sent: the text was changed by ${by} at ${at}, and your change, merged onto theirs, says nothing theirs does not.` : `Merged: the text had been changed by ${by} at ${at}, after the version you read. Their change is kept as it is, with yours where it touched nothing of theirs.`;
+  return "unchanged" in result ? `Nothing to save: ${by}'s change at ${at} already has everything yours did.` : `Merged: the text had been changed by ${by} at ${at}, after the version you read. Their change is kept as it is, with yours where it touched nothing of theirs.`;
 }
 var askedBlock = (text2) => text2 === void 0 ? "(deleted)" : JSON.stringify(text2);
 async function textAsks(context2, title, asks, theirs, alsoNotSaved) {
@@ -24684,7 +24684,9 @@ async function textAsks(context2, title, asks, theirs, alsoNotSaved) {
     [
       `Nothing was saved${alsoNotSaved.length ? `, ${alsoNotSaved.join(", ")} included` : ""}: the text of \u201C${title}\u201D is now as ${by} left it at ${at}, and your change and theirs meet in ${asks.length === 1 ? "one place" : `${asks.length} places`}.`,
       ...blocks,
-      `Keep ${by}'s words: read the project again, rewrite your change on top of the text as it is now, and save it with the new version. Ask the person you are working with before dropping any of their words.`
+      `Keep ${by}'s words: read the project again, rewrite your change on top of the text as it is now, and save it with the new version. Ask the person you are working with before dropping any of their words.`,
+      // A block they deleted holds no words of theirs to keep: whether it stays deleted is the person's call.
+      ...asks.some((ask) => ask.theirs === void 0) ? [`${by} deleted a block you changed: ask the person you are working with whether it stays deleted or comes back with your change.`] : []
     ].join("\n")
   );
 }
@@ -24694,11 +24696,11 @@ async function projectsByWords(context2, reference) {
   const { matches } = await context2.relay.queryWithMatches([{ fields: "newest", kinds: [KIND2.PROJECT], search: words }]);
   return matches.map((match) => match.a);
 }
-async function findProjectIn(context2, projects, reference) {
+async function findProjectIn(context2, projects, reference, { writes = false } = {}) {
   const resolved = resolveMaybe(projects, reference, PROJECT_BY);
   if ("found" in resolved) return resolved.found;
   if ("ambiguous" in resolved) throw new BadRequest(resolved.ambiguous);
-  const found = (await projectsByWords(context2, reference)).flatMap((addr2) => projects.filter((project) => project.addr === addr2));
+  const found = writes ? [] : (await projectsByWords(context2, reference)).flatMap((addr2) => projects.filter((project) => project.addr === addr2));
   if (found.length === 1) return found[0];
   if (found.length > 1) {
     throw new BadRequest(
@@ -24726,7 +24728,9 @@ async function withText(context2, query, cache, file) {
 }
 async function textAtVersion(context2, file, version2) {
   const [event] = await relayQuery(context2)([{ ids: [version2] }]);
-  const ours = event?.id === version2 && (event.id === file.rootId || event.kind === KIND_CHANGE && event.tags.some((tag) => tag[0] === "a" && tag[1] === file.addr) && fieldsSetBy(event).some((set) => set.field === TEXT_FIELD));
+  const first = (name) => event?.tags.find((tag) => tag[0] === name)?.[1];
+  const inLine = event?.kind === KIND_CHANGE && first("a") === file.addr && (first("O") === void 0 || first("O") === file.addr.split(":").slice(2).join(":")) && first("h") === file.contentFolder && fieldsSetBy(event).some((set) => set.field === TEXT_FIELD);
+  const ours = event?.id === version2 && (event.id === file.rootId || inLine);
   const text2 = ours ? textOf3(event) : void 0;
   if (!text2) throw new BadRequest(`--version ${version2} is not a saved version of the text of \u201C${file.title}\u201D. Pass the \`version\` \`ship show\` printed for it. Nothing was published.`);
   return { description: text2.value, descriptionFormat: text2.format === BLOCK_DOCUMENT_FORMAT ? "blocks" : "marker" };
@@ -24771,7 +24775,7 @@ async function timelineFor(context2, state, addr2, extraPubkeys, {
   ])]);
   return {
     directory,
-    ...numbered ? {} : { historyNote: "The current change of each field, which is what opening it reads. Pass --history for every change." },
+    ...numbered ? {} : { historyNote: "Only the latest change to each field. Pass --history for every change." },
     history: history.map((change) => ({
       field: change.field,
       /*
@@ -24929,7 +24933,7 @@ async function setDeleted(context2, state, project, deleted, reason) {
   return deleted ? {
     deleted: changed,
     eventId: result.id,
-    survives: "It keeps its id, its record, its issues and every change: it is off every list and out of search, still opens by its id, and --restore brings it back whole."
+    survives: "It keeps its id, its record, its issues and every change: it is off the agent's lists and out of the relay's search, still opens by its id, and --restore brings it back whole. Ship still shows it until Ship reads deletes this way."
   } : { restored: changed, eventId: result.id, note: "Back in the lists and in search, as it was." };
 }
 async function restoreProject(context2, query, reference) {
@@ -25064,7 +25068,7 @@ async function oneFile(context2, query, reference) {
     const target = tag(change, "a");
     if (target && ["title", "ref"].includes(tag(change, "field") ?? "")) candidates.add(target);
   }
-  for (const addr2 of byWords) candidates.add(addr2);
+  if (candidates.size === 0) for (const addr2 of byWords) candidates.add(addr2);
   if (candidates.size === 0 || candidates.size > MOST_CANDIDATES) return void 0;
   const addressOf2 = (root) => `${root.kind}:${root.pubkey}:${tag(root, "d")}`;
   const projects = roots.flatMap((root) => {
@@ -25253,7 +25257,8 @@ var shipApp = {
             dropping the count when `--project` is passed would hide the gap in
             exactly the narrow queries somebody trusts most.
           */
-          coverage: await coverage(query, state.issues)
+          // Read by fields, every issue record readable is in the read and folded: nothing is unreachable, and nothing to read again.
+          coverage: state.byFields ? { reachable: state.issues.length, unreachable: 0, total: state.issues.length } : await coverage(query, state.issues)
         };
       }
     },
@@ -25407,8 +25412,15 @@ Pass an address to say which.`
         if (!("found" in asIssue)) {
           if ("ambiguous" in asIssue) throw new BadRequest(asIssue.ambiguous);
           if ("ambiguous" in asProject) throw new BadRequest(asProject.ambiguous);
-          const byText = (await projectsByWords(context2, reference)).length ? await findProjectIn(context2, state.projects, reference) : void 0;
-          if (byText) return opened(byText);
+          const byText = (await projectsByWords(context2, reference)).flatMap((addr2) => state.projects.filter((project) => project.addr === addr2));
+          if (byText.length === 1) return opened(byText[0]);
+          if (byText.length > 1) {
+            throw new BadRequest(
+              `"${reference}" is in the words of ${byText.length} projects:
+${byText.slice(0, 8).map((project) => `  ${PROJECT_BY.label(project)}`).join("\n")}
+${PROJECT_BY.hint}`
+            );
+          }
           throw new BadRequest(`No issue or project matches "${reference}".`);
         }
         const issue2 = await withText(context2, query, state.cache, asIssue.found);
@@ -25661,7 +25673,7 @@ Pass an address to say which.`
         const description = flagValue(args2, "description");
         const version2 = flagValue(args2, "version");
         if (version2 !== void 0 && description === void 0) throw new BadRequest("--version goes with --description: it is the version of the text your change was made on.");
-        const project = description === void 0 ? await findProjectIn(context2, state.projects, reference) : await withText(context2, query, state.cache, await findProjectIn(context2, state.projects, reference));
+        const project = description === void 0 ? await findProjectIn(context2, state.projects, reference, { writes: true }) : await withText(context2, query, state.cache, await findProjectIn(context2, state.projects, reference, { writes: true }));
         let subject = project;
         if (description !== void 0 && project.version !== void 0) {
           if (!version2) {
@@ -25723,7 +25735,7 @@ Pass an address to say which.`
         if (!reference) throw new BadRequest("move-project needs a project reference.");
         if (!target) throw new BadRequest("move-project needs --folder: a top-level Folder name or id.");
         const state = await loadWorkspace(context2);
-        const project = await findProjectIn(context2, state.projects, reference);
+        const project = await findProjectIn(context2, state.projects, reference, { writes: true });
         const teams = topLevelFolders(await readFolders(context2));
         const to = resolveTeamIn(teams, target);
         const listing = teams.filter((team) => team.addresses?.includes(project.addr));
@@ -25842,7 +25854,7 @@ Pass an address to say which.`
         const query = loadQuery(context2);
         if (args2.flags.restore) return restoreProject(context2, query, reference);
         const state = await loadWorkspace(context2, query);
-        const project = await findProjectIn(context2, state.projects, reference);
+        const project = await findProjectIn(context2, state.projects, reference, { writes: true });
         const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
         const reads2 = await fileReadsFor(context2);
         const byField = reads2.switched && reads2.inOrder.includes(TYPE_OF[KIND2.PROJECT]);
@@ -25853,7 +25865,7 @@ Pass an address to say which.`
           return {
             wouldDelete: { title: project.title, addr: project.addr, folder },
             survives,
-            note: byField ? "Nothing was published. A delete takes it off every list and out of search; it keeps its id, record and changes, still opens by its id, and --restore brings it back whole. Archiving is usually what is wanted \u2014 see `archive-project`. Pass --yes to delete it." : "Nothing was published. Archiving is reversible and usually what is wanted \u2014 see `archive-project`. Pass --yes to send the deletion request."
+            note: byField ? "Nothing was published. A delete takes it off the agent's lists and out of the relay's search (Ship still shows it until Ship reads deletes this way); it keeps its id, record and changes, still opens by its id, and --restore brings it back whole. Archiving is usually what is wanted \u2014 see `archive-project`. Pass --yes to delete it." : "Nothing was published. Archiving is reversible and usually what is wanted \u2014 see `archive-project`. Pass --yes to send the deletion request."
           };
         }
         const reason = flagValue(args2, "reason");
@@ -25971,7 +25983,7 @@ Pass an address to say which.`
         if (!title) throw new BadRequest("create-issue needs --title.");
         const asked = await descriptionMentions(context2, args2);
         const state = await loadWorkspace(context2);
-        const project = await findProjectIn(context2, state.projects, projectRef);
+        const project = await findProjectIn(context2, state.projects, projectRef, { writes: true });
         const folder = project.contentFolder;
         if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no Folder of its own, so a new issue has nowhere to be filed. Nothing was published.`);
         const id = randomUUID();

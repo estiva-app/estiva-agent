@@ -18,7 +18,7 @@ function check(label: string, condition: boolean, detail = '') {
 const write = { signs: [1851] }
 const read = {}
 const refusal = (await refuseOutdated(write, '0.27.0', async () => '0.28.0')) ?? ''
-check('below the minimum, a write is refused with a sentence saying to update', /0\.27\.0/.test(refusal) && /0\.28\.0/.test(refusal) && /Update the agent/.test(refusal), refusal)
+check('below the minimum, a write is refused with a sentence saying to update', /0\.27\.0/.test(refusal) && /0\.28\.0/.test(refusal) && /Update the Estiva plugin/.test(refusal), refusal)
 check('below the minimum, a read still runs', (await refuseOutdated(read, '0.27.0', async () => '0.28.0')) === undefined)
 check('at the minimum, a write runs', (await refuseOutdated(write, '0.28.0', async () => '0.28.0')) === undefined)
 check('above it by a minor version, a write runs', (await refuseOutdated(write, '0.30.0', async () => '0.28.9')) === undefined)

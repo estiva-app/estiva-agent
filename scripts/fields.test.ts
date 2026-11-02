@@ -189,6 +189,23 @@ const mine = (published: SignedEvent[]) => published.filter((e) => e.pubkey === 
   const wrong = await run(c2, 'edit-project', [a2], { description: 'x', version: other.id })
   check('a --version that is another file\'s change is refused, nothing published', !wrong.ok && /not a saved version/.test(wrong.message) && p2.length === 0, wrong.ok ? 'it saved' : wrong.message)
   void addr
+
+  // Not in this project's own line: another file's change naming it second, and its change filed in another Folder.
+  const { context: c3, published: p3, addr: a3, events: e3, read } = workspace()
+  const second = signed(QA1, 1851, [['a', '30850:x:y'], ['a', a3], ['field', 'description'], ['value', doc(['b1', 'x'])], ['content-format', 'estiva-blocks-1'], ['h', FOLDER]])
+  const elsewhere = signed(QA1, 1851, [['a', a3], ['O', a3.split(':')[2]], ['field', 'description'], ['value', doc(['b1', 'x'])], ['content-format', 'estiva-blocks-1'], ['h', 'another-folder'], ['prev', read.id]])
+  e3.push(second, elsewhere)
+  for (const [label, version] of [['whose first a names another file', second.id], ['filed in another Folder', elsewhere.id]]) {
+    const refusal = await run(c3, 'edit-project', [a3], { description: 'x', version })
+    check(`a --version ${label} is refused, nothing published`, !refusal.ok && /not a saved version/.test(refusal.message) && p3.length === 0, refusal.ok ? 'it saved' : refusal.message)
+  }
+}
+
+// — A write names its project by title, ref or id, never by a word somebody put in its text —
+{
+  const { context, published } = workspace()
+  const edit = await run(context, 'edit-project', ['rollout'], { status: 'in_progress' })
+  check('edit-project by a word only in a project\'s text is refused, nothing published', !edit.ok && published.length === 0, edit.ok ? 'it saved' : edit.message)
 }
 
 // — A different block: merged, and the answer names whose change it kept —

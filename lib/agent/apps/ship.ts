@@ -1149,7 +1149,7 @@ async function mergedLine(context: AgentContext, result: WriteChangeResult) {
   if (!result.ok || !result.mergedOnto) return undefined
   const { by, at } = await changeBy(context, result.mergedOnto)
   return 'unchanged' in result
-    ? `Nothing was sent: the text was changed by ${by} at ${at}, and your change, merged onto theirs, says nothing theirs does not.`
+    ? `Nothing to save: ${by}'s change at ${at} already has everything yours did.`
     : `Merged: the text had been changed by ${by} at ${at}, after the version you read. Their change is kept as it is, with yours where it touched nothing of theirs.`
 }
 
@@ -1174,6 +1174,10 @@ async function textAsks(context: AgentContext, title: string, asks: readonly Mer
       `Nothing was saved${alsoNotSaved.length ? `, ${alsoNotSaved.join(', ')} included` : ''}: the text of “${title}” is now as ${by} left it at ${at}, and your change and theirs meet in ${asks.length === 1 ? 'one place' : `${asks.length} places`}.`,
       ...blocks,
       `Keep ${by}'s words: read the project again, rewrite your change on top of the text as it is now, and save it with the new version. Ask the person you are working with before dropping any of their words.`,
+      // A block they deleted holds no words of theirs to keep: whether it stays deleted is the person's call.
+      ...(asks.some((ask) => ask.theirs === undefined)
+        ? [`${by} deleted a block you changed: ask the person you are working with whether it stays deleted or comes back with your change.`]
+        : []),
     ].join('\n'),
   )
 }
@@ -1194,14 +1198,17 @@ async function projectsByWords(context: AgentContext, reference: string): Promis
 
 /**
  * The one project a reference names: `resolve.ts`'s rule over the projects
- * read, and when nothing is named so, the projects the relay finds by a word
- * of their current text — one is the answer, several are listed.
+ * read, and for a read, when nothing is named so, the projects the relay
+ * finds by a word of their current text — one is the answer, several are
+ * listed. A command that writes takes a title, ref or id only: anybody in a
+ * Folder can put a word in a project's text, and so pick what is written to
+ * (`docs/untrusted-content.md`).
  */
-async function findProjectIn(context: AgentContext, projects: Project[], reference: string): Promise<Project> {
+async function findProjectIn(context: AgentContext, projects: Project[], reference: string, { writes = false } = {}): Promise<Project> {
   const resolved = resolveMaybe(projects, reference, PROJECT_BY)
   if ('found' in resolved) return resolved.found
   if ('ambiguous' in resolved) throw new BadRequest(resolved.ambiguous)
-  const found = (await projectsByWords(context, reference)).flatMap((addr) => projects.filter((project) => project.addr === addr))
+  const found = writes ? [] : (await projectsByWords(context, reference)).flatMap((addr) => projects.filter((project) => project.addr === addr))
   if (found.length === 1) return found[0]
   if (found.length > 1) {
     throw new BadRequest(
@@ -1240,12 +1247,17 @@ async function withText<T extends Project | Issue>(context: AgentContext, query:
  * its description, or its first record (whose text is the seed). Anything
  * else is refused before it could become a merge's base.
  */
-async function textAtVersion(context: AgentContext, file: Pick<Project, 'addr' | 'rootId' | 'title'>, version: string) {
+async function textAtVersion(context: AgentContext, file: Pick<Project, 'addr' | 'rootId' | 'title' | 'contentFolder'>, version: string) {
   const [event] = await relayQuery(context)([{ ids: [version] }])
-  const ours =
-    event?.id === version &&
-    (event.id === file.rootId ||
-      (event.kind === KIND_CHANGE && event.tags.some((tag) => tag[0] === 'a' && tag[1] === file.addr) && fieldsSetBy(event).some((set) => set.field === TEXT_FIELD)))
+  const first = (name: string) => event?.tags.find((tag) => tag[0] === name)?.[1]
+  // A change in this file's own line, as a reader folds one (SPEC §6.2): its first `a` names it, its `O` (if any) is its id, its `h` its home.
+  const inLine =
+    event?.kind === KIND_CHANGE &&
+    first('a') === file.addr &&
+    (first('O') === undefined || first('O') === file.addr.split(':').slice(2).join(':')) &&
+    first('h') === file.contentFolder &&
+    fieldsSetBy(event).some((set) => set.field === TEXT_FIELD)
+  const ours = event?.id === version && (event.id === file.rootId || inLine)
   const text = ours ? textOf(event) : undefined
   if (!text) throw new BadRequest(`--version ${version} is not a saved version of the text of “${file.title}”. Pass the \`version\` \`ship show\` printed for it. Nothing was published.`)
   return { description: text.value, descriptionFormat: text.format === BLOCK_DOCUMENT_FORMAT ? ('blocks' as const) : ('marker' as const) }
@@ -1319,7 +1331,7 @@ async function timelineFor(
 
   return {
     directory,
-    ...(numbered ? {} : { historyNote: 'The current change of each field, which is what opening it reads. Pass --history for every change.' }),
+    ...(numbered ? {} : { historyNote: 'Only the latest change to each field. Pass --history for every change.' }),
     history: history.map((change) => ({
       field: change.field,
       /*
@@ -1566,7 +1578,8 @@ async function setDeleted(context: AgentContext, state: Workspace, project: Proj
     ? {
         deleted: changed,
         eventId: result.id,
-        survives: 'It keeps its id, its record, its issues and every change: it is off every list and out of search, still opens by its id, and --restore brings it back whole.',
+        survives:
+          "It keeps its id, its record, its issues and every change: it is off the agent's lists and out of the relay's search, still opens by its id, and --restore brings it back whole. Ship still shows it until Ship reads deletes this way.",
       }
     : { restored: changed, eventId: result.id, note: 'Back in the lists and in search, as it was.' }
 }
@@ -1776,8 +1789,8 @@ async function oneFile(context: AgentContext, query: QueryFn, reference: string)
     const target = tag(change, 'a')
     if (target && ['title', 'ref'].includes(tag(change, 'field') ?? '')) candidates.add(target)
   }
-  // A project the relay finds by a word of its current fields, its text included (SPEC §6.13).
-  for (const addr of byWords) candidates.add(addr)
+  // Named by nothing else: the projects the relay finds by a word of their current fields, text included (SPEC §6.13).
+  if (candidates.size === 0) for (const addr of byWords) candidates.add(addr)
   if (candidates.size === 0 || candidates.size > MOST_CANDIDATES) return undefined
 
   const addressOf = (root: SignedEvent) => `${root.kind}:${root.pubkey}:${tag(root, 'd')}`
@@ -2043,7 +2056,8 @@ export const shipApp: AgentApp = {
             dropping the count when `--project` is passed would hide the gap in
             exactly the narrow queries somebody trusts most.
           */
-          coverage: await coverage(query, state.issues),
+          // Read by fields, every issue record readable is in the read and folded: nothing is unreachable, and nothing to read again.
+          coverage: state.byFields ? { reachable: state.issues.length, unreachable: 0, total: state.issues.length } : await coverage(query, state.issues),
         }
       },
     },
@@ -2257,8 +2271,13 @@ export const shipApp: AgentApp = {
           if ('ambiguous' in asIssue) throw new BadRequest(asIssue.ambiguous)
           if ('ambiguous' in asProject) throw new BadRequest(asProject.ambiguous)
           // Named by no title: a project the relay finds by a word of its current fields, or a list of them.
-          const byText = (await projectsByWords(context, reference)).length ? await findProjectIn(context, state.projects, reference) : undefined
-          if (byText) return opened(byText)
+          const byText = (await projectsByWords(context, reference)).flatMap((addr) => state.projects.filter((project) => project.addr === addr))
+          if (byText.length === 1) return opened(byText[0])
+          if (byText.length > 1) {
+            throw new BadRequest(
+              `"${reference}" is in the words of ${byText.length} projects:\n${byText.slice(0, 8).map((project) => `  ${PROJECT_BY.label(project)}`).join('\n')}\n${PROJECT_BY.hint}`,
+            )
+          }
           throw new BadRequest(`No issue or project matches "${reference}".`)
         }
 
@@ -2624,8 +2643,8 @@ export const shipApp: AgentApp = {
         if (version !== undefined && description === undefined) throw new BadRequest('--version goes with --description: it is the version of the text your change was made on.')
         // Its current text, and each field's current change, read just before writing.
         const project = description === undefined
-          ? await findProjectIn(context, state.projects, reference)
-          : await withText(context, query, state.cache, await findProjectIn(context, state.projects, reference))
+          ? await findProjectIn(context, state.projects, reference, { writes: true })
+          : await withText(context, query, state.cache, await findProjectIn(context, state.projects, reference, { writes: true }))
         /*
           The text the change was made on (ALO-7): a project read by its fields
           says its version, and a change made on an older one is merged onto
@@ -2732,7 +2751,7 @@ export const shipApp: AgentApp = {
         if (!target) throw new BadRequest('move-project needs --folder: a top-level Folder name or id.')
 
         const state = await loadWorkspace(context)
-        const project = await findProjectIn(context, state.projects, reference)
+        const project = await findProjectIn(context, state.projects, reference, { writes: true })
         const teams = topLevelFolders(await readFolders(context))
         const to = resolveTeamIn(teams, target)
 
@@ -2869,7 +2888,7 @@ export const shipApp: AgentApp = {
         if (args.flags.restore) return restoreProject(context, query, reference)
 
         const state = await loadWorkspace(context, query)
-        const project = await findProjectIn(context, state.projects, reference)
+        const project = await findProjectIn(context, state.projects, reference, { writes: true })
         const issues = state.issues.filter((issue) => issue.projectAddr === project.addr).length
         const reads = await fileReadsFor(context)
         const byField = reads.switched && reads.inOrder.includes(TYPE_OF[KIND.PROJECT])
@@ -2891,7 +2910,7 @@ export const shipApp: AgentApp = {
             wouldDelete: { title: project.title, addr: project.addr, folder },
             survives,
             note: byField
-              ? 'Nothing was published. A delete takes it off every list and out of search; it keeps its id, record and changes, still opens by its id, and --restore brings it back whole. Archiving is usually what is wanted — see `archive-project`. Pass --yes to delete it.'
+              ? "Nothing was published. A delete takes it off the agent's lists and out of the relay's search (Ship still shows it until Ship reads deletes this way); it keeps its id, record and changes, still opens by its id, and --restore brings it back whole. Archiving is usually what is wanted — see `archive-project`. Pass --yes to delete it."
               : 'Nothing was published. Archiving is reversible and usually what is wanted — see `archive-project`. Pass --yes to send the deletion request.',
           }
         }
@@ -3051,7 +3070,7 @@ export const shipApp: AgentApp = {
         const asked = await descriptionMentions(context, args)
 
         const state = await loadWorkspace(context)
-        const project = await findProjectIn(context, state.projects, projectRef)
+        const project = await findProjectIn(context, state.projects, projectRef, { writes: true })
 
         /*
           No ref (Miky, 2026-10-02, PER-21). A display key is derived from the

@@ -277,21 +277,22 @@ function rawStatus(object: ForeignObject, vocab: Vocabulary): string {
 const metaValue = (object: ForeignObject, field: string) => object.meta.find((slot) => slot.field === field)?.value || undefined
 
 const NO_FILE_READS: RelayFileReads = { list: false, text: false, switched: false, inOrder: [], search: [] }
-const fileReads = new WeakMap<AgentContext, Promise<RelayFileReads>>()
+const fileReads = new WeakMap<AgentContext, { at: number; reads: Promise<RelayFileReads> }>()
+/** How long a NIP-11 answer is trusted: an MCP server lives for days, and a relay makes the switch once. */
+const FILE_READS_FOR_MS = 10 * 60_000
 
 /**
- * What the relay's NIP-11 says it reads and keeps (SPEC §6.13), asked once per
- * connection. A relay that cannot say reads as offering nothing, which is
- * always safe: every change is read and folded here.
+ * What the relay's NIP-11 says it reads and keeps (SPEC §6.13), asked again
+ * every ten minutes per connection. A relay that cannot say reads as offering
+ * nothing, which is always safe: every change is read and folded here.
  */
 export function fileReadsFor(context: AgentContext): Promise<RelayFileReads> {
-  let reads = fileReads.get(context)
-  if (!reads) {
-    reads = Promise.resolve()
-      .then(() => context.relay.info())
-      .then(relayFileReadsOf, () => NO_FILE_READS)
-    fileReads.set(context, reads)
-  }
+  const held = fileReads.get(context)
+  if (held && Date.now() - held.at < FILE_READS_FOR_MS) return held.reads
+  const reads = Promise.resolve()
+    .then(() => context.relay.info())
+    .then(relayFileReadsOf, () => NO_FILE_READS)
+  fileReads.set(context, { at: Date.now(), reads })
   return reads
 }
 
