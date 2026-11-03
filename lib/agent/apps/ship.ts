@@ -46,7 +46,7 @@ import {
   type Workspace,
 } from './ship-workspace'
 import { randomUUID } from 'node:crypto'
-import { BLOCK_DOCUMENT_FORMAT, KIND as PROTOCOL_KIND, imetaTag, type Imeta, type MergeAsk, type SignedEvent } from '@estiva-app/protocol'
+import { BLOCK_DOCUMENT_FORMAT, KIND as PROTOCOL_KIND, RELAY_BUSY_MESSAGE, imetaTag, type Imeta, type MergeAsk, type SignedEvent } from '@estiva-app/protocol'
 import { KIND_CHANGE, KIND_COMMENT, KIND_DELETION, KIND_EDIT } from '@estiva-app/conversation'
 import {
   BODY_SLOT,
@@ -65,6 +65,7 @@ import {
   listFolders,
   planArchiveFolder,
   planMoveFromFolders,
+  readMoveRefusal,
   resolveFolderContents,
   topLevelFolders,
   type Archive,
@@ -1000,13 +1001,19 @@ const noPeople = async () => ({})
 
 /**
  * Ship's "Move to Folder…" (FOL-7), as interop's `planMoveFromFolders` plans
- * it (SPEC §3.3), the planner Ship and Peek move by too: one `kind:1852 add` to
- * the new Folder naming the file and everything any source lists beneath it,
- * then a `remove` from each one that lists it now. The add goes first and
- * lands whole or not at all — refused, nothing is removed and the files are
- * where they were (SHI-37). Refused before anything is sent when either side
- * has no state (a command against it empties it) or the target is private (a
- * listing never changes who can read a file).
+ * it (SPEC §3.3), the planner Ship and Peek move by too: one `kind:1852 move`
+ * into the new Folder from each one that lists it now, naming the file and
+ * everything that source lists beneath it. Each changes both lists or neither
+ * (SHI-37, TEA-3); they are sent in order and the first refusal stops the
+ * rest, read by `readMoveRefusal` so the answer says why in the agent's words.
+ * Listed nowhere, it is placed in the new Folder with one `add`. Refused before
+ * anything is sent when either side has no state (a command against it empties
+ * it) or the target is private (a listing never changes who can read a file).
+ *
+ * `moved` is what landed: after a later command is refused, what the earlier
+ * ones moved. The agent's own failure on the first command (signer, network)
+ * is thrown as itself; on a later one it is `moveRefused.failure`, so the
+ * answer can say what already moved. A relay that stayed busy is `busy`.
  */
 export async function moveFile(
   context: AgentContext,
@@ -1018,21 +1025,37 @@ export async function moveFile(
     /** Each source Folder's files, by Folder id ({@link readListings}). A source with none moves the file alone. */
     listings: ReadonlyMap<string, readonly MovableFile[]>
   },
-): Promise<{ refused?: MoveRefusal; added?: PublishOutcome; moved: string[]; removed: { folder: string; result: PublishOutcome }[] }> {
+): Promise<{ refused?: MoveRefusal; moveRefused?: MoveStopped; moved: string[]; eventIds: string[] }> {
   const plan = planMoveFromFolders(context.signer.pubkey, Date.now(), {
     file: { ref: args.address, address: args.address },
     from: args.from,
     to: args.to,
     listings: args.listings,
   })
-  if (!plan.ok) return { refused: plan.reason, moved: [], removed: [] }
-  if (!plan.add) return { moved: [], removed: [] }
-  const added = await publishUnsigned(context, plan.add)
-  if (!added.ok) return { added, moved: [], removed: [] }
-  const removed: { folder: string; result: PublishOutcome }[] = []
-  for (const { folder, event } of plan.removes) removed.push({ folder, result: await publishUnsigned(context, event) })
-  return { added, moved: plan.moved, removed }
+  if (!plan.ok) return { refused: plan.reason, moved: [], eventIds: [] }
+  const eventIds: string[] = []
+  const landed = new Set<string>()
+  for (const [index, event] of plan.events.entries()) {
+    let result: PublishOutcome
+    try {
+      result = await publishUnsigned(context, event)
+    } catch (error) {
+      if (index === 0) throw error
+      const failure = error instanceof Error ? error.message : String(error)
+      return { moveRefused: { ...readMoveRefusal(plan.events, index, undefined), failure }, moved: [...landed], eventIds }
+    }
+    if (!result.ok) {
+      const busy = result.reason === RELAY_BUSY_MESSAGE ? { busy: true } : {}
+      return { moveRefused: { ...readMoveRefusal(plan.events, index, result.reason), ...busy }, moved: [...landed], eventIds }
+    }
+    if (result.eventId) eventIds.push(result.eventId)
+    for (const tag of event.tags) if (tag[0] === 'a' && plan.moved.includes(tag[1])) landed.add(tag[1])
+  }
+  return { moved: plan.moved, eventIds }
 }
+
+/** Why a move stopped, read by `readMoveRefusal`; `busy` and `failure` are not the relay turning it down. */
+type MoveStopped = ReturnType<typeof readMoveRefusal> & { busy?: boolean; failure?: string }
 
 /** The field whose `true` takes a file off every list (SPEC §6.5). */
 const DELETED_FIELD = 'deleted'
@@ -2733,12 +2756,12 @@ export const shipApp: AgentApp = {
     {
       name: 'move-project',
       /*
-        Ship's "Move to Folder…" (FOL-7): a `kind:1852 add` to the new
-        top-level Folder, then a `remove` from each one that lists it now,
-        through interop's `planMoveFromFolders`, as `Store.moveProject` does —
-        one add naming the project and every file listed beneath it, archived
-        ones included (MAN-17, SHI-37). No
-        `kind:1851` — the record, its issues and its conversation keep their
+        Ship's "Move to Folder…" (FOL-7): one `kind:1852 move` into the new
+        top-level Folder from each one that lists it now, through interop's
+        `planMoveFromFolders`, as `Store.moveProject` does — each naming the
+        project and every file that Folder lists beneath it, archived ones
+        included (MAN-17, SHI-37, TEA-3); listed nowhere, an `add` places it.
+        No `kind:1851` — the record, its issues and its conversation keep their
         Folder, so a comment's `h` still names the channel both apps read.
       */
       signs: [PROTOCOL_KIND.FOLDER_COMMAND],
@@ -2764,31 +2787,51 @@ export const shipApp: AgentApp = {
         }
 
         // What each source lists beneath the project moves with it (SPEC §3.3), read now; unread, nothing is sent.
-        const sources = from.filter((team) => team.id !== to.id && team.hasState).map((team) => ({ id: team.id, hasState: team.hasState }))
+        const sources = listing.filter((team) => team.id !== to.id).map((team) => ({ id: team.id, hasState: team.hasState }))
         const listings = await readListings(context, sources)
         if (!(listings instanceof Map)) throw new BadRequest(`A Folder “${project.title}” is in could not be read (${listings.unread}), so what is under it would be left behind. Nothing was published; run the same command again.`)
 
         const moved = await moveFile(context, {
           address: project.addr,
-          // Each names the project — it is what is being moved, out of its own Folder too, which may hold it by containment
-          // while a topic under it is listed — so the planner moves the two together.
-          from: from.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
+          // Only the Folders that list it: a move leaves a Folder's list, and the relay refuses one from a Folder
+          // that holds it only as its own. Listed nowhere, the planner places it with an `add`.
+          from: listing.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
           to: { id: to.id, hasState: to.hasState, ...(to.private ? { private: true } : {}) },
           listings,
         })
         if (moved.refused === 'target-has-no-state') throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`)
         if (moved.refused === 'source-has-no-state') throw new BadRequest(`A Folder “${project.title}” is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`)
         if (moved.refused === 'target-is-private') throw new BadRequest(`${name(to)} is private, and “${project.title}” would stay readable by the whole workspace. Nothing was published.`)
-        if (moved.added) published(moved.added, `adding “${project.title}” to ${name(to)} (nothing else was sent; it is where it was)`)
 
-        const stillIn = moved.removed
-          .filter(({ result }) => !result.ok)
-          .map(({ folder, result }) => ({ folder, name: teams.find((team) => team.id === folder)?.name, refused: result.reason ?? 'no reason given' }))
+        // The agent's words for why, never the relay's text (TEA-3); its own failure is said as that failure.
+        const stopped = moved.moveRefused
+        const why = !stopped
+          ? undefined
+          : stopped.failure
+            ? stopped.failure.replace(/\.$/, '')
+            : stopped.busy
+              ? RELAY_BUSY_MESSAGE
+              : stopped.why === 'team-archived'
+                ? 'one of the Folders is archived'
+                : stopped.why === 'not-a-member'
+                  ? 'you need to be a member of both Folders to move it'
+                  : stopped.why === 'changed-meanwhile'
+                    ? 'the Folders changed since they were read; run the same command again'
+                    : 'the move was not accepted; run the same command again'
+        if (stopped?.nothingMoved) {
+          if (stopped.busy) throw refused(`moving “${project.title}” to ${name(to)}`, RELAY_BUSY_MESSAGE, 'It is where it was.')
+          throw new BadRequest(`“${project.title}” was not moved: ${why}.`)
+        }
+
+        // Half done: an earlier move landed. Only the first Folder not moved from was asked; the ones after it were not.
+        const stillIn = (stopped?.notMovedFrom ?? []).map((folder) => ({ folder, name: teams.find((team) => team.id === folder)?.name }))
+        const refusing = stillIn[0] ? (stillIn[0].name ?? stillIn[0].folder) : undefined
         return {
           moved: { title: project.title, addr: project.addr },
           from: from.map((team) => ({ id: team.id, name: team.name })),
           to: { id: to.id, name: to.name },
-          added: moved.added?.eventId,
+          eventIds: moved.eventIds,
+          ...(refusing ? { why: `Moved “${project.title}” to ${name(to)}, but ${refusing} still lists it too: ${why}.` } : {}),
           // What was listed beneath it in the source — a topic started under it — and went with it.
           with: moved.moved
             .filter((address) => address !== project.addr)
@@ -2799,8 +2842,7 @@ export const shipApp: AgentApp = {
                 | undefined
               return { title: row?.slots?.title?.value, type: row?.noun, address }
             }),
-          removed: moved.removed.filter(({ result }) => result.ok).map(({ folder, result }) => ({ folder, eventId: result.eventId })),
-          // A refused remove is still a move: it is in the new Folder and in these too. Run the same command again to retry.
+          // A move stopped after an earlier one landed is still a move: it is in the new Folder and in these too.
           stillIn: stillIn.length > 0 ? stillIn : undefined,
           note: `Only the Folder listings changed. Its issues and conversation stay in ${project.contentFolder}.`,
         }

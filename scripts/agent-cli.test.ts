@@ -887,10 +887,11 @@ console.log('— moving a project with what is under it (MAN-17) —')
     {
       const { context, sent } = fake()
       const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
-      check('one add, then one remove', sent.length === 2 && sent.every((event) => event.kind === 1852), `${sent.length} sent`)
-      check('both name the project and the topic under it', sent.every((event) => JSON.stringify(named(event)) === JSON.stringify([project, topic].sort())), JSON.stringify(sent.map(named)))
+      const op = (event: { tags: string[][] }, name: string) => event.tags.find((tag) => tag[0] === name)?.[1]
+      check('one move', sent.length === 1 && sent[0].kind === 1852 && op(sent[0], 'op') === 'move', `${sent.length} sent`)
+      check('the move names the project and the topic under it', op(sent[0], 'op') === 'move' && JSON.stringify(named(sent[0])) === JSON.stringify([project, topic].sort()), JSON.stringify(sent.map(named)))
       check('a topic beside it stays where it is', !sent.some((event) => named(event).includes(elsewhere)))
-      check('the add goes to the target', sent[0].tags.some((tag) => tag[0] === 'h' && tag[1] === to.id))
+      check('it goes to the target, from the source', op(sent[0], 'h') === to.id && op(sent[0], 'from') === from.id)
       check('and what went with it is reported', JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()))
       check('no name rides on a Folder command', !sent.some((event) => event.tags.some((tag) => tag[0] === 'name')))
     }
@@ -910,28 +911,24 @@ console.log('— moving a project with what is under it (MAN-17) —')
       check('placing a project listed nowhere into a private Folder is refused too', moved.refused === 'target-is-private' && sent.length === 0, moved.refused)
     }
     {
-      // The relay's answer per publish, in order.
-      const answering = (...answers: boolean[]) => {
+      // The relay's answer per publish, in order: accepted, or refused in the relay's words.
+      const notAMember = "invalid: only the team's members mark or unmark its spaces"
+      const answering = (...answers: (true | string)[]) => {
         const { context, sent } = fake()
         ;(context.relay as unknown as { publish: (event: { kind: number; tags: string[][] }) => Promise<{ ok: boolean; reason?: string }> }).publish = async (event) => {
           sent.push(event)
-          const ok = answers[sent.length - 1] ?? true
-          return ok ? { ok } : { ok, reason: 'refused' }
+          const answer = answers[sent.length - 1] ?? true
+          return answer === true ? { ok: true } : { ok: false, reason: answer }
         }
         return { context, sent }
       }
       {
-        const { context, sent } = answering(false)
+        const { context, sent } = answering(notAMember)
         const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
-        check('a refused add removes nothing', sent.length === 1 && moved.removed.length === 0 && moved.added?.ok === false)
+        check('a refused move moved nothing, and says why', sent.length === 1 && moved.moved.length === 0 && moved.moveRefused?.nothingMoved === true && moved.moveRefused.why === 'not-a-member', JSON.stringify(moved.moveRefused))
       }
       {
-        const { context, sent } = answering(true, false)
-        const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
-        check('a refused remove is reported against its Folder', sent.length === 2 && moved.added?.ok === true && moved.removed[0]?.folder === from.id && moved.removed[0]?.result.ok === false)
-      }
-      {
-        // Listed in two Folders with different sets beneath it: one add naming both (SHI-37), so it lands whole or not at all.
+        // Listed in two Folders with different sets beneath it: one move from each (TEA-3), each naming what is under it there.
         const other = { id: '3'.repeat(32), hasState: true }
         const second = `30840:${self}:topic-3`
         const listings = new Map([
@@ -941,20 +938,33 @@ console.log('— moving a project with what is under it (MAN-17) —')
         {
           const { context, sent } = answering(true)
           await moveFile(context, { address: project, from: [from, other], to, listings })
-          check('two sources: one add naming everything under it in either', sent.filter((event) => event.tags.some((tag) => tag[0] === 'op' && tag[1] === 'add')).length === 1 && JSON.stringify(named(sent[0])) === JSON.stringify([project, topic, second].sort()), JSON.stringify(sent.map(named)))
-          check('…then a remove from each', sent.length === 3)
+          const froms = sent.map((event) => event.tags.find((tag) => tag[0] === 'from')?.[1])
+          check('two sources: one move from each', sent.length === 2 && JSON.stringify(froms) === JSON.stringify([from.id, other.id]), JSON.stringify(froms))
+          check('…each naming what is under it there', JSON.stringify(named(sent[0])) === JSON.stringify([project, topic].sort()) && JSON.stringify(named(sent[1])) === JSON.stringify([project, second].sort()), JSON.stringify(sent.map(named)))
         }
         {
-          const { context, sent } = answering(false)
+          const { context, sent } = answering(true, 'invalid: channel is archived')
           const moved = await moveFile(context, { address: project, from: [from, other], to, listings })
-          check('…and that add refused leaves nothing in the target and removes nothing', sent.length === 1 && moved.added?.ok === false && moved.removed.length === 0)
+          check('…and the second refused stops there, naming the Folder that still lists it', sent.length === 2 && moved.moveRefused?.nothingMoved === false && JSON.stringify(moved.moveRefused.notMovedFrom) === JSON.stringify([other.id]), JSON.stringify(moved.moveRefused))
+          check('…reporting what the first move took', JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()), JSON.stringify(moved.moved))
+        }
+        {
+          // The agent's own failure on the second command, after the first landed: what landed is still said.
+          const { context, sent } = answering(true)
+          const publish = (context.relay as unknown as { publish: (event: { kind: number; tags: string[][] }) => Promise<unknown> }).publish
+          ;(context.relay as unknown as { publish: typeof publish }).publish = async (event) => {
+            if (sent.length === 1) throw new Error('fetch failed')
+            return publish(event)
+          }
+          const moved = await moveFile(context, { address: project, from: [from, other], to, listings }).catch((error: Error) => ({ thrown: error.message, moved: [], moveRefused: undefined }))
+          check('a failure after a move landed is reported with what landed', moved.moveRefused?.failure === 'fetch failed' && JSON.stringify(moved.moveRefused.notMovedFrom) === JSON.stringify([other.id]) && JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()), JSON.stringify(moved))
         }
       }
       {
         // The project row did not resolve, but the Folder's state names it: it still moves (the planner, not the read, adds it).
         const { context, sent } = answering()
         const moved = await moveFile(context, { address: project, from: [{ ...from, addresses: [project, topic] }], to, listings: new Map([[from.id, listing.slice(1)]]) })
-        check('a project whose row did not resolve still moves, with the topic under it', JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()) && sent.length === 2)
+        check('a project whose row did not resolve still moves, with the topic under it', JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()) && sent.length === 1)
       }
     }
   }
@@ -1224,6 +1234,100 @@ console.log('— an edit lists the files the message keeps —')
     let refused = ''
     await publishEdit(context, { folder: 'folder', messageEventId: target, body: 'new words' }).catch((error: Error) => (refused = error.message))
     check('nor is one whose edits can be read but not the message itself', sent.length === 0 && refused.includes('could not be read back'), refused)
+  }
+}
+
+console.log('— move-project: what the relay is sent, and what the agent says (TEA-3) —')
+
+{
+  /*
+    The command itself, over an in-memory relay holding the conformance fixture
+    (production events), the manifest Ship published and three top-level
+    Folders. Each publish is answered in order: accepted, or refused in the
+    relay's own words.
+  */
+  const RELAY = 'f'.repeat(64)
+  const fixture = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'conformance', 'fold-fixture.json'), 'utf8')) as { events: SignedEvent[] }
+  const manifest = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'conformance', 'ship-manifest.json'), 'utf8')) as { event: SignedEvent }
+  const projectEvent = fixture.events.find((e) => e.kind === 30850 && e.tags.some((t) => t[0] === 'title' && t[1] === 'Shared foundation packages'))!
+  const project = `30850:${projectEvent.pubkey}:${projectEvent.tags.find((t) => t[0] === 'd')![1]}`
+  const home = projectEvent.tags.find((t) => t[0] === 'h')![1]
+  const [alpha, beta, gamma] = ['a1', 'b2', 'c3'].map((x) => `${x.repeat(4)}-0000-4000-8000-${x.repeat(6)}`)
+  let n = 0
+  const relayEvent = (kind: number, tags: string[][]): SignedEvent => ({ id: (n++).toString(16).padStart(64, '0'), pubkey: RELAY, kind, created_at: 1_000, content: '', sig: '', tags })
+  const team = (id: string, name: string, lists: string[]) => [relayEvent(39000, [['d', id], ['name', name]]), relayEvent(30890, [['d', id], ...lists.map((a) => ['a', a])])]
+  const run = async (folders: SignedEvent[], ...answers: (true | string)[]) => {
+    const events = [...fixture.events, manifest.event, ...folders]
+    const sent: SignedEvent[] = []
+    const values = (e: SignedEvent, name: string) => e.tags.filter((t) => t[0] === name).map((t) => t[1])
+    const matches = (e: SignedEvent, filter: Record<string, unknown>) =>
+      (!Array.isArray(filter.ids) || filter.ids.includes(e.id)) &&
+      (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
+      (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
+      Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
+    const queryAll = async (filters: Record<string, unknown>[]) => [...new Set(filters.flatMap((filter) => events.filter((e) => matches(e, filter))))]
+    const context = {
+      relayUrl: 'https://estiva.example',
+      relay: {
+        queryAll,
+        query: queryAll,
+        publish: async (event: SignedEvent) => {
+          sent.push(event)
+          const answer = answers[sent.length - 1] ?? true
+          return answer === true ? { ok: true, eventId: event.id } : { ok: false, reason: answer }
+        },
+      },
+      signer: { pubkey: 'a'.repeat(64), sign: async (event: SignedEvent) => ({ ...event, id: String(sent.length).padStart(64, '0'), sig: '' }) },
+    }
+    const command = shipApp.commands.find((c) => c.name === 'move-project')!
+    const said = await command.run(context as never, { positional: [project], flags: { folder: 'Beta' } } as never).then(
+      (result) => result as Record<string, any>,
+      (error: Error) => error,
+    )
+    return { said, sent }
+  }
+  const tag = (event: SignedEvent | undefined, name: string) => event?.tags.find((t) => t[0] === name)?.[1]
+  const title = '“Shared foundation packages”'
+
+  {
+    const { said, sent } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: channel is archived')
+    check('move-project sends one move into the target, from the Folder that lists it', sent.length === 1 && tag(sent[0], 'op') === 'move' && tag(sent[0], 'h') === beta && tag(sent[0], 'from') === alpha, JSON.stringify(sent.map((e) => e.tags)))
+    check('an archived Folder refusing it is said in the agent’s words', said instanceof BadRequest && said.message === `${title} was not moved: one of the Folders is archived.`, String(said instanceof Error ? said.message : said))
+  }
+  {
+    const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], "invalid: only the team's members mark or unmark its spaces")
+    check('a mover outside a Folder is told it needs to be a member of both', said instanceof BadRequest && said.message === `${title} was not moved: you need to be a member of both Folders to move it.`, String(said instanceof Error ? said.message : said))
+  }
+  {
+    const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: rate-limited')
+    check('any other refusal says the move was not accepted, without naming the relay', said instanceof BadRequest && said.message === `${title} was not moved: the move was not accepted; run the same command again.`, String(said instanceof Error ? said.message : said))
+  }
+  {
+    const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'the relay is busy, try again in a moment')
+    check('a relay that stayed busy is said as busy, not as a refusal', said instanceof Error && !(said instanceof BadRequest) && said.message === `the relay is busy, try again in a moment; moving ${title} to Beta was not saved. It is where it was.`, String(said instanceof Error ? said.message : said))
+  }
+  {
+    // Its own Folder is a team whose list does not name it: a move from there would be refused ("lists none of its files").
+    const { sent } = await run([...team(home, 'Home', []), ...team(beta, 'Beta', [])])
+    check('a project no Folder lists is placed with an add, from nowhere', sent.length === 1 && tag(sent[0], 'op') === 'add' && tag(sent[0], 'h') === beta && !tag(sent[0], 'from'), JSON.stringify(sent.map((e) => e.tags)))
+  }
+  {
+    // Listed in two Folders, an issue of it filed beneath it in Alpha: the move from Alpha lands, the one from Gamma is refused.
+    const beneath = fixture.events.find((e) => e.kind === 30851 && e.tags.some((t) => t[0] === 'title' && t[1].startsWith("@estiva-app/ui's Field")))!
+    const issue = `30851:${beneath.pubkey}:${beneath.tags.find((t) => t[0] === 'd')![1]}`
+    const { said, sent } = await run([...team(alpha, 'Alpha', [project, issue]), ...team(beta, 'Beta', []), ...team(gamma, 'Gamma', [project])], true, 'invalid: the team a move leaves lists none of its files')
+    check('half done: one move from each Folder, the second refused', sent.length === 2 && JSON.stringify(sent.map((e) => tag(e, 'from'))) === JSON.stringify([alpha, gamma]), JSON.stringify(sent.map((e) => e.tags)))
+    check(
+      '…says it moved, and which Folder still lists it and why',
+      !(said instanceof Error) && said.why === `Moved ${title} to Beta, but Gamma still lists it too: the Folders changed since they were read; run the same command again.`,
+      String(said instanceof Error ? said.message : said.why),
+    )
+    check('…lists that Folder as still holding it', !(said instanceof Error) && JSON.stringify(said.stillIn) === JSON.stringify([{ folder: gamma, name: 'Gamma' }]), JSON.stringify(!(said instanceof Error) && said.stillIn))
+    check(
+      '…and the issue that went with it from Alpha',
+      !(said instanceof Error) && JSON.stringify(said.with?.map((row: { address: string; type?: string }) => [row.address, row.type])) === JSON.stringify([[issue, 'issue']]),
+      JSON.stringify(!(said instanceof Error) && said.with),
+    )
   }
 }
 

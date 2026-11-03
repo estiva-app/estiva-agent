@@ -17109,17 +17109,25 @@ function parseProfile(event) {
     return {};
   }
 }
-var FOLDER_OPS = ["add", "remove", "set"];
+var FOLDER_OPS = ["add", "remove", "set", "move"];
 function buildFolderCommand(pubkey, createdAtMs, args2) {
   assertHex64(pubkey, "pubkey");
   if (!args2.folder)
     throw new Error("a folder command names the folder");
   if (!FOLDER_OPS.includes(args2.op))
     throw new Error(`unknown folder op: ${String(args2.op)}`);
+  if (args2.op === "move" !== (args2.from !== void 0))
+    throw new Error("a move, and only a move, names the folder it leaves");
+  if (args2.from !== void 0 && (!args2.from || args2.from.toLowerCase() === args2.folder.toLowerCase()))
+    throw new Error("a move leaves another folder than the one it goes to");
+  if (args2.op === "move" && !args2.addresses?.length)
+    throw new Error("a move names the files it moves");
   const tags = [
     ["h", args2.folder],
     ["op", args2.op]
   ];
+  if (args2.from !== void 0)
+    tags.push(["from", args2.from]);
   for (const address of args2.addresses ?? []) {
     if (!address)
       throw new Error("a folder command address must not be empty");
@@ -19171,7 +19179,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.28.0",
+  version: "0.29.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -19916,10 +19924,7 @@ function planMoveFile(pubkey, createdAtMs, args2) {
     return { ok: true, events: [], moved };
   return {
     ok: true,
-    events: [
-      buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "add", addresses: moved }),
-      buildFolderCommand(pubkey, createdAtMs, { folder: args2.from.id, op: "remove", addresses: moved })
-    ],
+    events: [buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "move", from: args2.from.id, addresses: moved })],
     moved
   };
 }
@@ -19927,8 +19932,8 @@ function planMoveFromFolders(pubkey, createdAtMs, args2) {
   const { file, to } = args2;
   const sources = args2.from.filter((folder) => folder.id !== to.id);
   if (sources.length === 0 && args2.from.length > 0)
-    return { ok: true, removes: [], moved: [] };
-  const removes = [];
+    return { ok: true, events: [], moved: [] };
+  const events = [];
   const moved = /* @__PURE__ */ new Set();
   for (const from of sources) {
     const listing = args2.listings.get(from.id) ?? null;
@@ -19944,9 +19949,7 @@ function planMoveFromFolders(pubkey, createdAtMs, args2) {
       return plan;
     for (const address of plan.moved)
       moved.add(address);
-    const remove = plan.events[1];
-    if (remove)
-      removes.push({ folder: from.id, event: remove });
+    events.push(...plan.events);
   }
   if (!to.hasState)
     return { ok: false, reason: "target-has-no-state" };
@@ -19954,12 +19957,19 @@ function planMoveFromFolders(pubkey, createdAtMs, args2) {
     if (to.private && file.scopedTo !== to.id)
       return { ok: false, reason: "target-is-private" };
     if (!file.address)
-      return { ok: true, removes: [], moved: [] };
-    const [add] = planPlaceFile(pubkey, createdAtMs, { folder: to.id, address: file.address, hasState: true });
-    return { ok: true, add, removes: [], moved: [file.address] };
+      return { ok: true, events: [], moved: [] };
+    if (file.address.startsWith(`${KIND.FILE}:`) && file.scopedTo !== to.id && !to.company)
+      return { ok: false, reason: "target-is-not-home" };
+    return { ok: true, events: planPlaceFile(pubkey, createdAtMs, { folder: to.id, address: file.address, hasState: true }), moved: [file.address] };
   }
-  const addresses = [...moved];
-  return { ok: true, add: buildFolderCommand(pubkey, createdAtMs, { folder: to.id, op: "add", addresses }), removes, moved: addresses };
+  return { ok: true, events, moved: [...moved] };
+}
+function readMoveRefusal(events, index, reason) {
+  const text2 = reason ?? "";
+  const why = /archived/i.test(text2) ? "team-archived" : /only the team's members|not a channel member/i.test(text2) ? "not-a-member" : /does not list|lists none of|listed by one team/i.test(text2) ? "changed-meanwhile" : "refused";
+  const nothingMoved = index <= 0;
+  const notMovedFrom = nothingMoved ? [] : events.slice(index).flatMap((event) => event.tags.filter((tag) => tag[0] === "from").map((tag) => tag[1]));
+  return { why, nothingMoved, notMovedFrom };
 }
 
 // node_modules/@estiva-app/interop/dist/projection.js
@@ -21934,6 +21944,8 @@ async function readFolderRecords(query) {
       folder.name = name;
     if (channel.tags.some((tag) => tag[0] === "private"))
       folder.private = true;
+    if (channel.tags.some((tag) => tag[0] === "company"))
+      folder.company = true;
     const admins = folderAdminsOf(adminsOf.get(id), channel);
     if (admins.length)
       folder.admins = admins;
@@ -22051,6 +22063,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
     name: nameOf(channel),
     hasState: !!state,
     ...channel?.tags.some((tag) => tag[0] === "private") ? { private: true } : {},
+    ...channel?.tags.some((tag) => tag[0] === "company") ? { company: true } : {},
     ...admins.length ? { admins } : {},
     ...channelAddress ? { channel: channelAddress } : {},
     ...state ? { address: pointerToAddress({ kind: state.kind, pubkey: state.pubkey, identifier: folder, relays: [] }) } : {}
@@ -24595,13 +24608,26 @@ async function moveFile(context2, args2) {
     to: args2.to,
     listings: args2.listings
   });
-  if (!plan.ok) return { refused: plan.reason, moved: [], removed: [] };
-  if (!plan.add) return { moved: [], removed: [] };
-  const added = await publishUnsigned(context2, plan.add);
-  if (!added.ok) return { added, moved: [], removed: [] };
-  const removed = [];
-  for (const { folder, event } of plan.removes) removed.push({ folder, result: await publishUnsigned(context2, event) });
-  return { added, moved: plan.moved, removed };
+  if (!plan.ok) return { refused: plan.reason, moved: [], eventIds: [] };
+  const eventIds = [];
+  const landed = /* @__PURE__ */ new Set();
+  for (const [index, event] of plan.events.entries()) {
+    let result;
+    try {
+      result = await publishUnsigned(context2, event);
+    } catch (error2) {
+      if (index === 0) throw error2;
+      const failure2 = error2 instanceof Error ? error2.message : String(error2);
+      return { moveRefused: { ...readMoveRefusal(plan.events, index, void 0), failure: failure2 }, moved: [...landed], eventIds };
+    }
+    if (!result.ok) {
+      const busy = result.reason === RELAY_BUSY_MESSAGE ? { busy: true } : {};
+      return { moveRefused: { ...readMoveRefusal(plan.events, index, result.reason), ...busy }, moved: [...landed], eventIds };
+    }
+    if (result.eventId) eventIds.push(result.eventId);
+    for (const tag of event.tags) if (tag[0] === "a" && plan.moved.includes(tag[1])) landed.add(tag[1]);
+  }
+  return { moved: plan.moved, eventIds };
 }
 var DELETED_FIELD = "deleted";
 function fieldAction(workspace, addr2, field) {
@@ -25718,12 +25744,12 @@ Pass an address to say which.`
     {
       name: "move-project",
       /*
-        Ship's "Move to Folder…" (FOL-7): a `kind:1852 add` to the new
-        top-level Folder, then a `remove` from each one that lists it now,
-        through interop's `planMoveFromFolders`, as `Store.moveProject` does —
-        one add naming the project and every file listed beneath it, archived
-        ones included (MAN-17, SHI-37). No
-        `kind:1851` — the record, its issues and its conversation keep their
+        Ship's "Move to Folder…" (FOL-7): one `kind:1852 move` into the new
+        top-level Folder from each one that lists it now, through interop's
+        `planMoveFromFolders`, as `Store.moveProject` does — each naming the
+        project and every file that Folder lists beneath it, archived ones
+        included (MAN-17, SHI-37, TEA-3); listed nowhere, an `add` places it.
+        No `kind:1851` — the record, its issues and its conversation keep their
         Folder, so a comment's `h` still names the channel both apps read.
       */
       signs: [KIND.FOLDER_COMMAND],
@@ -25744,34 +25770,40 @@ Pass an address to say which.`
         if (from.length === 1 && from[0].id === to.id) {
           throw new BadRequest(`\u201C${project.title}\u201D is already in ${name(to)}, and only there. Nothing was published.`);
         }
-        const sources = from.filter((team) => team.id !== to.id && team.hasState).map((team) => ({ id: team.id, hasState: team.hasState }));
+        const sources = listing.filter((team) => team.id !== to.id).map((team) => ({ id: team.id, hasState: team.hasState }));
         const listings = await readListings(context2, sources);
         if (!(listings instanceof Map)) throw new BadRequest(`A Folder \u201C${project.title}\u201D is in could not be read (${listings.unread}), so what is under it would be left behind. Nothing was published; run the same command again.`);
         const moved = await moveFile(context2, {
           address: project.addr,
-          // Each names the project — it is what is being moved, out of its own Folder too, which may hold it by containment
-          // while a topic under it is listed — so the planner moves the two together.
-          from: from.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
+          // Only the Folders that list it: a move leaves a Folder's list, and the relay refuses one from a Folder
+          // that holds it only as its own. Listed nowhere, the planner places it with an `add`.
+          from: listing.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
           to: { id: to.id, hasState: to.hasState, ...to.private ? { private: true } : {} },
           listings
         });
         if (moved.refused === "target-has-no-state") throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`);
         if (moved.refused === "source-has-no-state") throw new BadRequest(`A Folder \u201C${project.title}\u201D is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`);
         if (moved.refused === "target-is-private") throw new BadRequest(`${name(to)} is private, and \u201C${project.title}\u201D would stay readable by the whole workspace. Nothing was published.`);
-        if (moved.added) published2(moved.added, `adding \u201C${project.title}\u201D to ${name(to)} (nothing else was sent; it is where it was)`);
-        const stillIn = moved.removed.filter(({ result }) => !result.ok).map(({ folder, result }) => ({ folder, name: teams.find((team) => team.id === folder)?.name, refused: result.reason ?? "no reason given" }));
+        const stopped = moved.moveRefused;
+        const why = !stopped ? void 0 : stopped.failure ? stopped.failure.replace(/\.$/, "") : stopped.busy ? RELAY_BUSY_MESSAGE : stopped.why === "team-archived" ? "one of the Folders is archived" : stopped.why === "not-a-member" ? "you need to be a member of both Folders to move it" : stopped.why === "changed-meanwhile" ? "the Folders changed since they were read; run the same command again" : "the move was not accepted; run the same command again";
+        if (stopped?.nothingMoved) {
+          if (stopped.busy) throw refused(`moving \u201C${project.title}\u201D to ${name(to)}`, RELAY_BUSY_MESSAGE, "It is where it was.");
+          throw new BadRequest(`\u201C${project.title}\u201D was not moved: ${why}.`);
+        }
+        const stillIn = (stopped?.notMovedFrom ?? []).map((folder) => ({ folder, name: teams.find((team) => team.id === folder)?.name }));
+        const refusing = stillIn[0] ? stillIn[0].name ?? stillIn[0].folder : void 0;
         return {
           moved: { title: project.title, addr: project.addr },
           from: from.map((team) => ({ id: team.id, name: team.name })),
           to: { id: to.id, name: to.name },
-          added: moved.added?.eventId,
+          eventIds: moved.eventIds,
+          ...refusing ? { why: `Moved \u201C${project.title}\u201D to ${name(to)}, but ${refusing} still lists it too: ${why}.` } : {},
           // What was listed beneath it in the source — a topic started under it — and went with it.
           with: moved.moved.filter((address) => address !== project.addr).map((address) => {
             const row = [...listings.values()].flat().find((file) => file.address === address);
             return { title: row?.slots?.title?.value, type: row?.noun, address };
           }),
-          removed: moved.removed.filter(({ result }) => result.ok).map(({ folder, result }) => ({ folder, eventId: result.eventId })),
-          // A refused remove is still a move: it is in the new Folder and in these too. Run the same command again to retry.
+          // A move stopped after an earlier one landed is still a move: it is in the new Folder and in these too.
           stillIn: stillIn.length > 0 ? stillIn : void 0,
           note: `Only the Folder listings changed. Its issues and conversation stay in ${project.contentFolder}.`
         };
