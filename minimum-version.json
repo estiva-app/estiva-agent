@@ -1,4 +1,4 @@
 {
   "minimum": "0.29.0",
-  "why": "0.29.0 moves a project and the topics under it as one move per Folder, changing both lists or neither (TEA-3); the relay refuses an older agent's remove of a topic. Raise this when the workspace starts expecting something every writer must do; an agent below it refuses writes and still reads."
+  "why": "0.29.0 moves a project and the topics under it with the relay's move, one per Folder, so both lists change together (TEA-3). An older agent adds to the new Folder before removing from the old one, which would leave a topic in two teams, and the relay now refuses that: a topic is listed by one team. Raise this when the workspace starts expecting something every writer must do; an agent below it refuses writes and still reads."
 }

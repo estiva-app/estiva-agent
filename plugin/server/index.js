@@ -24610,10 +24610,22 @@ async function moveFile(context2, args2) {
   });
   if (!plan.ok) return { refused: plan.reason, moved: [], eventIds: [] };
   const eventIds = [];
+  const landed = /* @__PURE__ */ new Set();
   for (const [index, event] of plan.events.entries()) {
-    const result = await publishUnsigned(context2, event);
-    if (!result.ok) return { moveRefused: readMoveRefusal(plan.events, index, result.reason), moved: [], eventIds };
+    let result;
+    try {
+      result = await publishUnsigned(context2, event);
+    } catch (error2) {
+      if (index === 0) throw error2;
+      const failure2 = error2 instanceof Error ? error2.message : String(error2);
+      return { moveRefused: { ...readMoveRefusal(plan.events, index, void 0), failure: failure2 }, moved: [...landed], eventIds };
+    }
+    if (!result.ok) {
+      const busy = result.reason === RELAY_BUSY_MESSAGE ? { busy: true } : {};
+      return { moveRefused: { ...readMoveRefusal(plan.events, index, result.reason), ...busy }, moved: [...landed], eventIds };
+    }
     if (result.eventId) eventIds.push(result.eventId);
+    for (const tag of event.tags) if (tag[0] === "a" && plan.moved.includes(tag[1])) landed.add(tag[1]);
   }
   return { moved: plan.moved, eventIds };
 }
@@ -25732,12 +25744,12 @@ Pass an address to say which.`
     {
       name: "move-project",
       /*
-        Ship's "Move to Folder…" (FOL-7): a `kind:1852 add` to the new
-        top-level Folder, then a `remove` from each one that lists it now,
-        through interop's `planMoveFromFolders`, as `Store.moveProject` does —
-        one add naming the project and every file listed beneath it, archived
-        ones included (MAN-17, SHI-37). No
-        `kind:1851` — the record, its issues and its conversation keep their
+        Ship's "Move to Folder…" (FOL-7): one `kind:1852 move` into the new
+        top-level Folder from each one that lists it now, through interop's
+        `planMoveFromFolders`, as `Store.moveProject` does — each naming the
+        project and every file that Folder lists beneath it, archived ones
+        included (MAN-17, SHI-37, TEA-3); listed nowhere, an `add` places it.
+        No `kind:1851` — the record, its issues and its conversation keep their
         Folder, so a comment's `h` still names the channel both apps read.
       */
       signs: [KIND.FOLDER_COMMAND],
@@ -25758,35 +25770,40 @@ Pass an address to say which.`
         if (from.length === 1 && from[0].id === to.id) {
           throw new BadRequest(`\u201C${project.title}\u201D is already in ${name(to)}, and only there. Nothing was published.`);
         }
-        const sources = from.filter((team) => team.id !== to.id && team.hasState).map((team) => ({ id: team.id, hasState: team.hasState }));
+        const sources = listing.filter((team) => team.id !== to.id).map((team) => ({ id: team.id, hasState: team.hasState }));
         const listings = await readListings(context2, sources);
         if (!(listings instanceof Map)) throw new BadRequest(`A Folder \u201C${project.title}\u201D is in could not be read (${listings.unread}), so what is under it would be left behind. Nothing was published; run the same command again.`);
         const moved = await moveFile(context2, {
           address: project.addr,
-          // Each names the project — it is what is being moved, out of its own Folder too, which may hold it by containment
-          // while a topic under it is listed — so the planner moves the two together.
-          from: from.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
-          to: { id: to.id, hasState: to.hasState, ...to.private ? { private: true } : {}, ...to.company ? { company: true } : {} },
+          // Only the Folders that list it: a move leaves a Folder's list, and the relay refuses one from a Folder
+          // that holds it only as its own. Listed nowhere, the planner places it with an `add`.
+          from: listing.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
+          to: { id: to.id, hasState: to.hasState, ...to.private ? { private: true } : {} },
           listings
         });
         if (moved.refused === "target-has-no-state") throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`);
         if (moved.refused === "source-has-no-state") throw new BadRequest(`A Folder \u201C${project.title}\u201D is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`);
         if (moved.refused === "target-is-private") throw new BadRequest(`${name(to)} is private, and \u201C${project.title}\u201D would stay readable by the whole workspace. Nothing was published.`);
-        if (moved.refused === "target-is-not-home") throw new BadRequest(`\u201C${project.title}\u201D is in no Folder yet, so it can only go to the one it was started in. Nothing was published.`);
-        const why = moved.moveRefused?.why === "team-archived" ? "one of the Folders is archived" : moved.moveRefused?.why === "not-a-member" ? "moving it needs a member of both Folders" : moved.moveRefused?.why === "changed-meanwhile" ? "a Folder changed since it was read; run the same command again" : "the relay did not accept the move; run the same command again";
-        if (moved.moveRefused?.nothingMoved) throw new BadRequest(`\u201C${project.title}\u201D was not moved: ${why}. Nothing changed; it is where it was.`);
-        const stillIn = (moved.moveRefused?.notMovedFrom ?? []).map((folder) => ({ folder, name: teams.find((team) => team.id === folder)?.name, refused: why }));
+        const stopped = moved.moveRefused;
+        const why = !stopped ? void 0 : stopped.failure ? stopped.failure.replace(/\.$/, "") : stopped.busy ? RELAY_BUSY_MESSAGE : stopped.why === "team-archived" ? "one of the Folders is archived" : stopped.why === "not-a-member" ? "you need to be a member of both Folders to move it" : stopped.why === "changed-meanwhile" ? "the Folders changed since they were read; run the same command again" : "the move was not accepted; run the same command again";
+        if (stopped?.nothingMoved) {
+          if (stopped.busy) throw refused(`moving \u201C${project.title}\u201D to ${name(to)}`, RELAY_BUSY_MESSAGE, "It is where it was.");
+          throw new BadRequest(`\u201C${project.title}\u201D was not moved: ${why}.`);
+        }
+        const stillIn = (stopped?.notMovedFrom ?? []).map((folder) => ({ folder, name: teams.find((team) => team.id === folder)?.name }));
+        const refusing = stillIn[0] ? stillIn[0].name ?? stillIn[0].folder : void 0;
         return {
           moved: { title: project.title, addr: project.addr },
           from: from.map((team) => ({ id: team.id, name: team.name })),
           to: { id: to.id, name: to.name },
           eventIds: moved.eventIds,
+          ...refusing ? { why: `Moved \u201C${project.title}\u201D to ${name(to)}, but ${refusing} still lists it too: ${why}.` } : {},
           // What was listed beneath it in the source — a topic started under it — and went with it.
           with: moved.moved.filter((address) => address !== project.addr).map((address) => {
             const row = [...listings.values()].flat().find((file) => file.address === address);
             return { title: row?.slots?.title?.value, type: row?.noun, address };
           }),
-          // A move refused after an earlier one is still a move: it is in the new Folder and in these too. Run the same command again to retry.
+          // A move stopped after an earlier one landed is still a move: it is in the new Folder and in these too.
           stillIn: stillIn.length > 0 ? stillIn : void 0,
           note: `Only the Folder listings changed. Its issues and conversation stay in ${project.contentFolder}.`
         };
