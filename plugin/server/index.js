@@ -19966,7 +19966,7 @@ function planMoveFromFolders(pubkey, createdAtMs, args2) {
 }
 function readMoveRefusal(events, index, reason) {
   const text2 = reason ?? "";
-  const why = /archived/i.test(text2) ? "team-archived" : /only the team's members/i.test(text2) ? "not-a-member" : /does not list|lists none of|listed by one team/i.test(text2) ? "changed-meanwhile" : "refused";
+  const why = /archived/i.test(text2) ? "team-archived" : /only the team's members|not a channel member/i.test(text2) ? "not-a-member" : /does not list|lists none of|listed by one team/i.test(text2) ? "changed-meanwhile" : "refused";
   const nothingMoved = index <= 0;
   const notMovedFrom = nothingMoved ? [] : events.slice(index).flatMap((event) => event.tags.filter((tag) => tag[0] === "from").map((tag) => tag[1]));
   return { why, nothingMoved, notMovedFrom };
