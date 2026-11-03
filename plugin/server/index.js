@@ -16651,28 +16651,60 @@ function documentText(doc3) {
   return doc3.content.map(inlineTextOf).filter((t) => t !== "").join("\n");
 }
 
+// node_modules/@estiva-app/protocol/dist/fileId.js
+var FILE_KINDS = [30840, 30842, 30850, 30851, 30852];
+var FILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+var ADDRESS = /^\d+:[0-9a-fA-F]{64}:([^]*)$/;
+function isFileId(value) {
+  return FILE_ID.test(value);
+}
+function fileKeyOf(value) {
+  return fileIdOf(value) ?? value;
+}
+function fileIdOf(address) {
+  const d = ADDRESS.exec(address)?.[1];
+  return d !== void 0 && FILE_ID.test(d) ? d : void 0;
+}
+function sameFile(a, b) {
+  return a === b || fileKeyOf(a) === fileKeyOf(b);
+}
+var BASE_TYPE_OF_KIND = {
+  30840: "osnova.topic",
+  30842: "osnova.document",
+  30850: "osnova.project",
+  30851: "osnova.issue"
+};
+function fileIdFormOf(inOrder, address) {
+  const id = fileIdOf(address);
+  const type = BASE_TYPE_OF_KIND[Number(address.slice(0, address.indexOf(":")))];
+  return id !== void 0 && type !== void 0 && inOrder.includes(type) ? { id, type } : void 0;
+}
+
 // node_modules/@estiva-app/protocol/dist/embeds.js
 var EMBED_TAG = "embed";
-function embedTagsOf(set) {
+function embedTagsOf(set, inOrder = []) {
   const seen = /* @__PURE__ */ new Set();
   return set.flatMap((e) => {
-    const value = normalise(e.value);
-    if (!value)
+    const normal = normalise(e.value);
+    if (!normal)
       throw new Error(`not an address or event id: ${e.value}`);
+    const value = fileIdFormOf(inOrder, normal)?.id ?? normal;
     if (e.layout !== "compact" && e.layout !== "detailed" && e.layout !== "none")
       throw new Error(`not an embed layout: ${String(e.layout)}`);
-    if (seen.has(value))
+    if (seen.has(fileKeyOf(value)))
       return [];
-    seen.add(value);
+    seen.add(fileKeyOf(value));
     return [[EMBED_TAG, value, e.layout === "compact" && e.written || e.layout]];
   });
 }
-var ADDRESS = /^\d+:[0-9a-f]{64}:/;
+var ADDRESS2 = /^\d+:[0-9a-f]{64}:/;
 var EVENT_ID = /^[0-9a-f]{64}$/;
 function normalise(value) {
   if (EVENT_ID.test(value.toLowerCase()))
     return value.toLowerCase();
-  if (!ADDRESS.test(value))
+  if (isFileId(value))
+    return value;
+  if (!ADDRESS2.test(value))
     return void 0;
   const [kind, pubkey, ...d] = value.split(":");
   return `${kind}:${pubkey.toLowerCase()}:${d.join(":")}`;
@@ -16807,7 +16839,7 @@ function lineDrawOf(line, block, context2 = {}) {
     return isReference ? { draw: "unreadable", reference: only } : { draw: "url", url: only };
   if (isFolderValue(value))
     return { draw: "sentence" };
-  const carded = (context2.cards ?? []).some((e) => e.value === value && e.layout !== "none") || (context2.parts ?? []).some((p) => normalise(p.address) === value);
+  const carded = (context2.cards ?? []).some((e) => sameFile(e.value, value) && e.layout !== "none") || partKeysOf(context2.parts ?? []).has(fileKeyOf(value));
   return { draw: carded ? "nothing" : "row", value, ...isReference ? {} : { url: only } };
 }
 function documentLineDrawOf(line, block, context2 = {}) {
@@ -16831,6 +16863,9 @@ function documentLineDraws(blocks, context2 = {}) {
   };
   walk(blocks, false);
   return out;
+}
+function partKeysOf(parts) {
+  return new Set(parts.map((p) => normalise(p.address)).filter((v) => !!v).map(fileKeyOf));
 }
 function referenceOfLink(url, resolveLink) {
   const value = normalise(resolveLink(url) ?? "");
@@ -17131,7 +17166,7 @@ function buildFolderCommand(pubkey, createdAtMs, args2) {
   for (const address of args2.addresses ?? []) {
     if (!address)
       throw new Error("a folder command address must not be empty");
-    tags.push(["a", address]);
+    tags.push([isFileId(address) ? "o" : "a", address]);
   }
   if (args2.name !== void 0) {
     const name = canonicalChannelName(args2.name);
@@ -17165,7 +17200,7 @@ function buildEdit(pubkey, createdAtMs, args2) {
       // and a rounded `ts` could land in the next second and be discarded by
       // its own agreement rule.
       ["ts", String(Math.floor(createdAtMs))],
-      ...embedTagsOf(args2.embeds ?? []),
+      ...embedTagsOf(args2.embeds ?? [], args2.inOrder),
       ...args2.mediaTags ?? []
     ],
     content: args2.body
@@ -19179,7 +19214,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.29.0",
+  version: "0.30.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -19496,16 +19531,38 @@ function isReply(event) {
   return es.some((e) => e !== root);
 }
 function anchorsOf(event) {
-  if (event.kind !== KIND_COMMENT)
+  if (event.kind !== KIND_COMMENT || crossed(event))
     return [];
   const roots = values(event, "A");
   return [...new Set(roots.length > 0 ? roots : values(event, "a"))];
 }
+function anchorIdsOf(event) {
+  if (event.kind !== KIND_COMMENT || crossed(event))
+    return [];
+  return [...new Set(values(event, "O"))];
+}
+function crossed(event) {
+  const ids = new Set(values(event, "O"));
+  const roots = new Set(values(event, "A"));
+  if (ids.size > 1 || roots.size > 1)
+    return true;
+  if (ids.size === 0)
+    return false;
+  const [id] = ids;
+  return [...roots.size > 0 ? roots : values(event, "a")].some((address) => !FILE_KINDS.includes(Number(address.split(":")[0])) || fileIdOf(address) !== id);
+}
+function isAbout(event, address) {
+  const roots = anchorsOf(event);
+  if (roots.length > 0)
+    return roots.includes(address);
+  return anchorIdsOf(event).some((id) => namesById(id, address));
+}
+var namesById = (id, address) => fileIdOf(address) === id;
 function isCommentOn(event, address, declaredKinds = [KIND_COMMENT]) {
   if (isReply(event))
     return false;
   if (event.kind === KIND_COMMENT)
-    return anchorsOf(event).includes(address);
+    return isAbout(event, address);
   if (!declaredKinds.includes(event.kind))
     return false;
   return event.tags.some((t) => t[0] === "a" && t[1] === address) && !namedInBody(event.content).has(address);
@@ -19762,6 +19819,8 @@ function buildMembershipChange(pubkey, createdAtMs, args2) {
     kind: KIND_CHANGE,
     tags: [
       ["a", args2.file],
+      // The file the change is about, by its id (§6.2, §11.8): the same file, so additive for every reader.
+      ...fileIdOf(args2.file) !== void 0 ? [["O", fileIdOf(args2.file)]] : [],
       ["field", memberField(args2.person)],
       ["value", args2.member ? "true" : "false"],
       ["h", args2.folder],
@@ -26474,14 +26533,14 @@ var peekApp = {
 
 // lib/agent/apps/file.ts
 import { createHash, randomUUID as randomUUID2 } from "node:crypto";
-var ADDRESS2 = /^\d+:[0-9a-f]{64}:[^\s]+$/;
+var ADDRESS3 = /^\d+:[0-9a-f]{64}:[^\s]+$/;
 var KIND_FOLDER = 39e3;
 var appliesTo2 = (action, kind) => (Array.isArray(action.appliesTo) ? action.appliesTo : [action.appliesTo]).includes(String(kind));
 var describeAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.field === "description" && appliesTo2(action, kind))?.id;
 var commentAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.kind === KIND.COMMENT && appliesTo2(action, kind))?.id;
 function addressArg(args2, command2) {
   const address = args2.positional[0];
-  if (!address || !ADDRESS2.test(address)) {
+  if (!address || !ADDRESS3.test(address)) {
     throw new BadRequest(`${command2} needs a file's address, kind:pubkey:d, as \`file create\`, \`ship show\` and \`peek topics\` print it.`);
   }
   return address;
@@ -26813,7 +26872,7 @@ var fileApp = {
       usage: 'summarize <kind:pubkey:d> --summary "..."',
       async run(context2, args2) {
         const address = args2.positional[0];
-        if (!address || !ADDRESS2.test(address)) {
+        if (!address || !ADDRESS3.test(address)) {
           throw new BadRequest("summarize needs a file's address, kind:pubkey:d, as `ship show` and `peek topics` print it.");
         }
         const text2 = flagValue(args2, "summary");
