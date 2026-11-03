@@ -65,6 +65,7 @@ import {
   listFolders,
   planArchiveFolder,
   planMoveFromFolders,
+  readMoveRefusal,
   resolveFolderContents,
   topLevelFolders,
   type Archive,
@@ -1000,13 +1001,14 @@ const noPeople = async () => ({})
 
 /**
  * Ship's "Move to Folder…" (FOL-7), as interop's `planMoveFromFolders` plans
- * it (SPEC §3.3), the planner Ship and Peek move by too: one `kind:1852 add` to
- * the new Folder naming the file and everything any source lists beneath it,
- * then a `remove` from each one that lists it now. The add goes first and
- * lands whole or not at all — refused, nothing is removed and the files are
- * where they were (SHI-37). Refused before anything is sent when either side
- * has no state (a command against it empties it) or the target is private (a
- * listing never changes who can read a file).
+ * it (SPEC §3.3), the planner Ship and Peek move by too: one `kind:1852 move`
+ * into the new Folder from each one that lists it now, naming the file and
+ * everything that source lists beneath it. Each changes both lists or neither
+ * (SHI-37, TEA-3); they are sent in order and the first refusal stops the
+ * rest, read by `readMoveRefusal` so the answer says why in the agent's words.
+ * Refused before anything is sent when either side has no state (a command
+ * against it empties it) or the target is private (a listing never changes who
+ * can read a file).
  */
 export async function moveFile(
   context: AgentContext,
@@ -1018,20 +1020,21 @@ export async function moveFile(
     /** Each source Folder's files, by Folder id ({@link readListings}). A source with none moves the file alone. */
     listings: ReadonlyMap<string, readonly MovableFile[]>
   },
-): Promise<{ refused?: MoveRefusal; added?: PublishOutcome; moved: string[]; removed: { folder: string; result: PublishOutcome }[] }> {
+): Promise<{ refused?: MoveRefusal; moveRefused?: ReturnType<typeof readMoveRefusal>; moved: string[]; eventIds: string[] }> {
   const plan = planMoveFromFolders(context.signer.pubkey, Date.now(), {
     file: { ref: args.address, address: args.address },
     from: args.from,
     to: args.to,
     listings: args.listings,
   })
-  if (!plan.ok) return { refused: plan.reason, moved: [], removed: [] }
-  if (!plan.add) return { moved: [], removed: [] }
-  const added = await publishUnsigned(context, plan.add)
-  if (!added.ok) return { added, moved: [], removed: [] }
-  const removed: { folder: string; result: PublishOutcome }[] = []
-  for (const { folder, event } of plan.removes) removed.push({ folder, result: await publishUnsigned(context, event) })
-  return { added, moved: plan.moved, removed }
+  if (!plan.ok) return { refused: plan.reason, moved: [], eventIds: [] }
+  const eventIds: string[] = []
+  for (const [index, event] of plan.events.entries()) {
+    const result: PublishOutcome = await publishUnsigned(context, event)
+    if (!result.ok) return { moveRefused: readMoveRefusal(plan.events, index, result.reason), moved: [], eventIds }
+    if (result.eventId) eventIds.push(result.eventId)
+  }
+  return { moved: plan.moved, eventIds }
 }
 
 /** The field whose `true` takes a file off every list (SPEC §6.5). */
@@ -2773,22 +2776,30 @@ export const shipApp: AgentApp = {
           // Each names the project — it is what is being moved, out of its own Folder too, which may hold it by containment
           // while a topic under it is listed — so the planner moves the two together.
           from: from.map((team) => ({ id: team.id, hasState: team.hasState, addresses: [project.addr] })),
-          to: { id: to.id, hasState: to.hasState, ...(to.private ? { private: true } : {}) },
+          to: { id: to.id, hasState: to.hasState, ...(to.private ? { private: true } : {}), ...(to.company ? { company: true } : {}) },
           listings,
         })
         if (moved.refused === 'target-has-no-state') throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`)
         if (moved.refused === 'source-has-no-state') throw new BadRequest(`A Folder “${project.title}” is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`)
         if (moved.refused === 'target-is-private') throw new BadRequest(`${name(to)} is private, and “${project.title}” would stay readable by the whole workspace. Nothing was published.`)
-        if (moved.added) published(moved.added, `adding “${project.title}” to ${name(to)} (nothing else was sent; it is where it was)`)
+        if (moved.refused === 'target-is-not-home') throw new BadRequest(`“${project.title}” is in no Folder yet, so it can only go to the one it was started in. Nothing was published.`)
+        // The agent's words for why, never the relay's text (TEA-3).
+        const why =
+          moved.moveRefused?.why === 'team-archived'
+            ? 'one of the Folders is archived'
+            : moved.moveRefused?.why === 'not-a-member'
+              ? 'moving it needs a member of both Folders'
+              : moved.moveRefused?.why === 'changed-meanwhile'
+                ? 'a Folder changed since it was read; run the same command again'
+                : 'the relay did not accept the move; run the same command again'
+        if (moved.moveRefused?.nothingMoved) throw new BadRequest(`“${project.title}” was not moved: ${why}. Nothing changed; it is where it was.`)
 
-        const stillIn = moved.removed
-          .filter(({ result }) => !result.ok)
-          .map(({ folder, result }) => ({ folder, name: teams.find((team) => team.id === folder)?.name, refused: result.reason ?? 'no reason given' }))
+        const stillIn = (moved.moveRefused?.notMovedFrom ?? []).map((folder) => ({ folder, name: teams.find((team) => team.id === folder)?.name, refused: why }))
         return {
           moved: { title: project.title, addr: project.addr },
           from: from.map((team) => ({ id: team.id, name: team.name })),
           to: { id: to.id, name: to.name },
-          added: moved.added?.eventId,
+          eventIds: moved.eventIds,
           // What was listed beneath it in the source — a topic started under it — and went with it.
           with: moved.moved
             .filter((address) => address !== project.addr)
@@ -2799,8 +2810,7 @@ export const shipApp: AgentApp = {
                 | undefined
               return { title: row?.slots?.title?.value, type: row?.noun, address }
             }),
-          removed: moved.removed.filter(({ result }) => result.ok).map(({ folder, result }) => ({ folder, eventId: result.eventId })),
-          // A refused remove is still a move: it is in the new Folder and in these too. Run the same command again to retry.
+          // A move refused after an earlier one is still a move: it is in the new Folder and in these too. Run the same command again to retry.
           stillIn: stillIn.length > 0 ? stillIn : undefined,
           note: `Only the Folder listings changed. Its issues and conversation stay in ${project.contentFolder}.`,
         }

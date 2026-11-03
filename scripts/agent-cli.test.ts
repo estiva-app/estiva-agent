@@ -887,10 +887,11 @@ console.log('— moving a project with what is under it (MAN-17) —')
     {
       const { context, sent } = fake()
       const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
-      check('one add, then one remove', sent.length === 2 && sent.every((event) => event.kind === 1852), `${sent.length} sent`)
-      check('both name the project and the topic under it', sent.every((event) => JSON.stringify(named(event)) === JSON.stringify([project, topic].sort())), JSON.stringify(sent.map(named)))
+      const op = (event: { tags: string[][] }, name: string) => event.tags.find((tag) => tag[0] === name)?.[1]
+      check('one move', sent.length === 1 && sent[0].kind === 1852 && op(sent[0], 'op') === 'move', `${sent.length} sent`)
+      check('it names the project and the topic under it', JSON.stringify(named(sent[0])) === JSON.stringify([project, topic].sort()), JSON.stringify(sent.map(named)))
       check('a topic beside it stays where it is', !sent.some((event) => named(event).includes(elsewhere)))
-      check('the add goes to the target', sent[0].tags.some((tag) => tag[0] === 'h' && tag[1] === to.id))
+      check('it goes to the target, from the source', op(sent[0], 'h') === to.id && op(sent[0], 'from') === from.id)
       check('and what went with it is reported', JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()))
       check('no name rides on a Folder command', !sent.some((event) => event.tags.some((tag) => tag[0] === 'name')))
     }
@@ -916,22 +917,17 @@ console.log('— moving a project with what is under it (MAN-17) —')
         ;(context.relay as unknown as { publish: (event: { kind: number; tags: string[][] }) => Promise<{ ok: boolean; reason?: string }> }).publish = async (event) => {
           sent.push(event)
           const ok = answers[sent.length - 1] ?? true
-          return ok ? { ok } : { ok, reason: 'refused' }
+          return ok ? { ok } : { ok, reason: "invalid: only the team's members may move a space in or out" }
         }
         return { context, sent }
       }
       {
         const { context, sent } = answering(false)
         const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
-        check('a refused add removes nothing', sent.length === 1 && moved.removed.length === 0 && moved.added?.ok === false)
+        check('a refused move moved nothing, and says why', sent.length === 1 && moved.moved.length === 0 && moved.moveRefused?.nothingMoved === true && moved.moveRefused.why === 'not-a-member', JSON.stringify(moved.moveRefused))
       }
       {
-        const { context, sent } = answering(true, false)
-        const moved = await moveFile(context, { address: project, from: [from], to, listings: new Map([[from.id, listing]]) })
-        check('a refused remove is reported against its Folder', sent.length === 2 && moved.added?.ok === true && moved.removed[0]?.folder === from.id && moved.removed[0]?.result.ok === false)
-      }
-      {
-        // Listed in two Folders with different sets beneath it: one add naming both (SHI-37), so it lands whole or not at all.
+        // Listed in two Folders with different sets beneath it: one move from each (TEA-3), each naming what is under it there.
         const other = { id: '3'.repeat(32), hasState: true }
         const second = `30840:${self}:topic-3`
         const listings = new Map([
@@ -941,20 +937,21 @@ console.log('— moving a project with what is under it (MAN-17) —')
         {
           const { context, sent } = answering(true)
           await moveFile(context, { address: project, from: [from, other], to, listings })
-          check('two sources: one add naming everything under it in either', sent.filter((event) => event.tags.some((tag) => tag[0] === 'op' && tag[1] === 'add')).length === 1 && JSON.stringify(named(sent[0])) === JSON.stringify([project, topic, second].sort()), JSON.stringify(sent.map(named)))
-          check('…then a remove from each', sent.length === 3)
+          const froms = sent.map((event) => event.tags.find((tag) => tag[0] === 'from')?.[1])
+          check('two sources: one move from each', sent.length === 2 && JSON.stringify(froms) === JSON.stringify([from.id, other.id]), JSON.stringify(froms))
+          check('…each naming what is under it there', JSON.stringify(named(sent[0])) === JSON.stringify([project, topic].sort()) && JSON.stringify(named(sent[1])) === JSON.stringify([project, second].sort()), JSON.stringify(sent.map(named)))
         }
         {
-          const { context, sent } = answering(false)
+          const { context, sent } = answering(true, false)
           const moved = await moveFile(context, { address: project, from: [from, other], to, listings })
-          check('…and that add refused leaves nothing in the target and removes nothing', sent.length === 1 && moved.added?.ok === false && moved.removed.length === 0)
+          check('…and the second refused stops there, naming the Folder that still lists it', sent.length === 2 && moved.moveRefused?.nothingMoved === false && JSON.stringify(moved.moveRefused.notMovedFrom) === JSON.stringify([other.id]), JSON.stringify(moved.moveRefused))
         }
       }
       {
         // The project row did not resolve, but the Folder's state names it: it still moves (the planner, not the read, adds it).
         const { context, sent } = answering()
         const moved = await moveFile(context, { address: project, from: [{ ...from, addresses: [project, topic] }], to, listings: new Map([[from.id, listing.slice(1)]]) })
-        check('a project whose row did not resolve still moves, with the topic under it', JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()) && sent.length === 2)
+        check('a project whose row did not resolve still moves, with the topic under it', JSON.stringify(moved.moved.sort()) === JSON.stringify([project, topic].sort()) && sent.length === 1)
       }
     }
   }
