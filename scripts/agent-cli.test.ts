@@ -1291,7 +1291,7 @@ console.log('— move-project: what the relay is sent, and what the agent says (
 
   {
     const { said, sent } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: channel is archived')
-    check('move-project sends one move into the target, from the Folder that lists it', sent.length === 1 && tag(sent[0], 'op') === 'move' && tag(sent[0], 'h') === beta && tag(sent[0], 'from') === alpha, JSON.stringify(sent.map((e) => e.tags)))
+    check('move-project sends one move into the target, from the team that lists it', sent.length === 1 && tag(sent[0], 'op') === 'move' && tag(sent[0], 'h') === beta && tag(sent[0], 'from') === alpha, JSON.stringify(sent.map((e) => e.tags)))
     check('an archived Folder refusing it is said in the agent’s words', said instanceof BadRequest && said.message === `${title} was not moved: one of the teams is archived.`, String(said instanceof Error ? said.message : said))
   }
   {
@@ -1318,11 +1318,11 @@ console.log('— move-project: what the relay is sent, and what the agent says (
     const { said, sent } = await run([...team(alpha, 'Alpha', [project, issue]), ...team(beta, 'Beta', []), ...team(gamma, 'Gamma', [project])], true, 'invalid: the team a move leaves lists none of its files')
     check('half done: one move from each Folder, the second refused', sent.length === 2 && JSON.stringify(sent.map((e) => tag(e, 'from'))) === JSON.stringify([alpha, gamma]), JSON.stringify(sent.map((e) => e.tags)))
     check(
-      '…says it moved, and which Folder still lists it and why',
+      '…says it moved, and which team still lists it and why',
       !(said instanceof Error) && said.why === `Moved ${title} to Beta, but Gamma still lists it too: the teams changed since they were read; run the same command again.`,
       String(said instanceof Error ? said.message : said.why),
     )
-    check('…lists that Folder as still holding it', !(said instanceof Error) && JSON.stringify(said.stillIn) === JSON.stringify([{ folder: gamma, name: 'Gamma' }]), JSON.stringify(!(said instanceof Error) && said.stillIn))
+    check('…lists that team as still holding it', !(said instanceof Error) && JSON.stringify(said.stillIn) === JSON.stringify([{ folder: gamma, name: 'Gamma' }]), JSON.stringify(!(said instanceof Error) && said.stillIn))
     check(
       '…and the issue that went with it from Alpha',
       !(said instanceof Error) && JSON.stringify(said.with?.map((row: { address: string; type?: string }) => [row.address, row.type])) === JSON.stringify([[issue, 'issue']]),

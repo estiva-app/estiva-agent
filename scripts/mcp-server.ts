@@ -369,7 +369,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'ship_edit_issue',
       description:
         'Change one Estiva Ship issue: its title, its summary, its description, or which project it belongs to. Pass only the fields to change — anything omitted is left alone. ' +
-        'An issue can be moved between projects: pass `project`, or "none" to detach it from every project. Moving re-parents the issue and nothing else — its conversation stays in the team it was filed in, because an event\'s team cannot change.' +
+        'An issue can be moved between projects: pass `project`, or "none" to detach it from every project. Moving re-parents the issue and nothing else — its conversation stays in the team it was filed in, because an event\'s team cannot change. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
@@ -587,7 +587,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'peek_list_topics',
       description:
         'List the topics people see in Peek, the one with the newest conversation first: each is a file in a team of Peek\'s tree, with its one-line summary when it has one, how many conversations it holds and a link to open it. Replies are not counted, so a busy thread under an old conversation does not move its topic up. ' +
-        'Returns { topics, coverage }. Old topic channels from before teams still exist on the relay and appear nowhere in Peek, so they are not listed.',
+        'Returns { topics, coverage }. Topic channels from the earlier layout still exist on the relay and appear nowhere in Peek, so they are not listed.',
       inputSchema: {
         type: 'object',
         properties: {
