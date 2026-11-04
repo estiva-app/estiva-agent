@@ -300,8 +300,9 @@ the one it follows (`prev`), through interop's `writeChange`:
 - **A delete is a `deleted` change** (§6.5) where the relay keeps projects in
   order (NIP-11 `files`), or refuses a `kind:5` on one (the QA fence): the
   project leaves every list and search, keeps its id, opens by it, and
-  `delete-project <id> --restore` brings it back whole. Elsewhere it is still a
-  `kind:5`, until Ship reads the field.
+  `delete-project <id> --restore` brings it back whole. It is that change on
+  any relay once Ship's manifest declares `delete-project` as the field
+  (ALO-6); before that, elsewhere it is still a `kind:5`.
 
 **An agent below the minimum version refuses every write** and still reads
 (Miky, 2026-11-02): `minimum-version.json` on `main`, read at most once an hour

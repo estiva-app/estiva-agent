@@ -140,14 +140,23 @@ function relay(events: SignedEvent[], options: { inOrder?: boolean; refuseKind5?
 }
 
 /** A project by QA-1 in the QA Folder, its text saved twice: the second save is the version the agent reads. */
-function workspace(options: Parameters<typeof relay>[1] = {}) {
+function workspace(options: Parameters<typeof relay>[1] & { fieldDelete?: boolean } = {}) {
+  const shipManifest = options.fieldDelete ? withFieldDelete(manifest.event) : manifest.event
   const root = signed(QA1, 30850, [['d', 'c0ffee00-0000-4000-8000-000000000001'], ['name', 'Launch plan'], ['buzz-channel', FOLDER]])
   const addr = addressOf(root)
   const first = textChange(QA1, addr, doc(['b1', 'One.'], ['b2', 'Two.']), root.id)
   const read = textChange(QA1, addr, doc(['b1', 'One, with the rollout in it.'], ['b2', 'Two.']), first.id)
   const status = fieldChange(QA1, addr, 'status', 'planned', root.id)
   const profile = signed(QA1, 0, [], JSON.stringify({ name: 'QA-1' }))
-  return { ...relay([manifest.event, root, first, read, status, profile], options), root, addr, first, read, status }
+  return { ...relay([shipManifest, root, first, read, status, profile], options), root, addr, first, read, status }
+}
+
+/** Ship's manifest as ALO-6 redeclares it: `delete-project` is the `deleted` change, `true` or empty. */
+function withFieldDelete(event: SignedEvent): SignedEvent {
+  const content = JSON.parse(event.content) as { vocabularies?: Record<string, unknown>; actions: { id: string }[] }
+  const deleteProject = { id: 'delete-project', label: 'Delete', description: 'Delete a project, or restore it.', effect: 'destructive', appliesTo: '30850', emits: { kind: 1851, field: 'deleted' }, input: { type: 'string', enum: 'deleted' } }
+  const vocabularies = { ...content.vocabularies, deleted: [{ value: '', label: 'Restored' }, { value: 'true', label: 'Deleted' }] }
+  return { ...event, content: JSON.stringify({ ...content, vocabularies, actions: content.actions.map((action) => (action.id === 'delete-project' ? deleteProject : action)) }) }
 }
 
 const run = async (context: AgentContext, name: string, positional: string[], flags: Record<string, string | true> = {}) => {
@@ -255,9 +264,9 @@ const mine = (published: SignedEvent[]) => published.filter((e) => e.pubkey === 
 }
 
 // — Delete and restore, where projects are kept in order —
-for (const how of [{ inOrder: true }, { refuseKind5: true }] as const) {
+for (const how of [{ inOrder: true }, { refuseKind5: true }, { fieldDelete: true }] as const) {
   const { context, published, addr, root } = workspace(how)
-  const label = 'inOrder' in how ? 'advertised in order' : 'refusing kind:5'
+  const label = 'inOrder' in how ? 'advertised in order' : 'refuseKind5' in how ? 'refusing kind:5' : "Ship's manifest declaring the field, relay not switched"
   await run(context, 'delete-project', [addr], { yes: true })
   const deleted = mine(published).find((e) => tag(e, 'field') === 'deleted')
   check(`${label}: a delete is a deleted change after the record, no kind:5 stored`, tag(deleted, 'value') === 'true' && tag(deleted, 'prev') === root.id && !mine(published).some((e) => e.kind === 5))

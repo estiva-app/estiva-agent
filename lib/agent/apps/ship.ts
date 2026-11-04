@@ -2933,7 +2933,9 @@ export const shipApp: AgentApp = {
         const project = await findProjectIn(context, state.projects, reference, { writes: true })
         const issues = state.issues.filter((issue) => issue.projectAddr === project.addr).length
         const reads = await fileReadsFor(context)
-        const byField = reads.switched && reads.inOrder.includes(TYPE_OF[KIND.PROJECT])
+        // Ship's manifest declares the delete as the `deleted` change since ALO-6: then it is that change on any relay.
+        const declared = state.manifestFor(project.addr)?.manifest.actions?.find((action) => action.id === 'delete-project')
+        const byField = (reads.switched && reads.inOrder.includes(TYPE_OF[KIND.PROJECT])) || declared?.emits?.field === DELETED_FIELD
 
         /*
           `archive-project` refuses without an origin Folder because a change

@@ -26080,7 +26080,8 @@ Pass an address to say which.`
         const project = await findProjectIn(context2, state.projects, reference, { writes: true });
         const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
         const reads2 = await fileReadsFor(context2);
-        const byField = reads2.switched && reads2.inOrder.includes(TYPE_OF[KIND2.PROJECT]);
+        const declared = state.manifestFor(project.addr)?.manifest.actions?.find((action) => action.id === "delete-project");
+        const byField = reads2.switched && reads2.inOrder.includes(TYPE_OF[KIND2.PROJECT]) || declared?.emits?.field === DELETED_FIELD;
         const folder = project.contentFolder;
         if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no team at all, so a deletion cannot be addressed to one.`);
         const survives = `Its ${issues} issue(s) are separate events and are NOT deleted. Since SHI-7 they stay reachable in \`ship issues\`, listed with no project.`;
