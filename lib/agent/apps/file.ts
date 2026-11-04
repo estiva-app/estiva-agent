@@ -127,7 +127,7 @@ const formatTag = (format: string | undefined): Record<string, string> => (forma
 async function readFile(context: AgentContext, address: string, cache?: ProjectionCache): Promise<ForeignObject> {
   const file = await resolveForeignObject(addrToNaddr(address), relayQuery(context), async () => ({}), undefined, cache)
   // The relay answers an unreadable file and a missing one the same way.
-  if (!file) throw new BadRequest(`Nothing readable at ${address}: no such file, or one in a Folder this key cannot read.`)
+  if (!file) throw new BadRequest(`Nothing readable at ${address}: no such file, or one in a team this key cannot read.`)
   return file
 }
 
@@ -186,11 +186,11 @@ function detachedBy(conversations: Conversation[], before: { value: string; form
 /** A Folder by name or id, among every Folder record this key can read — archived and nested ones included, so a shared name is refused as ambiguous. */
 function findFolder(folders: FolderRecord[], reference: string): FolderRecord {
   return resolveOne(folders, reference, {
-    noun: 'Folder',
+    noun: 'team',
     exact: (folder) => [folder.id, folder.name ?? ''],
     text: (folder) => folder.name ?? '',
     label: (folder) => `${folder.name ?? 'unnamed'} (${folder.id.slice(0, 8)}…)`,
-    hint: 'Pass a Folder name or id.',
+    hint: 'Pass a team name or id.',
   })
 }
 
@@ -220,7 +220,7 @@ async function creatorOf(context: AgentContext, channel: string, type: string, c
     if (noun.toLowerCase() === type.toLowerCase() && !found.has(kind)) found.set(kind, { actionId: offered.id, manifest: acting.manifest })
   }
   if (found.size === 0) {
-    throw new BadRequest(`No app offers a way to start a "${type}" in this Folder. The types that can be: ${[...nouns].sort().join(', ') || 'none'}. Nothing was published.`)
+    throw new BadRequest(`No app offers a way to start a "${type}" in this team. The types that can be: ${[...nouns].sort().join(', ') || 'none'}. Nothing was published.`)
   }
   if (found.size > 1) throw new BadRequest(`More than one kind of file is called "${type}" (${[...found.keys()].join(', ')}), so which one is meant is unclear. Nothing was published.`)
   const [[kind, creator]] = [...found]
@@ -257,11 +257,11 @@ export const fileApp: AgentApp = {
       name: 'create',
       // The file's own kind is the manifest's, so it is checked once the action is built.
       signs: [KIND.FOLDER_COMMAND],
-      summary: 'start a file of any app’s type in a Folder — a Leaf document included',
+      summary: 'start a file of any app’s type in a team — a Leaf document included',
       usage: 'create --folder <name|id> --type <noun> --title "..." [--summary "..."] [--description "..."] [--mention <key|npub|handle>[,…]]',
       async run(context, args) {
         const folderRef = flagValue(args, 'folder')
-        if (!folderRef) throw new BadRequest('create needs --folder: the Folder the file goes in.')
+        if (!folderRef) throw new BadRequest('create needs --folder: the team the file goes in.')
         const type = flagValue(args, 'type')
         if (!type) throw new BadRequest('create needs --type, what the file\'s app calls it: "document" for a Leaf page.')
         const title = flagValue(args, 'title')
@@ -277,7 +277,7 @@ export const fileApp: AgentApp = {
         // The Folders' own records: `listFolders` also reads every listed file's change history, ~100 s on production (e0e3e907).
         const folder = findFolder(await listFolderRecords(query), folderRef)
         // A group with no relay-signed state is a conversation space; an `add` there would publish state listing nothing (peek#192).
-        if (!folder.hasState) throw new BadRequest(`${folder.name ?? folder.id} is not a Folder that lists files, so nothing can be started in it. Nothing was published.`)
+        if (!folder.hasState) throw new BadRequest(`${folder.name ?? folder.id} is not a team that lists files, so nothing can be started in it. Nothing was published.`)
 
         const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`
         const { kind, actionId, manifest: creator } = await creatorOf(context, channel, type, createProjectionCache())
@@ -409,7 +409,7 @@ export const fileApp: AgentApp = {
         const next = await describePlacing(context, before.value, before.format, text)
         // A mention in the new text adds the person beside the save (§11.8); built first, so a refusal publishes nothing.
         const folder = await folderOfFile(context, address)
-        if (!folder) throw new BadRequest(`${title} has no Folder on the relay, so there is nowhere to write. Nothing was published.`)
+        if (!folder) throw new BadRequest(`${title} has no team on the relay, so there is nowhere to write. Nothing was published.`)
         const adds = mentionAdds(context.signer.pubkey, { file: address, folder, saved: fileText(next.value, next.contentFormat), editedFrom: fileText(before.value, before.format), asked })
         const result = await actOnFile(context, { address, title }, describeAction, next.value, KIND_CHANGE, undefined, changeShape(address, 'description', next.value, formatTag(next.contentFormat)), next.contentFormat)
         published(result, `the text of ${title}`)

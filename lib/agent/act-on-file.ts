@@ -87,10 +87,10 @@ export async function archivedRefusal(context: AgentContext, address: string, ar
   return archivedLine(archive, await nounOf(context, archive.with, cache))
 }
 
-/** What a file's app calls it — its manifest's projection noun — and a Folder a Folder, whether named by address or by id. */
+/** What a file's app calls it — its manifest's projection noun — and a Folder what interop's built-in calls it ("team"), whether named by address or by id. */
 async function nounOf(context: AgentContext, address: string, cache?: ProjectionCache): Promise<string | undefined> {
-  const pointer = pointerOf(address)
-  if (!pointer.pubkey || pointer.kind === KIND_CHANNEL_METADATA) return 'folder'
+  const named = pointerOf(address)
+  const pointer = named.pubkey ? named : { ...named, kind: KIND_CHANNEL_METADATA }
   const resolved = await resolveManifest(pointer, relayQuery(context), cache).catch(() => null)
   const noun = resolved?.manifest.projections?.[String(pointer.kind)]?.noun?.trim()
   // A manifest is anybody's event, and this noun becomes the agent's own error
@@ -135,9 +135,9 @@ export async function actOnFile(
   if (!actionId) throw new BadRequest(`${file.title}'s manifest declares no action for that. Nothing was published.`)
   const [root] = await query([{ kinds: [pointer.kind], authors: [pointer.pubkey], '#d': [pointer.identifier], limit: 1 }])
   // An empty answer is a file that does not exist or one this key cannot read; the relay does not say which.
-  if (!root) throw new BadRequest(`Nothing readable at ${file.address}: no such file, or one in a Folder this key cannot read. Nothing was published.`)
+  if (!root) throw new BadRequest(`Nothing readable at ${file.address}: no such file, or one in a team this key cannot read. Nothing was published.`)
   const folder = folderOf(root)
-  if (!folder) throw new BadRequest(`${file.title} has no Folder on the relay, so there is nowhere to write.`)
+  if (!folder) throw new BadRequest(`${file.title} has no team on the relay, so there is nowhere to write.`)
 
   const built = buildActionEvent({
     manifest: resolved.manifest,

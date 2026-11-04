@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
+import { archivedRefusal } from '../lib/agent/act-on-file'
 import { shipApp } from '../lib/agent/apps/ship'
 import { loadWorkspace } from '../lib/agent/apps/ship-workspace'
 
@@ -126,6 +127,16 @@ console.log('\n— A project archived itself —')
   const edit = await refusal(run('edit-comment', context, [archivedProject.addr], { message: onProject.id, body: 'Rewritten.' }))
   check('ship edit-comment of a comment on an archived project is refused with Ship’s sentence', edit === 'Archived. Unarchive it to comment. Nothing was published.', edit)
   check('…and nothing is published', published.length === 0, JSON.stringify(published.map((e) => e.kind)))
+}
+
+console.log('\n— A file archived with its team (TEA-8) —')
+{
+  const { context } = workspace()
+  const archived = { by: issue.author, at: clock, with: `39000::${issue.folder}` }
+  const said = await archivedRefusal(context, issue.addr, archived)
+  check('a file whose team is archived names it a team, as interop’s built-in does', said === 'Unarchive the team to comment.', said)
+  const byId = await archivedRefusal(context, issue.addr, { ...archived, with: issue.folder })
+  check('…and a team named by its id alone says the same', byId === 'Unarchive the team to comment.', byId)
 }
 
 console.log('\n— A manifest whose noun is a planted sentence —')
