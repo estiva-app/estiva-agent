@@ -730,7 +730,7 @@ async function resolveIssueFor(context: AgentContext, reference: string) {
 
 /** What a write to an issue acts on: its address, its author, and the Folder its changes go to. */
 const issueTarget = (issue: Issue) => {
-  if (!issue.folder) throw new BadRequest(`${issue.ref ?? issue.addr} names no Folder, so a change to it has nowhere to be published.`)
+  if (!issue.folder) throw new BadRequest(`${issue.ref ?? issue.addr} names no team, so a change to it has nowhere to be published.`)
   return { addr: issue.addr, author: issue.author, folder: issue.folder }
 }
 
@@ -870,7 +870,7 @@ function resolveTeamIn(teams: FolderSummary[], reference: string): FolderSummary
     exact: (team) => [team.id],
     text: (team) => team.name ?? '',
     label: (team) => `${team.name ?? 'unnamed'} (${team.id.slice(0, 8)}…)`,
-    hint: 'Pass a team name or its Folder id.',
+    hint: 'Pass a team name or its id.',
   })
 }
 
@@ -1418,18 +1418,18 @@ async function loadWithFolders(context: AgentContext, query: QueryFn = loadQuery
 }
 
 const FOLDER_BY = {
-  noun: 'Folder',
+  noun: 'team',
   exact: (folder: FolderSummary) => [folder.id, folder.channel, folder.name],
   prefix: (folder: FolderSummary) => [folder.id],
   text: (folder: FolderSummary) => folder.name ?? '',
-  label: (folder: FolderSummary) => `${short(folder.id)} — ${folder.name ?? 'Untitled Folder'}`,
-  hint: 'Pass a Folder name or part of one, or the first 8 characters of its id.',
+  label: (folder: FolderSummary) => `${short(folder.id)} — ${folder.name ?? 'Untitled team'}`,
+  hint: 'Pass a team name or part of one, or the first 8 characters of its id.',
 }
 
 type Archivable =
   | { kind: 'issue'; file: Issue }
   | { kind: 'project'; file: Project }
-  | { kind: 'Folder'; file: FolderSummary }
+  | { kind: 'team'; file: FolderSummary }
 
 /**
  * Which file an `archive` reference names, across the three kinds a person can
@@ -1445,7 +1445,7 @@ export function archivable(state: Pick<Workspace, 'issues' | 'projects'>, folder
     ...(projectsOnly
       ? []
       : [{
-          kind: 'Folder' as const,
+          kind: 'team' as const,
           // Only Folders with state: a record channel is nobody's Folder, and often shares its record's uuid.
           result: resolveMaybe(folders.filter((folder) => folder.hasState), reference, FOLDER_BY),
         }]),
@@ -1471,7 +1471,7 @@ export function archivable(state: Pick<Workspace, 'issues' | 'projects'>, folder
     if (!ambiguity || exact.includes(reference.trim())) return found[0]
   }
   if (ambiguity) throw new BadRequest(ambiguity.ambiguous)
-  throw new BadRequest(`No ${projectsOnly ? 'project' : 'issue, project or Folder'} matches "${reference}".`)
+  throw new BadRequest(`No ${projectsOnly ? 'project' : 'issue, project or team'} matches "${reference}".`)
 }
 
 /**
@@ -1489,7 +1489,7 @@ export function archivable(state: Pick<Workspace, 'issues' | 'projects'>, folder
  */
 async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'archive' | 'archive-project') {
   const reference = args.positional[0]
-  if (!reference) throw new BadRequest(`${command} needs a reference — a project, an issue or a Folder.`)
+  if (!reference) throw new BadRequest(`${command} needs a reference — a project, an issue or a team.`)
   const archived = !args.flags.unarchive
   const resolution = args.flags.resolution
   if (resolution === true) throw new BadRequest('--resolution takes the text to show, in quotes.')
@@ -1498,17 +1498,17 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
   const { state, folders } = await loadWithFolders(context)
   const target = archivable(state, folders, reference, command === 'archive-project')
 
-  const name = target.kind === 'Folder' ? target.file.name ?? target.file.id : target.file.title
-  const addr = target.kind === 'Folder' ? target.file.channel : target.file.addr
-  const own = target.kind === 'Folder' ? target.file.archived && !target.file.archived.with : target.file.ownArchive
-  const parent = target.kind === 'Folder' ? undefined : target.file.archive?.with
+  const name = target.kind === 'team' ? target.file.name ?? target.file.id : target.file.title
+  const addr = target.kind === 'team' ? target.file.channel : target.file.addr
+  const own = target.kind === 'team' ? target.file.archived && !target.file.archived.with : target.file.ownArchive
+  const parent = target.kind === 'team' ? undefined : target.file.archive?.with
   // The parent by the name a person knows it by: its project's title, or its Folder's name.
   const parentProject = parent ? state.projects.find((project) => project.addr === parent) : undefined
   const parentFolder = parent ? folders.find((folder) => folder.channel === parent) : undefined
   const inherited = parentProject
     ? `the project “${parentProject.title}”`
     : parentFolder
-      ? `the Folder “${parentFolder.name ?? parentFolder.id}”`
+      ? `the team “${parentFolder.name ?? parentFolder.id}”`
       : parent
   const unchanged = { kind: target.kind, title: name, addr }
 
@@ -1531,9 +1531,9 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
 
   let result: PublishOutcome
   let hides: string
-  if (target.kind === 'Folder') {
+  if (target.kind === 'team') {
     const folder = target.file
-    if (!folder.channel) throw new BadRequest(`The Folder “${name}” has no channel address on the relay, so there is nothing to set archived on.`)
+    if (!folder.channel) throw new BadRequest(`The team “${name}” has no channel address on the relay, so there is nothing to set archived on.`)
     // The relay accepts this from any member; readers count it only from an owner or admin (SPEC §3.2), so from anybody else it would be accepted and ignored.
     if (folder.admins && !folder.admins.includes(context.signer.pubkey)) {
       throw new BadRequest(`Only the owners and admins of “${name}” can archive it — readers ignore an archive from anybody else, and this identity is neither. Nothing was published.`)
@@ -1546,11 +1546,11 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
     })
     result = await publishUnsigned(context, change)
     const projects = state.projects.filter((project) => folder.addresses?.includes(project.addr)).length
-    hides = `the Folder, and what it alone lists (it lists ${projects} project(s))`
+    hides = `the team, and what it alone lists (it lists ${projects} project(s))`
   } else {
     // The record's own Folder, for the reason `edit-project` gives: a change published elsewhere is accepted and then unseen.
     const folder = target.kind === 'project' ? target.file.contentFolder : target.file.folder
-    if (!folder) throw new BadRequest(`“${name}” names no Folder, so a change to it has nowhere to be published.`)
+    if (!folder) throw new BadRequest(`“${name}” names no team, so a change to it has nowhere to be published.`)
     const action = target.kind === 'project' ? 'archive-project' : 'archive-issue'
     const note = typeof resolution === 'string' ? resolution : ''
     const file = { addr: target.file.addr, author: target.file.author, folder }
@@ -2605,7 +2605,7 @@ export const shipApp: AgentApp = {
         const folder = issue.folder
         if (!folder) {
           throw new BadRequest(
-            `${issue.ref ?? issue.addr} names no Folder, so a change to it has nowhere to be published.`,
+            `${issue.ref ?? issue.addr} names no team, so a change to it has nowhere to be published.`,
           )
         }
 
@@ -2638,7 +2638,7 @@ export const shipApp: AgentApp = {
         const destination = moved && state.projects.find((candidate) => candidate.addr === moved.to)
         const conversationStaysBehind =
           destination && destination.contentFolder !== folder
-            ? `The issue's conversation stays in Folder ${folder}, which is not ${destination.title}'s (${destination.contentFolder}). Moving an issue cannot move its messages: an event's Folder is immutable.`
+            ? `The issue's conversation stays in team ${folder}, which is not ${destination.title}'s (${destination.contentFolder}). Moving an issue cannot move its messages: an event's team is immutable.`
             : undefined
 
         return {
@@ -2707,7 +2707,7 @@ export const shipApp: AgentApp = {
         const folder = project.contentFolder
         if (!folder) {
           throw new BadRequest(
-            `“${project.title}” names no Folder for its record, so a change to it has nowhere to be published.`,
+            `“${project.title}” names no team for its record, so a change to it has nowhere to be published.`,
           )
         }
 
@@ -2765,13 +2765,13 @@ export const shipApp: AgentApp = {
         Folder, so a comment's `h` still names the channel both apps read.
       */
       signs: [PROTOCOL_KIND.FOLDER_COMMAND],
-      summary: 'move a project, with what is filed under it, to another top-level Folder — its issues and conversation stay where they are',
+      summary: 'move a project, with what is filed under it, to another team — its issues and conversation stay where they are',
       usage: 'move-project <ref> --folder <name|id>',
       async run(context, args) {
         const reference = args.positional[0]
         const target = flagValue(args, 'folder')
         if (!reference) throw new BadRequest('move-project needs a project reference.')
-        if (!target) throw new BadRequest('move-project needs --folder: a top-level Folder name or id.')
+        if (!target) throw new BadRequest('move-project needs --folder: a team name or id.')
 
         const state = await loadWorkspace(context)
         const project = await findProjectIn(context, state.projects, reference, { writes: true })
@@ -2789,7 +2789,7 @@ export const shipApp: AgentApp = {
         // What each source lists beneath the project moves with it (SPEC §3.3), read now; unread, nothing is sent.
         const sources = listing.filter((team) => team.id !== to.id).map((team) => ({ id: team.id, hasState: team.hasState }))
         const listings = await readListings(context, sources)
-        if (!(listings instanceof Map)) throw new BadRequest(`A Folder “${project.title}” is in could not be read (${listings.unread}), so what is under it would be left behind. Nothing was published; run the same command again.`)
+        if (!(listings instanceof Map)) throw new BadRequest(`A team “${project.title}” is in could not be read (${listings.unread}), so what is under it would be left behind. Nothing was published; run the same command again.`)
 
         const moved = await moveFile(context, {
           address: project.addr,
@@ -2800,7 +2800,7 @@ export const shipApp: AgentApp = {
           listings,
         })
         if (moved.refused === 'target-has-no-state') throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`)
-        if (moved.refused === 'source-has-no-state') throw new BadRequest(`A Folder “${project.title}” is in has no list of its own, so taking it out would empty that Folder. Nothing was published.`)
+        if (moved.refused === 'source-has-no-state') throw new BadRequest(`A team “${project.title}” is in has no list of its own, so taking it out would empty that team. Nothing was published.`)
         if (moved.refused === 'target-is-private') throw new BadRequest(`${name(to)} is private, and “${project.title}” would stay readable by the whole workspace. Nothing was published.`)
 
         // The agent's words for why, never the relay's text (TEA-3); its own failure is said as that failure.
@@ -2812,11 +2812,11 @@ export const shipApp: AgentApp = {
             : stopped.busy
               ? RELAY_BUSY_MESSAGE
               : stopped.why === 'team-archived'
-                ? 'one of the Folders is archived'
+                ? 'one of the teams is archived'
                 : stopped.why === 'not-a-member'
-                  ? 'you need to be a member of both Folders to move it'
+                  ? 'you need to be a member of both teams to move it'
                   : stopped.why === 'changed-meanwhile'
-                    ? 'the Folders changed since they were read; run the same command again'
+                    ? 'the teams changed since they were read; run the same command again'
                     : 'the move was not accepted; run the same command again'
         if (stopped?.nothingMoved) {
           if (stopped.busy) throw refused(`moving “${project.title}” to ${name(to)}`, RELAY_BUSY_MESSAGE, 'It is where it was.')
@@ -2844,14 +2844,14 @@ export const shipApp: AgentApp = {
             }),
           // A move stopped after an earlier one landed is still a move: it is in the new Folder and in these too.
           stillIn: stillIn.length > 0 ? stillIn : undefined,
-          note: `Only the Folder listings changed. Its issues and conversation stay in ${project.contentFolder}.`,
+          note: `Only the team listings changed. Its issues and conversation stay in ${project.contentFolder}.`,
         }
       },
     },
     {
       name: 'archive',
       signs: [KIND_CHANGE],
-      summary: 'archive a project, an issue or a Folder with a resolution, or bring it back',
+      summary: 'archive a project, an issue or a team with a resolution, or bring it back',
       usage: 'archive <ref> [--resolution <text>] [--unarchive]',
       run: (context, args) => archiveFile(context, args, 'archive'),
     },
@@ -2896,7 +2896,7 @@ export const shipApp: AgentApp = {
 
         const { state, issue } = await resolveIssueFor(context, reference)
         const conversations = ((await conversationsFor(context, state, [issue.addr])).byObject.get(issue.addr) ?? []).length
-        const survives = `Its ${conversations} conversation(s) are separate events with their own authors and are NOT deleted — they stay in the Folder and stop being reachable from the issue.`
+        const survives = `Its ${conversations} conversation(s) are separate events with their own authors and are NOT deleted — they stay in the team and stop being reachable from the issue.`
 
         if (!args.flags.yes) {
           return {
@@ -2943,7 +2943,7 @@ export const shipApp: AgentApp = {
           object this command exists to remove.
         */
         const folder = project.contentFolder
-        if (!folder) throw new BadRequest(`“${project.title}” names no Folder at all, so a deletion cannot be addressed to one.`)
+        if (!folder) throw new BadRequest(`“${project.title}” names no team at all, so a deletion cannot be addressed to one.`)
 
         const survives = `Its ${issues} issue(s) are separate events and are NOT deleted. Since SHI-7 they stay reachable in \`ship issues\`, listed with no project.`
 
@@ -3127,7 +3127,7 @@ export const shipApp: AgentApp = {
         // record naming no Folder is refused (0 of 76 projects, 19 Oct).
         // why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/what-belongs-to-a-file-is-stored-with-it.md
         const folder = project.contentFolder
-        if (!folder) throw new BadRequest(`“${project.title}” names no Folder of its own, so a new issue has nowhere to be filed. Nothing was published.`)
+        if (!folder) throw new BadRequest(`“${project.title}” names no team of its own, so a new issue has nowhere to be filed. Nothing was published.`)
         const id = randomUUID()
         // A block document (RIC-20), which Ship's `add-issue` declares for its description.
         const description = flagValue(args, 'description')

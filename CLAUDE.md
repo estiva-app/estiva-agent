@@ -7,6 +7,10 @@ own repository. This file is about **using it**.
 Setting this up on a new machine, or for another person, is
 `docs/claude-desktop-setup.md`.
 
+**Say team to people; tool names and flags still say folder** (TEA-8). A
+`kind:39000` is a team in every app, in the agent's output and in the MCP
+tool descriptions; `--folder`, `folderId` and the code keep the old name.
+
 ## Decision records: read them, and obey the accepted ones
 
 Why Estiva is the way it is (product, protocol and architecture calls, and the

@@ -291,11 +291,11 @@ const TOPIC_BY: Resolvable<Topic> = {
 /** A Folder by name or id, among the ones Peek draws. */
 function findFolder(folders: FolderSummary[], reference: string): FolderSummary {
   return resolveOne(folders, reference, {
-    noun: 'Folder',
+    noun: 'team',
     exact: (folder) => [folder.id, folder.name ?? ''],
     text: (folder) => folder.name ?? '',
     label: (folder) => `${folder.name ?? 'unnamed'} (${folder.id.slice(0, 8)}…)`,
-    hint: 'Pass a Folder name or id.',
+    hint: 'Pass a team name or id.',
   })
 }
 
@@ -398,8 +398,8 @@ export const peekApp: AgentApp = {
           */
           coverage: {
             listed: topics.length,
-            source: 'Folders Peek draws',
-            note: 'These are the topics Peek shows: bare files listed by a Folder in its tree. Pre-FOL-23 topic channels still exist on the relay and appear nowhere in Peek, so they are not listed.',
+            source: 'Teams Peek draws',
+            note: 'These are the topics Peek shows: bare files listed by a team in its tree. Pre-FOL-23 topic channels still exist on the relay and appear nowhere in Peek, so they are not listed.',
           },
         }
       },
@@ -562,7 +562,7 @@ export const peekApp: AgentApp = {
           other channel is refused with the kind granted and the signature fine
           — a refusal that reads exactly like a permissions problem.
         */
-        if (!message.folder) throw new BadRequest('That message carries no Folder, so an edit of it has nowhere to go.')
+        if (!message.folder) throw new BadRequest('That message carries no team, so an edit of it has nowhere to go.')
         const result = await publishEdit(context, { folder: message.folder, messageEventId: message.id, body })
         published(result, `an edit of a message on ${topic.title}`)
 
@@ -584,11 +584,11 @@ export const peekApp: AgentApp = {
     {
       name: 'create-topic',
       signs: [KIND_BARE_FILE, KIND.FOLDER_COMMAND],
-      summary: 'start a new topic in a Folder',
+      summary: 'start a new topic in a team',
       usage: 'create-topic --folder <name|id> --title "..." [--summary "..."]',
       async run(context, args) {
         const folderRef = flagValue(args, 'folder')
-        if (!folderRef) throw new BadRequest('create-topic needs --folder — a topic is a file in a Folder.')
+        if (!folderRef) throw new BadRequest('create-topic needs --folder — a topic is a file in a team.')
         const title = flagValue(args, 'title')
         if (!title) throw new BadRequest('create-topic needs --title.')
         const summary = summaryText(flagValue(args, 'summary') ?? '')
@@ -614,7 +614,7 @@ export const peekApp: AgentApp = {
         const creator = await resolveActingManifest(pointer, FOLDER_ACTIONS_ADDRESS, query)
         if (!creator) throw new BadRequest(`${folder.name ?? folder.id} offers no way to create a file. Nothing was published.`)
         if (summary && summaryRoute(creator.manifest, 'create-file', KIND_BARE_FILE) !== 'seed') {
-          throw new BadRequest('A Folder here takes no summary on a new file yet, so --summary has nowhere to go. Nothing was published.')
+          throw new BadRequest('A team here takes no summary on a new file yet, so --summary has nowhere to go. Nothing was published.')
         }
         const fileId = crypto.randomUUID()
         const built = buildActionEvents({

@@ -43,7 +43,7 @@ export async function publishEdit(
   context: AgentContext,
   args: { folder: string | undefined; messageEventId: string; body: string },
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
-  if (!args.folder) throw new BadRequest('That message names no Folder, so an edit of it has nowhere to be published.')
+  if (!args.folder) throw new BadRequest('That message names no team, so an edit of it has nowhere to be published.')
   const id = args.messageEventId.toLowerCase()
   const events = await relayQuery(context)([{ ids: [id] }, { kinds: [KIND_EDIT], '#e': [id] }])
   // Unread, its files are unknown, and an edit listing none would take them off.

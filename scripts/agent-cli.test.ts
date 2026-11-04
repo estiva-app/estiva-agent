@@ -1143,8 +1143,8 @@ console.log('\n— archives: own, with the project, with the Folder (e2898086) �
   console.log('\n— archive: which file a reference names —')
   const folders = [folder('f0000001', []), { ...folder('f0000002', []), name: 'Project p2' }] as FolderSummary[]
   check('an issue by short id', archivable(state, folders, 'i1', false).kind === 'issue')
-  check('a Folder by name', archivable(state, folders, 'Folder f0000001', false).kind === 'Folder')
-  check('a Folder by its channel address', archivable(state, folders, '39000:relay:f0000001', false).kind === 'Folder')
+  check('a team by name', archivable(state, folders, 'Folder f0000001', false).kind === 'team')
+  check('a team by its channel address', archivable(state, folders, '39000:relay:f0000001', false).kind === 'team')
   refuses('a name that is a project and a Folder is refused', () => archivable(state, folders, 'Project p2', false), 'more than one file')
   check('archive-project looks only at projects', archivable(state, folders, 'Project p2', true).kind === 'project')
   // A project titled like two issues: the project alone matching must not win while the issues are ambiguous.
@@ -1157,7 +1157,7 @@ console.log('\n— archives: own, with the project, with the Folder (e2898086) �
   }
   refuses('a project match does not win over ambiguous issues', () => archivable(crowded, [], 'Onboarding', false), 'matches 2 issues')
   check('an exact project address still does', archivable(crowded, [], '30850:abc:onb', false).kind === 'project')
-  refuses('nothing matching is refused', () => archivable(state, folders, 'zzzz-nothing', false), 'No issue, project or Folder')
+  refuses('nothing matching is refused', () => archivable(state, folders, 'zzzz-nothing', false), 'No issue, project or team')
 }
 
 console.log('— an edit lists the files the message keeps —')
@@ -1292,11 +1292,11 @@ console.log('— move-project: what the relay is sent, and what the agent says (
   {
     const { said, sent } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: channel is archived')
     check('move-project sends one move into the target, from the Folder that lists it', sent.length === 1 && tag(sent[0], 'op') === 'move' && tag(sent[0], 'h') === beta && tag(sent[0], 'from') === alpha, JSON.stringify(sent.map((e) => e.tags)))
-    check('an archived Folder refusing it is said in the agent’s words', said instanceof BadRequest && said.message === `${title} was not moved: one of the Folders is archived.`, String(said instanceof Error ? said.message : said))
+    check('an archived Folder refusing it is said in the agent’s words', said instanceof BadRequest && said.message === `${title} was not moved: one of the teams is archived.`, String(said instanceof Error ? said.message : said))
   }
   {
     const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], "invalid: only the team's members mark or unmark its spaces")
-    check('a mover outside a Folder is told it needs to be a member of both', said instanceof BadRequest && said.message === `${title} was not moved: you need to be a member of both Folders to move it.`, String(said instanceof Error ? said.message : said))
+    check('a mover outside a Folder is told it needs to be a member of both', said instanceof BadRequest && said.message === `${title} was not moved: you need to be a member of both teams to move it.`, String(said instanceof Error ? said.message : said))
   }
   {
     const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: rate-limited')
@@ -1319,7 +1319,7 @@ console.log('— move-project: what the relay is sent, and what the agent says (
     check('half done: one move from each Folder, the second refused', sent.length === 2 && JSON.stringify(sent.map((e) => tag(e, 'from'))) === JSON.stringify([alpha, gamma]), JSON.stringify(sent.map((e) => e.tags)))
     check(
       '…says it moved, and which Folder still lists it and why',
-      !(said instanceof Error) && said.why === `Moved ${title} to Beta, but Gamma still lists it too: the Folders changed since they were read; run the same command again.`,
+      !(said instanceof Error) && said.why === `Moved ${title} to Beta, but Gamma still lists it too: the teams changed since they were read; run the same command again.`,
       String(said instanceof Error ? said.message : said.why),
     )
     check('…lists that Folder as still holding it', !(said instanceof Error) && JSON.stringify(said.stillIn) === JSON.stringify([{ folder: gamma, name: 'Gamma' }]), JSON.stringify(!(said instanceof Error) && said.stillIn))
