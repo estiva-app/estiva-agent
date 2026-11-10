@@ -1302,6 +1302,27 @@ console.log('— move-project: what the relay is sent, and what the agent says (
     const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: rate-limited')
     check('any other refusal says the move was not accepted, without naming the relay', said instanceof BadRequest && said.message === `${title} was not moved: the move was not accepted; run the same command again.`, String(said instanceof Error ? said.message : said))
   }
+  // TEA-9: a refusal is read by its reason code, and a code the agent does not know says only that it was not moved.
+  {
+    const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], "invalid: not-home: a topic on no team's list goes only to its home or the Company team")
+    check(
+      'a not-home refusal says it can go only to the team it was started in, or to the Company team',
+      said instanceof BadRequest && said.message === `${title} was not moved: it is in no team yet, so it can go only to the team it was started in, or to the Company team.`,
+      String(said instanceof Error ? said.message : said),
+    )
+  }
+  {
+    const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: leaves-by-moving: a topic leaves a team only by a move')
+    check(
+      'a leaves-by-moving refusal says to move it to another team instead',
+      said instanceof BadRequest && said.message === `${title} was not moved: a topic leaves a team only by moving; move it to another team instead.`,
+      String(said instanceof Error ? said.message : said),
+    )
+  }
+  {
+    const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: frozen: the team is frozen until Monday')
+    check('a refusal with a code the agent does not know says only that it was not moved', said instanceof BadRequest && said.message === `${title} was not moved.`, String(said instanceof Error ? said.message : said))
+  }
   {
     const { said } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'the relay is busy, try again in a moment')
     check('a relay that stayed busy is said as busy, not as a refusal', said instanceof Error && !(said instanceof BadRequest) && said.message === `the relay is busy, try again in a moment; moving ${title} to Beta was not saved. It is where it was.`, String(said instanceof Error ? said.message : said))
@@ -1327,6 +1348,15 @@ console.log('— move-project: what the relay is sent, and what the agent says (
       '…and the issue that went with it from Alpha',
       !(said instanceof Error) && JSON.stringify(said.with?.map((row: { address: string; type?: string }) => [row.address, row.type])) === JSON.stringify([[issue, 'issue']]),
       JSON.stringify(!(said instanceof Error) && said.with),
+    )
+  }
+  {
+    // TEA-9: half done, and the second move refused with a code the agent does not know.
+    const { said, sent } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', []), ...team(gamma, 'Gamma', [project])], true, 'invalid: frozen: the team is frozen until Monday')
+    check(
+      'half done with a code the agent does not know: says which team still lists it, never why or to run it again',
+      sent.length === 2 && !(said instanceof Error) && said.why === `Moved ${title} to Beta, but Gamma still lists it too.`,
+      String(said instanceof Error ? said.message : said.why),
     )
   }
 }

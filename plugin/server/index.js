@@ -17921,13 +17921,13 @@ function mergeBlockDocuments(base, theirs, mine) {
     content.set(id, shellOf(changedM && !changedT ? m.block : t.block));
   }
   const kids = /* @__PURE__ */ new Map();
-  const parentOf = /* @__PURE__ */ new Map();
+  const parentOf2 = /* @__PURE__ */ new Map();
   for (const [parent, list] of T.children) {
     if (parent !== null && !content.has(parent))
       continue;
     kids.set(parent, list.filter((id) => content.has(id)));
     for (const id of kids.get(parent))
-      parentOf.set(id, parent);
+      parentOf2.set(id, parent);
   }
   for (const id of content.keys())
     if (!kids.has(id))
@@ -17954,11 +17954,11 @@ function mergeBlockDocuments(base, theirs, mine) {
     }
     let above = parent;
     while (above != null && above !== id)
-      above = parentOf.get(above);
+      above = parentOf2.get(above);
     if (above === id)
       continue;
-    if (parentOf.has(id)) {
-      const from = kids.get(parentOf.get(id));
+    if (parentOf2.has(id)) {
+      const from = kids.get(parentOf2.get(id));
       from.splice(from.indexOf(id), 1);
     }
     const under = kids.get(parent);
@@ -17974,7 +17974,7 @@ function mergeBlockDocuments(base, theirs, mine) {
     while (at < under.length && addedByTheirs(under[at]))
       at++;
     under.splice(at, 0, id);
-    parentOf.set(id, parent);
+    parentOf2.set(id, parent);
   }
   if (asks.length)
     return { asks: dedupe(asks) };
@@ -19228,7 +19228,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.31.0",
+  version: "0.32.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -19523,6 +19523,23 @@ function byOrder(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
+// node_modules/@estiva-app/conversation/dist/threads.js
+var es = (event) => event.tags.filter((t) => t[0] === "e" && typeof t[1] === "string" && t[1] !== "" && t[3] !== "mention");
+function parentOf(event) {
+  const tags = es(event);
+  if (tags.length === 0)
+    return null;
+  if (event.kind === KIND_COMMENT) {
+    const address = event.tags.find((t) => t[0] === "A")?.[1];
+    if (address && event.tags.some((t) => t[0] === "a" && t[1] === address))
+      return null;
+    const root = event.tags.find((t) => t[0] === "E")?.[1];
+    return tags.find((t) => t[1] !== root)?.[1] ?? null;
+  }
+  const marked = (marker) => tags.find((t) => t[3] === marker)?.[1];
+  return marked("root") ?? marked("reply") ?? tags[0][1];
+}
+
 // node_modules/@estiva-app/conversation/dist/strength.js
 var values = (event, name) => event.tags.filter((t) => t[0] === name && typeof t[1] === "string" && t[1] !== "").map((t) => t[1]);
 function namedInBody(body) {
@@ -19536,13 +19553,7 @@ function namedInBody(body) {
   return addresses;
 }
 function isReply(event) {
-  const es = event.tags.filter((t) => t[0] === "e" && typeof t[1] === "string" && t[1] !== "" && t[3] !== "mention").map((t) => t[1]);
-  if (es.length === 0)
-    return false;
-  if (event.kind !== KIND_COMMENT)
-    return true;
-  const root = values(event, "E")[0];
-  return es.some((e) => e !== root);
+  return parentOf(event) !== null;
 }
 function anchorsOf(event) {
   if (event.kind !== KIND_COMMENT || crossed(event))
@@ -19710,6 +19721,66 @@ function reactionEventsOf(events) {
   return out;
 }
 
+// node_modules/@estiva-app/conversation/dist/resolution.js
+var tagValue = (event, name) => event.tags.find((t) => t[0] === name)?.[1];
+function resolutionTargetOf(event) {
+  const tag = event.tags.find((t) => t[0] === "e" && !t[3]);
+  return tag && isEventId(tag[1]) ? tag[1].toLowerCase() : void 0;
+}
+function resolutionOfEvent(event) {
+  if (event.kind !== KIND_ASSERTION || tagValue(event, "t") !== "resolution")
+    return void 0;
+  const action = tagValue(event, "action");
+  if (action !== "resolved" && action !== "reopened")
+    return void 0;
+  const target = resolutionTargetOf(event);
+  if (!target)
+    return void 0;
+  const support = event.tags.find((t) => t[0] === "e" && t[3] === "support")?.[1];
+  const folder = tagValue(event, "h");
+  return {
+    target,
+    resolution: {
+      id: event.id,
+      action,
+      by: event.pubkey,
+      at: event.created_at,
+      orderMs: orderingMs(event),
+      ...folder ? { folder } : {},
+      ...event.content ? { message: event.content } : {},
+      ...isEventId(support) ? { supportingEventId: support.toLowerCase() } : {}
+    }
+  };
+}
+var byResolutionOrder = (a, b) => a.orderMs - b.orderMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+function resolutionOf(resolutions, thread) {
+  if (!thread.folder)
+    return void 0;
+  const newest = resolutions.filter((r) => r.folder === thread.folder).sort(byResolutionOrder).at(-1);
+  if (!newest?.supportingEventId)
+    return newest;
+  const replies = new Set(thread.replies.map((id) => id.toLowerCase()));
+  if (replies.has(newest.supportingEventId))
+    return newest;
+  const { supportingEventId: _dropped, ...kept } = newest;
+  return kept;
+}
+function resolutionsByTarget(events) {
+  const out = {};
+  const seen = /* @__PURE__ */ new Set();
+  for (const event of events) {
+    if (seen.has(event.id))
+      continue;
+    seen.add(event.id);
+    const read = resolutionOfEvent(event);
+    if (read)
+      (out[read.target] ??= []).push(read.resolution);
+  }
+  for (const list of Object.values(out))
+    list.sort(byResolutionOrder);
+  return out;
+}
+
 // node_modules/@estiva-app/conversation/dist/decorations.js
 var TARGETS_PER_FILTER = 100;
 var chunked = (list) => {
@@ -19718,7 +19789,6 @@ var chunked = (list) => {
     out.push(list.slice(i, i + TARGETS_PER_FILTER));
   return out;
 };
-var tagValue = (event, name) => event.tags.find((t) => t[0] === name)?.[1];
 async function decorationsOf(targets, query) {
   const byId2 = {};
   const unique = [];
@@ -19770,35 +19840,17 @@ async function decorationsOf(targets, query) {
     return answered.some((n) => n >= RELAY_PAGE_CEILING);
   };
   const reactionEventsCut = cut(reactionChunks, [KIND_REACTION], reactionTargetOf);
-  const editEventsCut = cut(editChunks, [KIND_EDIT, KIND_ASSERTION], (e) => e.kind === KIND_EDIT ? editTargetOf(e) : e.tags.find((t) => t[0] === "e" && ours(t[1]) && !t[3])?.[1]);
+  const editEventsCut = cut(editChunks, [KIND_EDIT, KIND_ASSERTION], (e) => e.kind === KIND_EDIT ? editTargetOf(e) : resolutionTargetOf(e));
   const inHorizon = new Set(asked);
   const reactions = events.filter((e) => e.kind === KIND_REACTION);
   for (const reaction of reactionEventsOf(reactions)) {
     if (ours(reaction.target) && inHorizon.has(reaction.target))
       byId2[reaction.target].reactions.push(reaction);
   }
-  for (const event of events) {
-    if (event.kind !== KIND_ASSERTION || tagValue(event, "t") !== "resolution")
-      continue;
-    const action = tagValue(event, "action");
-    if (action !== "resolved" && action !== "reopened")
-      continue;
-    const target = event.tags.find((t) => t[0] === "e" && ours(t[1]) && !t[3])?.[1];
-    if (!ours(target))
-      continue;
-    const support = event.tags.find((t) => t[0] === "e" && t[3] === "support")?.[1];
-    byId2[target].resolutions.push({
-      id: event.id,
-      action,
-      by: event.pubkey,
-      at: event.created_at,
-      ...event.content ? { message: event.content } : {},
-      ...support ? { supportingEventId: support } : {}
-    });
+  for (const [target, list] of Object.entries(resolutionsByTarget(events))) {
+    if (ours(target))
+      byId2[target].resolutions = list;
   }
-  const oldestFirst = (a, b) => a.at - b.at || (a.id < b.id ? -1 : 1);
-  for (const decoration of Object.values(byId2))
-    decoration.resolutions.sort(oldestFirst);
   return { byId: byId2, reactionTargetsOmitted: omitted, reactionEventsCut, editEventsCut };
 }
 
@@ -19827,6 +19879,8 @@ function buildMembershipChange(pubkey, createdAtMs, args2) {
     throw new Error(`not a team id (lowercase UUID v4): ${JSON.stringify(args2.folder)}`);
   if (!Number.isSafeInteger(createdAtMs) || createdAtMs < 0)
     throw new Error(`not epoch milliseconds: ${createdAtMs}`);
+  if (args2.prev !== void 0 && !/^[0-9a-f]{64}$/.test(args2.prev))
+    throw new Error(`not an event id: ${JSON.stringify(args2.prev)}`);
   return {
     pubkey,
     created_at: Math.floor(createdAtMs / 1e3),
@@ -19839,6 +19893,7 @@ function buildMembershipChange(pubkey, createdAtMs, args2) {
       ["value", args2.member ? "true" : "false"],
       ["h", args2.folder],
       ["ts", String(createdAtMs)],
+      ...args2.prev !== void 0 ? [["prev", args2.prev]] : [],
       ["p", args2.person]
     ],
     content: note
@@ -20038,7 +20093,15 @@ function planMoveFile(pubkey, createdAtMs, args2) {
   const kept = args2.keepSpace && file.address && moved.includes(file.address) ? [file.address] : [];
   return {
     ok: true,
-    events: [buildFolderCommand(pubkey, createdAtMs, { folder: args2.to.id, op: "move", from: args2.from.id, addresses: moved, spaces: kept })],
+    events: [
+      buildFolderCommand(pubkey, createdAtMs, {
+        folder: args2.to.id,
+        op: "move",
+        from: args2.from.id,
+        addresses: moved.map((address) => listedAs(address, args2.inOrder)),
+        spaces: kept.map((address) => listedAs(address, args2.inOrder))
+      })
+    ],
     moved
   };
 }
@@ -20058,7 +20121,8 @@ function planMoveFromFolders(pubkey, createdAtMs, args2) {
       to,
       // By its address, so the walk finds what the listing draws beneath it.
       listing: unresolved ? [{ ...file, ref: file.address }, ...listing] : listing,
-      keepSpace: args2.keepSpace
+      keepSpace: args2.keepSpace,
+      inOrder: args2.inOrder
     });
     if (!plan.ok)
       return plan;
@@ -20075,13 +20139,24 @@ function planMoveFromFolders(pubkey, createdAtMs, args2) {
       return { ok: true, events: [], moved: [] };
     if (file.address.startsWith(`${KIND.FILE}:`) && file.scopedTo !== to.id && !to.company)
       return { ok: false, reason: "target-is-not-home" };
-    return { ok: true, events: planPlaceFile(pubkey, createdAtMs, { folder: to.id, address: file.address, hasState: true }), moved: [file.address] };
+    return { ok: true, events: planPlaceFile(pubkey, createdAtMs, { folder: to.id, address: file.address, hasState: true, inOrder: args2.inOrder }), moved: [file.address] };
   }
   return { ok: true, events, moved: [...moved] };
 }
+function refusalCode(reason) {
+  return /^(?:restricted|invalid): ([a-z][a-z0-9-]*): /.exec(reason ?? "")?.[1];
+}
+var MOVE_CODES = /* @__PURE__ */ new Map([
+  ["archived", "team-archived"],
+  ["not-member", "not-a-member"],
+  ["changed", "changed-meanwhile"],
+  ["not-home", "not-home"],
+  ["leaves-by-moving", "leaves-by-moving"]
+]);
 function readMoveRefusal(events, index, reason) {
   const text2 = reason ?? "";
-  const why = /archived/i.test(text2) ? "team-archived" : /only the team's members|not a channel member/i.test(text2) ? "not-a-member" : /does not list|lists none of|listed by one team/i.test(text2) ? "changed-meanwhile" : "refused";
+  const code = refusalCode(text2);
+  const why = code !== void 0 ? MOVE_CODES.get(code) ?? "unexplained" : /archived/i.test(text2) ? "team-archived" : /only the team's members|not a channel member|only members can post/i.test(text2) ? "not-a-member" : /does not list|lists none of|listed by one team/i.test(text2) ? "changed-meanwhile" : "refused";
   const nothingMoved = index <= 0;
   const notMovedFrom = nothingMoved ? [] : events.slice(index).flatMap((event) => event.tags.filter((tag) => tag[0] === "from").map((tag) => tag[1]));
   return { why, nothingMoved, notMovedFrom };
@@ -20113,6 +20188,8 @@ function pubkeysIn(object3) {
     if (action.control === "pubkey" && action.current)
       keys.push(action.current);
   }
+  if (object3.deleted)
+    keys.push(object3.deleted.by);
   return keys;
 }
 var KIND_PROFILE = 0;
@@ -20267,8 +20344,8 @@ async function threadsOf(reference, rootIds, query, cache, limit = CONVERSATION_
       roots[event.id] = event;
       continue;
     }
-    const es = event.tags.filter((tag) => tag[0] === "e" && tag[1]);
-    const parent = (es.find((tag) => tag[3] === "reply") ?? es.find((tag) => wanted.has(tag[1])))?.[1];
+    const es2 = event.tags.filter((tag) => tag[0] === "e" && tag[1]);
+    const parent = (es2.find((tag) => tag[3] === "reply") ?? es2.find((tag) => wanted.has(tag[1])))?.[1];
     if (parent && wanted.has(parent))
       (replies[parent] ??= []).push(event);
   }
@@ -20920,11 +20997,14 @@ function foldChanges(changes, rule, root) {
     for (const { field, value } of settingsOf(change, rule)) {
       if (field === SUMMARY_FIELD && !folders)
         continue;
+      if (field === DELETED_FIELD && !folders)
+        continue;
       fields[field] = {
         value,
         by: change.pubkey,
         at: change.created_at,
-        format: contentFormatOf(change)
+        format: contentFormatOf(change),
+        id: change.id
       };
     }
   }
@@ -20987,9 +21067,9 @@ function archiveOf(changes, address, rule, root, folderAdmins) {
     ...note && note !== PLACEHOLDER_ARCHIVE_NOTE ? { resolution: last.content } : {}
   };
 }
-function archivedAncestorOf(address, parentOf, archiveAt) {
+function archivedAncestorOf(address, parentOf2, archiveAt) {
   const seen = /* @__PURE__ */ new Set([address]);
-  for (let parent = parentOf(address); parent && !seen.has(parent); parent = parentOf(parent)) {
+  for (let parent = parentOf2(address); parent && !seen.has(parent); parent = parentOf2(parent)) {
     seen.add(parent);
     const archive = archiveAt(parent);
     if (archive)
@@ -21117,6 +21197,8 @@ function buildObject(args2) {
   const naddr = encodeNaddr(pointer);
   const { slots, meta: meta2 } = resolveSlots(projection, root, folded, manifest);
   const objectAddress = pointerToAddress(pointer);
+  const prevs = Object.fromEntries(Object.entries(folded).flatMap(([field, f]) => f.id !== void 0 ? [[field, f.id]] : []));
+  const deleted = folded[DELETED_FIELD];
   return {
     // An addressable object's `ref` is its address: stable across the author
     // replacing the event, which the event id is not.
@@ -21142,9 +21224,12 @@ function buildObject(args2) {
     actions: actionsOfFile(manifest, projection, root, folded),
     viaRecommendation: args2.viaRecommendation,
     ...args2.archived ? { archived: args2.archived } : {},
-    changedAt: changedAtOf(root, folded)
+    changedAt: changedAtOf(root, folded),
+    ...Object.keys(prevs).length ? { prevs } : {},
+    ...deleted?.value === "true" && deleted.by ? { deleted: { by: deleted.by, at: deleted.at ?? root.created_at } } : {}
   };
 }
+var DELETED_FIELD = "deleted";
 function actionsOfFile(manifest, projection, root, folded) {
   const held = {};
   for (const spec of Object.values(withDefaultSubtitle(projection.slots, root.kind)).flat()) {
@@ -21162,22 +21247,25 @@ async function resolveForeignObject(naddr, query, lookupPeople, depth = 0, cache
   const resolved = await resolveManifest(pointer, query, cache);
   if (!resolved)
     return null;
-  const plan = planObject(naddr, pointer, resolved, depth);
+  const plan = planObject(naddr, pointer, resolved, depth, options.openRead);
   if (!plan)
     return null;
-  const [answered, creators, files] = await Promise.all([
+  const [read, opened, creators, files] = await Promise.all([
     query(plan.filters),
+    openedEvents([plan], query),
     creatorsOrNone(pointer.kind, query, cache),
     options.folderFiles && pointer.kind === KIND_CHANNEL_METADATA ? folderFilesOf(pointer.identifier, query, lookupPeople, cache) : void 0
   ]);
+  const answered = [...read, ...opened];
   const followUp = childChangeFilters(plan, answered);
   const childChanges = followUp.length ? await queryChunked(followUp, query) : [];
   const childOwners = await childOwnersOf(plan, answered, childChanges, query, cache);
   const assembled = assembleObject(plan, answered, childChanges, childOwners, options.archivedChildren);
   if (assembled.object.unreachable)
     return assembled.object;
-  if (options.archivedWith)
-    await markArchivedParents([{ object: assembled.object, manifest: resolved.manifest }], query, cache);
+  if (options.archivedWith) {
+    await markArchivedParents([{ object: assembled.object, manifest: resolved.manifest }], query, cache, parentListKinds(options));
+  }
   return withFiles(withBorrowed(withPeople(assembled, await (lookupPeople ?? peopleViaRelay(query))(peopleOf(assembled))), borrowedActions(pointer.kind, resolved, creators)), files);
 }
 function withBorrowed(object3, borrowed) {
@@ -21233,6 +21321,29 @@ function projectEvents(events, manifestFor) {
     });
   });
 }
+function listReadFilters(pointers) {
+  const groups = /* @__PURE__ */ new Map();
+  for (const { kind, pubkey, identifier } of pointers) {
+    const group = groups.get(`${kind}:${pubkey}`) ?? { kind, pubkey, identifiers: /* @__PURE__ */ new Set() };
+    group.identifiers.add(identifier);
+    groups.set(`${kind}:${pubkey}`, group);
+  }
+  const filters = [];
+  for (const { kind, pubkey, identifiers } of groups.values()) {
+    const all = [...identifiers];
+    for (let start = 0; start < all.length; start += RELAY_PAGE_CEILING) {
+      const chunk = all.slice(start, start + RELAY_PAGE_CEILING);
+      filters.push({ kinds: [kind], authors: [pubkey], "#d": chunk, limit: chunk.length, fields: "newest" });
+    }
+  }
+  return filters;
+}
+function listedIn(events, pointer) {
+  return events.some((e) => e.kind === pointer.kind && e.pubkey === pointer.pubkey && tagValue2(e, "d") === pointer.identifier);
+}
+function parentListKinds(options) {
+  return options.listRead ? FILE_KINDS : options.openRead ?? [];
+}
 async function folderFilesOf(folder, query, lookupPeople, cache) {
   try {
     const contents = await resolveFolderContents(folder, query, lookupPeople, cache, { listedOnly: true });
@@ -21244,7 +21355,7 @@ async function folderFilesOf(folder, query, lookupPeople, cache) {
 function withFiles(object3, files) {
   return files ? { ...object3, children: files } : object3;
 }
-async function markArchivedParents(entries, query, cache) {
+async function markArchivedParents(entries, query, cache, listKinds = []) {
   await walkArchivedAbove(entries.filter(({ object: o }) => !o.unreachable && !o.archived && o.parentRef && plainAddress(o.parentRef)).map(({ object: object3, manifest }) => ({
     manifest,
     at: plainAddress(object3.parentRef),
@@ -21252,13 +21363,33 @@ async function markArchivedParents(entries, query, cache) {
     mark: (archive) => {
       object3.archived = archive;
     }
-  })), query, cache);
+  })), query, cache, listKinds);
+}
+function ancestorFilters(addresses, rules) {
+  const roots = /* @__PURE__ */ new Map();
+  for (const address of addresses) {
+    const pointer = addressPointerOf(address);
+    const group = `${pointer.kind}:${pointer.pubkey}`;
+    const filter = roots.get(group) ?? { kinds: [pointer.kind], authors: [pointer.pubkey], "#d": [] };
+    filter["#d"].push(pointer.identifier);
+    roots.set(group, filter);
+  }
+  return [
+    ...[...roots.values()].flatMap((filter) => {
+      const groups = [];
+      for (let start = 0; start < filter["#d"].length; start += PARENT_ROOT_GROUP) {
+        groups.push({ ...filter, "#d": filter["#d"].slice(start, start + PARENT_ROOT_GROUP) });
+      }
+      return groups;
+    }),
+    ...archiveFilters(addresses, rules)
+  ];
 }
 function plainAddress(reference) {
   const pointer = addressPointerOf(reference);
   return pointer ? `${pointer.kind}:${pointer.pubkey}:${pointer.identifier}` : void 0;
 }
-async function walkArchivedAbove(starts, query, cache) {
+async function walkArchivedAbove(starts, query, cache, listKinds = []) {
   let walking = starts;
   while (walking.length) {
     const drawnBy = [];
@@ -21279,25 +21410,18 @@ async function walkArchivedAbove(starts, query, cache) {
     const ancestors = resolved.filter((a) => !!a.manifest);
     const rules = ancestors.map(({ manifest }) => archiveRuleOf(manifest));
     const addresses = [...new Set(ancestors.map(({ address }) => address))];
-    const roots = /* @__PURE__ */ new Map();
-    for (const address of addresses) {
-      const pointer = addressPointerOf(address);
-      const group = `${pointer.kind}:${pointer.pubkey}`;
-      const filter = roots.get(group) ?? { kinds: [pointer.kind], authors: [pointer.pubkey], "#d": [] };
-      filter["#d"].push(pointer.identifier);
-      roots.set(group, filter);
-    }
-    const filters = [
-      ...[...roots.values()].flatMap((filter) => {
-        const groups = [];
-        for (let start = 0; start < filter["#d"].length; start += PARENT_ROOT_GROUP) {
-          groups.push({ ...filter, "#d": filter["#d"].slice(start, start + PARENT_ROOT_GROUP) });
-        }
-        return groups;
-      }),
-      ...archiveFilters(addresses, rules)
-    ];
-    const events = await queryChunked(filters, query);
+    const byList = new Set(addresses.filter((address) => {
+      const { kind } = addressPointerOf(address);
+      return listKinds.includes(kind) && FILE_KINDS.includes(kind);
+    }));
+    const plainRead = (some) => some.length ? queryChunked(ancestorFilters(some, rules), query) : Promise.resolve([]);
+    const listFilters = listReadFilters([...byList].map((address) => addressPointerOf(address)));
+    const [listed, plain] = await Promise.all([
+      listFilters.length ? queryChunked(listFilters, query) : Promise.resolve([]),
+      plainRead(addresses.filter((address) => !byList.has(address)))
+    ]);
+    const unanswered = [...byList].filter((address) => !listedIn(listed, addressPointerOf(address)));
+    const events = [...listed, ...plain, ...await plainRead(unanswered)];
     const read = /* @__PURE__ */ new Map();
     for (const [index, { key, address, pointer, manifest }] of ancestors.entries()) {
       const root = events.filter((e) => e.kind === pointer.kind && e.pubkey === pointer.pubkey && tagValue2(e, "d") === pointer.identifier).sort(byOrder).at(-1);
@@ -21354,7 +21478,7 @@ function addressPointerOf(reference) {
     return null;
   }
 }
-function planObject(naddr, pointer, resolved, depth) {
+function planObject(naddr, pointer, resolved, depth, openRead) {
   const { manifest } = resolved;
   const address = pointerToAddress(pointer);
   const openUrl = resolved.webTemplate?.replace("<bech32>", naddr.replace(/^nostr:/, ""));
@@ -21364,18 +21488,48 @@ function planObject(naddr, pointer, resolved, depth) {
     return null;
   const records = foldRuleOf(manifest);
   const childFilter = childFilterFor({ projection, manifest, pointer, depth });
-  const filters = [
+  const history = [
     { kinds: [pointer.kind], authors: [pointer.pubkey], "#d": [pointer.identifier], limit: 1 },
     // Only when the app actually declares a change kind — see `foldRuleOf`.
     ...manifest.records ? [{ kinds: [manifest.records.changeKind], "#a": [address], limit: 500 }] : [],
     // Every file may be archived, including one whose app folds nothing
     // (FOL-46). SPEC's change kind, when the app has not named its own.
-    ...manifest.records ? [] : [{ kinds: [ARCHIVE_RULE.changeKind], "#a": [address], limit: 500 }],
+    ...manifest.records ? [] : [{ kinds: [ARCHIVE_RULE.changeKind], "#a": [address], limit: 500 }]
+  ];
+  const opened = !!openRead?.includes(pointer.kind) && FILE_KINDS.includes(pointer.kind);
+  const filters = [
+    ...opened ? [] : history,
     { kinds: commentKinds, "#a": [address], limit: CONVERSATION_LIMIT },
     ...childFilter ? [childFilter.filter] : [],
     ...childFilter?.movedIn ? [childFilter.movedIn] : []
   ];
-  return { naddr, pointer, address, resolved, projection, records, commentKinds, childFilter, filters, openUrl };
+  return { naddr, pointer, address, resolved, projection, records, commentKinds, childFilter, filters, opened, history, openUrl };
+}
+async function openedEvents(plans, query) {
+  const opened = /* @__PURE__ */ new Map();
+  for (const plan of plans)
+    if (plan.opened)
+      opened.set(plan.address, plan);
+  if (opened.size === 0)
+    return [];
+  const groups = /* @__PURE__ */ new Map();
+  for (const { pointer } of opened.values()) {
+    const key = `${pointer.kind}:${pointer.pubkey}`;
+    const group = groups.get(key) ?? { kind: pointer.kind, pubkey: pointer.pubkey, identifiers: [] };
+    group.identifiers.push(pointer.identifier);
+    groups.set(key, group);
+  }
+  const filters = [];
+  for (const { kind, pubkey, identifiers } of groups.values()) {
+    for (let start = 0; start < identifiers.length; start += RELAY_PAGE_CEILING) {
+      const chunk = identifiers.slice(start, start + RELAY_PAGE_CEILING);
+      filters.push({ fields: "newest", kinds: [kind], authors: [pubkey], "#d": chunk, limit: chunk.length, text: true });
+    }
+  }
+  const answered = await queryChunked(filters, query);
+  const unanswered = [...opened.values()].filter(({ pointer }) => !listedIn(answered, pointer));
+  const history = unanswered.length ? await queryChunked(unanswered.flatMap((plan) => plan.history), query) : [];
+  return [...answered, ...history];
 }
 function assembleObject(plan, answered, childChanges = [], childOwners = /* @__PURE__ */ new Set(), archivedChildren = false) {
   const { naddr, pointer, address, resolved, projection, commentKinds, childFilter, openUrl } = plan;
@@ -22012,7 +22166,7 @@ function topLevelFolders(folders) {
 }
 async function listFolders(query, options = {}) {
   const { events, byId: byId2 } = await readFolderRecords(query);
-  const listedIn = /* @__PURE__ */ new Map();
+  const listedIn2 = /* @__PURE__ */ new Map();
   for (const event of events) {
     if (event.kind !== KIND_FOLDER_STATE)
       continue;
@@ -22025,18 +22179,18 @@ async function listFolders(query, options = {}) {
       const [kind, , identifier] = tag[1].split(":");
       if (Number(kind) !== KIND_CHANNEL || !identifier || identifier === container)
         continue;
-      const containers = listedIn.get(identifier) ?? [];
+      const containers = listedIn2.get(identifier) ?? [];
       if (!containers.includes(container))
         containers.push(container);
-      listedIn.set(identifier, containers);
+      listedIn2.set(identifier, containers);
     }
   }
   const { recordsOf, archives, rootOf: rootOf2 } = options.recordChannels === false ? {
     recordsOf: /* @__PURE__ */ new Map(),
     archives: await readArchiveChanges([...byId2.values()].flatMap((folder) => folder.channel ? [folder.channel] : []), query),
     rootOf: /* @__PURE__ */ new Map()
-  } : await placeRecordChannels(events, byId2, listedIn, query, options.listRead === true);
-  for (const [id, containers] of listedIn) {
+  } : await placeRecordChannels(events, byId2, listedIn2, query, options.listRead === true);
+  for (const [id, containers] of listedIn2) {
     const folder = byId2.get(id);
     if (folder)
       folder.listedIn = containers;
@@ -22109,7 +22263,7 @@ function markArchivedFolders(byId2, recordsOf, changes, rootOf2) {
       folder.archived = { ...archives[0], with: records[0] };
   }
 }
-async function placeRecordChannels(events, byId2, listedIn, query, listRead) {
+async function placeRecordChannels(events, byId2, listedIn2, query, listRead) {
   const containersOf = /* @__PURE__ */ new Map();
   const states = events.filter((event) => event.kind === KIND_FOLDER_STATE);
   const ids = [...new Set(states.flatMap((state) => listedEntriesOf(state, /* @__PURE__ */ new Map()).ids))];
@@ -22186,10 +22340,10 @@ async function placeRecordChannels(events, byId2, listedIn, query, listRead) {
     for (const container of containers) {
       if (container === channel)
         continue;
-      const placed = listedIn.get(channel) ?? [];
+      const placed = listedIn2.get(channel) ?? [];
       if (!placed.includes(container))
         placed.push(container);
-      listedIn.set(channel, placed);
+      listedIn2.set(channel, placed);
     }
   }
   return { recordsOf, archives, rootOf: newest };
@@ -22303,7 +22457,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
     const records = foldRuleOf(resolved.manifest);
     const folded = foldChanges(events.filter((e) => e.kind === records.changeKind && hasTagValue(e, records.targetTag, address)), records, root);
     if (byFields(pointer.kind)) {
-      folded.description = { value: "", by: root.pubkey, at: root.created_at, format: "marker" };
+      folded.description = { value: "", by: root.pubkey, at: root.created_at, format: "marker", id: "" };
     }
     const nestedAdmins = pointer.kind === KIND_CHANNEL ? new Set(folderAdminsOf(events.find((e) => e.kind === KIND_CHANNEL_ADMINS && tagValue2(e, "d") === pointer.identifier), root)) : void 0;
     const archive = archiveOf(events, address, archiveRuleOf(resolved.manifest), root, nestedAdmins);
@@ -22371,7 +22525,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
     mark: (found) => {
       exit.archive = found;
     }
-  })), query, cache);
+  })), query, cache, options.listRead ? FILE_KINDS : []);
   const files = [];
   for (const { file, archive } of listed) {
     const exit = file.address ? exitOf.get(file.address) : void 0;
@@ -22763,6 +22917,23 @@ async function writeChange(args2) {
   let base;
   let mergedOnto;
   let last = "";
+  if (isText && args2.base) {
+    const followed = await byId(args2.query, prev);
+    const theirs = followed && textOf3(followed);
+    if (!followed || !theirs)
+      return { ok: false, refused: `the text it follows, ${prev}, could not be read to merge onto` };
+    if (theirs.value !== args2.base.value || (theirs.format ?? "") !== (args2.base.format ?? "")) {
+      const merge2 = mergeTexts(args2.base, theirs, mine);
+      if (merge2.asks)
+        return { ok: false, asks: merge2.asks, theirs: followed };
+      if (merge2.merged.value === theirs.value && (merge2.merged.format ?? "") === (theirs.format ?? "")) {
+        return { ok: true, unchanged: true, id: followed.id, mergedOnto: followed };
+      }
+      mergedOnto = followed;
+      mine = merge2.merged;
+    }
+    base = theirs;
+  }
   for (let attempt = 0; attempt < tries; attempt++) {
     const built = args2.build({ value: mine.value, format: mine.format, prev, createdAtMs: Math.max(now(), after) });
     if (typeof built === "string")
@@ -23835,13 +24006,16 @@ async function readConversation(context2, file, cache, beside = async () => void
     ),
     beside(conversations)
   ]);
-  const isResolved = (id) => decorations.byId[id]?.resolutions.at(-1)?.action === "resolved";
+  const isResolved = (thread) => resolutionOf(decorations.byId[thread.root.id]?.resolutions ?? [], {
+    folder: thread.root.folder,
+    replies: thread.replies.map((reply) => reply.id)
+  })?.action === "resolved";
   const edits = {};
   for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit;
   return {
     conversations,
     edits,
-    resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved)),
+    resolved: new Set(conversations.filter(isResolved).map((thread) => thread.root.id)),
     besides
   };
 }
@@ -24354,6 +24528,16 @@ async function editsFor(context2, byObject) {
 
 // lib/agent/apps/ship.ts
 import { randomUUID } from "node:crypto";
+var NOT_HOME = "it is in no team yet, so it can go only to the team it was started in, or to the Company team";
+var MOVE_REFUSED = {
+  "team-archived": "one of the teams is archived",
+  "not-a-member": "you need to be a member of both teams to move it",
+  "changed-meanwhile": "the teams changed since they were read; run the same command again",
+  "not-home": NOT_HOME,
+  "leaves-by-moving": "a topic leaves a team only by moving; move it to another team instead",
+  unexplained: void 0,
+  refused: "the move was not accepted; run the same command again"
+};
 function who(directory, pubkey) {
   if (!pubkey) return void 0;
   const profile = directory.get(pubkey);
@@ -24820,7 +25004,7 @@ async function moveFile(context2, args2) {
   }
   return { moved: plan.moved, eventIds };
 }
-var DELETED_FIELD = "deleted";
+var DELETED_FIELD2 = "deleted";
 function fieldAction(workspace, addr2, field) {
   const resolved = workspace.manifestFor(addr2);
   const kind = addr2.split(":")[0];
@@ -24829,7 +25013,7 @@ function fieldAction(workspace, addr2, field) {
     (candidate) => candidate.emits?.field === field && (Array.isArray(candidate.appliesTo) ? candidate.appliesTo.includes(kind) : candidate.appliesTo === kind)
   );
   if (resolved && action) return { manifest: resolved.manifest, action };
-  if (resolved?.manifest.records && field === DELETED_FIELD) {
+  if (resolved?.manifest.records && field === DELETED_FIELD2) {
     const deletion = { id: "delete", label: "Delete", appliesTo: kind, emits: { kind: resolved.manifest.records.changeKind, field }, input: { type: "string" } };
     return { manifest: { ...resolved.manifest, actions: [...actions, deletion] }, action: deletion };
   }
@@ -25143,8 +25327,8 @@ async function archiveFile(context2, args2, command2) {
 }
 async function setDeleted(context2, state, project, deleted, reason) {
   const target = { addr: project.addr, author: project.author, folder: project.contentFolder };
-  const prev = project.heads?.[DELETED_FIELD] ?? project.rootId;
-  const result = await writeField(context2, state, target, DELETED_FIELD, deleted ? "true" : "", reason ?? (deleted ? "Delete" : "Restore"), prev);
+  const prev = project.heads?.[DELETED_FIELD2] ?? project.rootId;
+  const result = await writeField(context2, state, target, DELETED_FIELD2, deleted ? "true" : "", reason ?? (deleted ? "Delete" : "Restore"), prev);
   if (!result.ok) throw refused(`${deleted ? "deleting" : "restoring"} \u201C${project.title}\u201D`, "refused" in result ? result.refused : void 0);
   const changed = { title: project.title, addr: project.addr };
   return deleted ? {
@@ -25975,11 +26159,13 @@ Pass an address to say which.`
         if (moved.refused === "target-has-no-state") throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`);
         if (moved.refused === "source-has-no-state") throw new BadRequest(`A team \u201C${project.title}\u201D is in has no list of its own, so taking it out would empty that team. Nothing was published.`);
         if (moved.refused === "target-is-private") throw new BadRequest(`${name(to)} is private, and \u201C${project.title}\u201D would stay readable by the whole workspace. Nothing was published.`);
+        if (moved.refused === "target-is-not-home") throw new BadRequest(`\u201C${project.title}\u201D was not moved: ${NOT_HOME}. Nothing was published.`);
+        moved.refused;
         const stopped = moved.moveRefused;
-        const why = !stopped ? void 0 : stopped.failure ? stopped.failure.replace(/\.$/, "") : stopped.busy ? RELAY_BUSY_MESSAGE : stopped.why === "team-archived" ? "one of the teams is archived" : stopped.why === "not-a-member" ? "you need to be a member of both teams to move it" : stopped.why === "changed-meanwhile" ? "the teams changed since they were read; run the same command again" : "the move was not accepted; run the same command again";
+        const why = !stopped ? void 0 : stopped.failure ? stopped.failure.replace(/\.$/, "") : stopped.busy ? RELAY_BUSY_MESSAGE : MOVE_REFUSED[stopped.why];
         if (stopped?.nothingMoved) {
           if (stopped.busy) throw refused(`moving \u201C${project.title}\u201D to ${name(to)}`, RELAY_BUSY_MESSAGE, "It is where it was.");
-          throw new BadRequest(`\u201C${project.title}\u201D was not moved: ${why}.`);
+          throw new BadRequest(why ? `\u201C${project.title}\u201D was not moved: ${why}.` : `\u201C${project.title}\u201D was not moved.`);
         }
         const stillIn = (stopped?.notMovedFrom ?? []).map((folder) => ({ folder, name: teams.find((team) => team.id === folder)?.name }));
         const refusing = stillIn[0] ? stillIn[0].name ?? stillIn[0].folder : void 0;
@@ -25988,7 +26174,7 @@ Pass an address to say which.`
           from: from.map((team) => ({ id: team.id, name: team.name })),
           to: { id: to.id, name: to.name },
           eventIds: moved.eventIds,
-          ...refusing ? { why: `Moved \u201C${project.title}\u201D to ${name(to)}, but ${refusing} still lists it too: ${why}.` } : {},
+          ...refusing ? { why: `Moved \u201C${project.title}\u201D to ${name(to)}, but ${refusing} still lists it too${why ? `: ${why}` : ""}.` } : {},
           // What was listed beneath it in the source — a topic started under it — and went with it.
           with: moved.moved.filter((address) => address !== project.addr).map((address) => {
             const row = [...listings.values()].flat().find((file) => file.address === address);
@@ -26081,7 +26267,7 @@ Pass an address to say which.`
         const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
         const reads2 = await fileReadsFor(context2);
         const declared = state.manifestFor(project.addr)?.manifest.actions?.find((action) => action.id === "delete-project");
-        const byField = reads2.switched && reads2.inOrder.includes(TYPE_OF[KIND2.PROJECT]) || declared?.emits?.field === DELETED_FIELD;
+        const byField = reads2.switched && reads2.inOrder.includes(TYPE_OF[KIND2.PROJECT]) || declared?.emits?.field === DELETED_FIELD2;
         const folder = project.contentFolder;
         if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no team at all, so a deletion cannot be addressed to one.`);
         const survives = `Its ${issues} issue(s) are separate events and are NOT deleted. Since SHI-7 they stay reachable in \`ship issues\`, listed with no project.`;

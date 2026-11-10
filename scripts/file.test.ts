@@ -217,6 +217,14 @@ const fixture = () => {
   const reopened = await run('show', context, [created!.address], {})
   check('…and once reopened, as open again', !reopened.comments?.[0]?.resolved, JSON.stringify(reopened.comments?.[0]))
 }
+{
+  // A newer reopen filed in another team, or in none, does not count: the thread stays resolved, as Peek and Ship show it.
+  const { context, events, comment } = fixture()
+  const resolution = (action: string, at: number, h?: string) => event(9101, [['t', 'resolution'], ['action', action], ['e', comment.id], ...(h ? [['h', h]] : [])], '', QA2, at)
+  events.push(resolution('resolved', 1_900_000_010, FOLDER), resolution('reopened', 1_900_000_020, 'f'.repeat(64)), resolution('reopened', 1_900_000_030))
+  const shown = await run('show', context, [created!.address], {})
+  check('a reopen filed outside the comment’s team, or in no team, leaves the thread resolved', shown.comments?.[0]?.resolved === true, JSON.stringify(shown.comments?.[0]))
+}
 
 console.log('\n— Changing one section —')
 {

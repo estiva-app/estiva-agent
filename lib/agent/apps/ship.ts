@@ -73,9 +73,27 @@ import {
   type FolderSummary,
   type MovableFile,
   type MoveRefusal,
+  type MoveRefusalWhy,
   type QueryFn,
   type ResolvedManifest,
 } from '@estiva-app/interop'
+
+const NOT_HOME = 'it is in no team yet, so it can go only to the team it was started in, or to the Company team'
+
+/**
+ * The agent's words for why the relay refused a move, never the relay's text (TEA-3, TEA-9). Every reason
+ * interop reads has an entry, so a new one is a type error here rather than a silent "run the same command
+ * again". `undefined` says only that it was not moved: a code the agent does not know, never guessed at.
+ */
+const MOVE_REFUSED: Record<MoveRefusalWhy, string | undefined> = {
+  'team-archived': 'one of the teams is archived',
+  'not-a-member': 'you need to be a member of both teams to move it',
+  'changed-meanwhile': 'the teams changed since they were read; run the same command again',
+  'not-home': NOT_HOME,
+  'leaves-by-moving': 'a topic leaves a team only by moving; move it to another team instead',
+  unexplained: undefined,
+  refused: 'the move was not accepted; run the same command again',
+}
 
 /** A pubkey as something a person can read, falling back to a short hex. */
 function who(directory: Directory, pubkey: string | undefined): string | undefined {
@@ -2803,24 +2821,15 @@ export const shipApp: AgentApp = {
         if (moved.refused === 'source-has-no-state') throw new BadRequest(`A team “${project.title}” is in has no list of its own, so taking it out would empty that team. Nothing was published.`)
         if (moved.refused === 'target-is-private') throw new BadRequest(`${name(to)} is private, and “${project.title}” would stay readable by the whole workspace. Nothing was published.`)
 
-        // The agent's words for why, never the relay's text (TEA-3); its own failure is said as that failure.
+        if (moved.refused === 'target-is-not-home') throw new BadRequest(`“${project.title}” was not moved: ${NOT_HOME}. Nothing was published.`)
+        moved.refused satisfies undefined
+
+        // The agent's words for why (MOVE_REFUSED); its own failure is said as that failure.
         const stopped = moved.moveRefused
-        const why = !stopped
-          ? undefined
-          : stopped.failure
-            ? stopped.failure.replace(/\.$/, '')
-            : stopped.busy
-              ? RELAY_BUSY_MESSAGE
-              : stopped.why === 'team-archived'
-                ? 'one of the teams is archived'
-                : stopped.why === 'not-a-member'
-                  ? 'you need to be a member of both teams to move it'
-                  : stopped.why === 'changed-meanwhile'
-                    ? 'the teams changed since they were read; run the same command again'
-                    : 'the move was not accepted; run the same command again'
+        const why = !stopped ? undefined : stopped.failure ? stopped.failure.replace(/\.$/, '') : stopped.busy ? RELAY_BUSY_MESSAGE : MOVE_REFUSED[stopped.why]
         if (stopped?.nothingMoved) {
           if (stopped.busy) throw refused(`moving “${project.title}” to ${name(to)}`, RELAY_BUSY_MESSAGE, 'It is where it was.')
-          throw new BadRequest(`“${project.title}” was not moved: ${why}.`)
+          throw new BadRequest(why ? `“${project.title}” was not moved: ${why}.` : `“${project.title}” was not moved.`)
         }
 
         // Half done: an earlier move landed. Only the first Folder not moved from was asked; the ones after it were not.
@@ -2831,7 +2840,7 @@ export const shipApp: AgentApp = {
           from: from.map((team) => ({ id: team.id, name: team.name })),
           to: { id: to.id, name: to.name },
           eventIds: moved.eventIds,
-          ...(refusing ? { why: `Moved “${project.title}” to ${name(to)}, but ${refusing} still lists it too: ${why}.` } : {}),
+          ...(refusing ? { why: `Moved “${project.title}” to ${name(to)}, but ${refusing} still lists it too${why ? `: ${why}` : ''}.` } : {}),
           // What was listed beneath it in the source — a topic started under it — and went with it.
           with: moved.moved
             .filter((address) => address !== project.addr)
