@@ -19753,6 +19753,18 @@ function resolutionOfEvent(event) {
   };
 }
 var byResolutionOrder = (a, b) => a.orderMs - b.orderMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+function resolutionOf(resolutions, thread) {
+  if (!thread.folder)
+    return void 0;
+  const newest = resolutions.filter((r) => r.folder === thread.folder).sort(byResolutionOrder).at(-1);
+  if (!newest?.supportingEventId)
+    return newest;
+  const replies = new Set(thread.replies.map((id) => id.toLowerCase()));
+  if (replies.has(newest.supportingEventId))
+    return newest;
+  const { supportingEventId: _dropped, ...kept } = newest;
+  return kept;
+}
 function resolutionsByTarget(events) {
   const out = {};
   const seen = /* @__PURE__ */ new Set();
@@ -23994,13 +24006,16 @@ async function readConversation(context2, file, cache, beside = async () => void
     ),
     beside(conversations)
   ]);
-  const isResolved = (id) => decorations.byId[id]?.resolutions.at(-1)?.action === "resolved";
+  const isResolved = (thread) => resolutionOf(decorations.byId[thread.root.id]?.resolutions ?? [], {
+    folder: thread.root.folder,
+    replies: thread.replies.map((reply) => reply.id)
+  })?.action === "resolved";
   const edits = {};
   for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit;
   return {
     conversations,
     edits,
-    resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved)),
+    resolved: new Set(conversations.filter(isResolved).map((thread) => thread.root.id)),
     besides
   };
 }
@@ -24513,6 +24528,16 @@ async function editsFor(context2, byObject) {
 
 // lib/agent/apps/ship.ts
 import { randomUUID } from "node:crypto";
+var NOT_HOME = "it is in no team yet, so it can go only to the team it was started in, or to the Company team";
+var MOVE_REFUSED = {
+  "team-archived": "one of the teams is archived",
+  "not-a-member": "you need to be a member of both teams to move it",
+  "changed-meanwhile": "the teams changed since they were read; run the same command again",
+  "not-home": NOT_HOME,
+  "leaves-by-moving": "a topic leaves a team only by moving; move it to another team instead",
+  unexplained: void 0,
+  refused: "the move was not accepted; run the same command again"
+};
 function who(directory, pubkey) {
   if (!pubkey) return void 0;
   const profile = directory.get(pubkey);
@@ -26134,11 +26159,10 @@ Pass an address to say which.`
         if (moved.refused === "target-has-no-state") throw new BadRequest(`${name(to)} has no list of its own, so adding to it would hide what is already there. Nothing was published.`);
         if (moved.refused === "source-has-no-state") throw new BadRequest(`A team \u201C${project.title}\u201D is in has no list of its own, so taking it out would empty that team. Nothing was published.`);
         if (moved.refused === "target-is-private") throw new BadRequest(`${name(to)} is private, and \u201C${project.title}\u201D would stay readable by the whole workspace. Nothing was published.`);
+        if (moved.refused === "target-is-not-home") throw new BadRequest(`\u201C${project.title}\u201D was not moved: ${NOT_HOME}. Nothing was published.`);
+        moved.refused;
         const stopped = moved.moveRefused;
-        const why = !stopped ? void 0 : stopped.failure ? stopped.failure.replace(/\.$/, "") : stopped.busy ? RELAY_BUSY_MESSAGE : stopped.why === "team-archived" ? "one of the teams is archived" : stopped.why === "not-a-member" ? "you need to be a member of both teams to move it" : stopped.why === "changed-meanwhile" ? "the teams changed since they were read; run the same command again" : stopped.why === "not-home" ? "it is in no team yet, so it can go only to the team it was started in, or to the Company team" : stopped.why === "leaves-by-moving" ? "a topic leaves a team only by moving; move it to another team instead" : stopped.why === "unexplained" ? (
-          // A code the agent does not know: say only that it was not moved, never guess why or suggest again.
-          void 0
-        ) : "the move was not accepted; run the same command again";
+        const why = !stopped ? void 0 : stopped.failure ? stopped.failure.replace(/\.$/, "") : stopped.busy ? RELAY_BUSY_MESSAGE : MOVE_REFUSED[stopped.why];
         if (stopped?.nothingMoved) {
           if (stopped.busy) throw refused(`moving \u201C${project.title}\u201D to ${name(to)}`, RELAY_BUSY_MESSAGE, "It is where it was.");
           throw new BadRequest(why ? `\u201C${project.title}\u201D was not moved: ${why}.` : `\u201C${project.title}\u201D was not moved.`);

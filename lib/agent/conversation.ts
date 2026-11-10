@@ -17,7 +17,7 @@
  * or an object type and does not; this file names a message, which both app
  * modules have and no third one is obliged to.
  */
-import { anchorsOf, decorationsOf, editTargetOf, foldAttachments, KIND_EDIT, placeOf, type EditFold } from '@estiva-app/conversation'
+import { anchorsOf, decorationsOf, editTargetOf, foldAttachments, KIND_EDIT, placeOf, resolutionOf, type EditFold } from '@estiva-app/conversation'
 import { conversationsOf, threadsOf, type ForeignObject, type ProjectionCache } from '@estiva-app/interop'
 import { buildEdit, imetaTag, type SignedEvent } from '@estiva-app/protocol'
 import { relayQuery } from './act-on-file'
@@ -209,14 +209,20 @@ export async function readConversation<T = undefined>(
     ),
     beside(conversations),
   ])
-  const isResolved = (id: string) => decorations.byId[id]?.resolutions.at(-1)?.action === 'resolved'
+  // The newest resolution that counts, as Peek and Ship read it (conversation 0.32): one filed outside the
+  // comment's Folder, or with no Folder, never decides it.
+  const isResolved = (thread: Conversation) =>
+    resolutionOf(decorations.byId[thread.root.id]?.resolutions ?? [], {
+      folder: thread.root.folder,
+      replies: thread.replies.map((reply) => reply.id),
+    })?.action === 'resolved'
   const edits: Record<string, EditFold> = {}
   for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit
 
   return {
     conversations,
     edits,
-    resolved: new Set(conversations.map((thread) => thread.root.id).filter(isResolved)),
+    resolved: new Set(conversations.filter(isResolved).map((thread) => thread.root.id)),
     besides,
   }
 }

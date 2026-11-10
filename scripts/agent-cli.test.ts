@@ -1350,6 +1350,15 @@ console.log('— move-project: what the relay is sent, and what the agent says (
       JSON.stringify(!(said instanceof Error) && said.with),
     )
   }
+  {
+    // TEA-9: half done, and the second move refused with a code the agent does not know.
+    const { said, sent } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', []), ...team(gamma, 'Gamma', [project])], true, 'invalid: frozen: the team is frozen until Monday')
+    check(
+      'half done with a code the agent does not know: says which team still lists it, never why or to run it again',
+      sent.length === 2 && !(said instanceof Error) && said.why === `Moved ${title} to Beta, but Gamma still lists it too.`,
+      String(said instanceof Error ? said.message : said.why),
+    )
+  }
 }
 
 console.log(failures === 0 ? '\nAll agent CLI checks passed.' : `\n${failures} failed.`)
