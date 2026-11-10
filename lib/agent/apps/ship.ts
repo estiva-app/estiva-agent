@@ -2817,10 +2817,17 @@ export const shipApp: AgentApp = {
                   ? 'you need to be a member of both teams to move it'
                   : stopped.why === 'changed-meanwhile'
                     ? 'the teams changed since they were read; run the same command again'
-                    : 'the move was not accepted; run the same command again'
+                    : stopped.why === 'not-home'
+                      ? 'it is in no team yet, so it can go only to the team it was started in, or to the Company team'
+                      : stopped.why === 'leaves-by-moving'
+                        ? 'a topic leaves a team only by moving; move it to another team instead'
+                        : stopped.why === 'unexplained'
+                          ? // A code the agent does not know: say only that it was not moved, never guess why or suggest again.
+                            undefined
+                          : 'the move was not accepted; run the same command again'
         if (stopped?.nothingMoved) {
           if (stopped.busy) throw refused(`moving “${project.title}” to ${name(to)}`, RELAY_BUSY_MESSAGE, 'It is where it was.')
-          throw new BadRequest(`“${project.title}” was not moved: ${why}.`)
+          throw new BadRequest(why ? `“${project.title}” was not moved: ${why}.` : `“${project.title}” was not moved.`)
         }
 
         // Half done: an earlier move landed. Only the first Folder not moved from was asked; the ones after it were not.
@@ -2831,7 +2838,7 @@ export const shipApp: AgentApp = {
           from: from.map((team) => ({ id: team.id, name: team.name })),
           to: { id: to.id, name: to.name },
           eventIds: moved.eventIds,
-          ...(refusing ? { why: `Moved “${project.title}” to ${name(to)}, but ${refusing} still lists it too: ${why}.` } : {}),
+          ...(refusing ? { why: `Moved “${project.title}” to ${name(to)}, but ${refusing} still lists it too${why ? `: ${why}` : ''}.` } : {}),
           // What was listed beneath it in the source — a topic started under it — and went with it.
           with: moved.moved
             .filter((address) => address !== project.addr)
