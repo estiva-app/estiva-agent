@@ -733,7 +733,7 @@ export function statusesFor(requested: string, vocab: Vocabulary): (issue: { sta
   // means the work is done.
   throw new BadRequest(
     `Unknown status "${requested}". Try: ${vocab.entries.map((s) => s.value).join(', ')}, ` +
-      `or "open" for ${OPEN_STATUSES.join(' and ')} and any other status not done or dropped.`,
+      `or "open" for ${OPEN_STATUSES.join(' and ')} and any other status that is not done or cancelled.`,
   )
 }
 

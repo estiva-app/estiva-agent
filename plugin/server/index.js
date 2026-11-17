@@ -25078,7 +25078,7 @@ function statusesFor(requested, vocab) {
   if (requested === "open") return (issue2) => issue2.stage !== "done" && issue2.stage !== "dropped";
   if (vocab.entries.some((entry) => entry.value === requested)) return (issue2) => issue2.status === requested;
   throw new BadRequest(
-    `Unknown status "${requested}". Try: ${vocab.entries.map((s) => s.value).join(", ")}, or "open" for ${OPEN_STATUSES2.join(" and ")} and any other status not done or dropped.`
+    `Unknown status "${requested}". Try: ${vocab.entries.map((s) => s.value).join(", ")}, or "open" for ${OPEN_STATUSES2.join(" and ")} and any other status that is not done or cancelled.`
   );
 }
 async function resolveIssueFor(context2, reference) {
