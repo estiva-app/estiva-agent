@@ -35,6 +35,7 @@ import {
   type ProjectionCache,
   type QueryFn,
   type ResolvedManifest,
+  type Stage,
 } from '@estiva-app/interop'
 import { byOrder, decorationsOf, KIND_CHANGE, trustedTs, type EditFold } from '@estiva-app/conversation'
 import { relayFileReadsOf, type ContentFormat, type RelayFileReads, type SignedEvent } from '@estiva-app/protocol'
@@ -70,6 +71,8 @@ export interface Project {
   descriptionFormat?: ContentFormat
   /** The raw vocabulary value, as `set-project-status` takes it. */
   status: string
+  /** What the status means, as every app counts it: the status slot's stage (EAC-3); absent for a word nothing reads. */
+  stage?: Stage
   lead?: string
   /** The prefix of its issues' refs (SHI-4, SPEC §6.1), when it has one yet. */
   key?: string
@@ -112,6 +115,8 @@ export interface Issue {
   /** The model `description` is written in (§13.4): a block document from Ship's editor, or marker text. */
   descriptionFormat?: ContentFormat
   status: string
+  /** As a project's: what the status means, as every app counts it (EAC-3). */
+  stage?: Stage
   assignee?: string
   /** Ship's display key — absent until Ship numbers an issue somebody else filed. */
   ref?: string
@@ -276,7 +281,7 @@ function rawStatus(object: ForeignObject, vocab: Vocabulary): string {
 
 const metaValue = (object: ForeignObject, field: string) => object.meta.find((slot) => slot.field === field)?.value || undefined
 
-const NO_FILE_READS: RelayFileReads = { list: false, text: false, switched: false, inOrder: [], search: [] }
+const NO_FILE_READS: RelayFileReads = { list: false, text: false, times: false, switched: false, inOrder: [], search: [] }
 const fileReads = new WeakMap<AgentContext, { at: number; reads: Promise<RelayFileReads> }>()
 /** How long a NIP-11 answer is trusted: an MCP server lives for days, and a relay makes the switch once. */
 const FILE_READS_FOR_MS = 10 * 60_000
@@ -516,6 +521,7 @@ function foldWorkspace(
       projects.push({
         ...base,
         status: rawStatus(object, vocabOf(root)),
+        ...(object.slots.status?.stage ? { stage: object.slots.status.stage } : {}),
         lead: metaValue(object, 'lead'),
         key: metaValue(object, 'key'),
         archived: Boolean(object.archived),
@@ -527,6 +533,7 @@ function foldWorkspace(
       issues.push({
         ...base,
         status: rawStatus(object, vocabOf(root)),
+        ...(object.slots.status?.stage ? { stage: object.slots.status.stage } : {}),
         assignee: metaValue(object, 'assignee'),
         ref: metaValue(object, 'ref'),
         projectAddr: object.parentRef || undefined,
