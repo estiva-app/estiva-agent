@@ -76,6 +76,8 @@ import {
   type MoveRefusalWhy,
   type QueryFn,
   type ResolvedManifest,
+  progressOfStages,
+  type Stage,
 } from '@estiva-app/interop'
 
 const NOT_HOME = 'it is in no team yet, so it can go only to the team it was started in, or to the Company team'
@@ -166,11 +168,22 @@ function summaryLine(summary: string | undefined): string {
   return summary ? `\n${' '.repeat(9)}${clip(summary, ROW_SUMMARY)}` : ''
 }
 
-export function projectRow(project: ReturnType<typeof projectSummary> & { issues: number }, vocab: Vocabulary): string {
+/**
+ * How far along a project is, as Ship and Peek's card count it: its issues
+ * done over every one not cancelled, by each one's stage (interop's
+ * `progressOfStages`). An issue archived on its own is not the project's to
+ * count; one archived with it still is (FOL-46).
+ */
+export function progressOfProject(project: { addr: string }, issues: readonly Pick<Issue, 'projectAddr' | 'stage' | 'archive'>[]): { done: number; total: number } {
+  return progressOfStages(issues.filter((issue) => issue.projectAddr === project.addr && (!issue.archive || issue.archive.with)).map((issue) => issue.stage))
+}
+
+export function projectRow(project: ReturnType<typeof projectSummary> & { issues: number; progress?: { done: number; total: number } }, vocab: Vocabulary): string {
   return [
     project.short,
     statusValue(vocab, project.status).padEnd(12),
     `${String(project.issues).padStart(3)} issues`,
+    ...(project.progress ? [`${`${project.progress.done}/${project.progress.total}`.padStart(5)} done`] : []),
     clip(project.title, ROW_TITLE) + (project.archived ? ' (archived)' : ''),
     project.lead ? `— ${project.lead}` : '',
   ].join(' ').trimEnd() + summaryLine(project.summary)
@@ -703,19 +716,24 @@ export function issueEdits(issue: Issue, args: ParsedArgs, projects: Project[], 
  * so the mapping belongs here rather than in whoever is asking.
  */
 const OPEN_STATUSES = ['todo', 'in_progress'] as const
-const STATUS_ALIASES: Record<string, readonly string[]> = { open: OPEN_STATUSES }
 
-export function statusesFor(requested: string, vocab: Vocabulary): readonly string[] {
-  const alias = STATUS_ALIASES[requested]
-  if (alias) return alias
-  if (vocab.entries.some((entry) => entry.value === requested)) return [requested]
+/**
+ * Which issues a `--status` asks for. `open` is decided by what each status
+ * means (EAC-3): its stage, as every app counts it, so a status no listing
+ * names is open unless its change says done or dropped, and one whose stage
+ * nothing reads counts as open, as Ship and interop count it.
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-companys-statuses-are-its-own-layer-of-a-types-properties.md
+ */
+export function statusesFor(requested: string, vocab: Vocabulary): (issue: { status: string; stage?: Stage }) => boolean {
+  if (requested === 'open') return (issue) => issue.stage !== 'done' && issue.stage !== 'dropped'
+  if (vocab.entries.some((entry) => entry.value === requested)) return (issue) => issue.status === requested
 
   // Refused rather than returned empty: "no issues" and "you asked for a status
   // that does not exist" look identical in an empty array, and only one of them
   // means the work is done.
   throw new BadRequest(
     `Unknown status "${requested}". Try: ${vocab.entries.map((s) => s.value).join(', ')}, ` +
-      `or "open" for ${OPEN_STATUSES.join(' and ')}.`,
+      `or "open" for ${OPEN_STATUSES.join(' and ')} and any other status not done or dropped.`,
   )
 }
 
@@ -2006,6 +2024,7 @@ export const shipApp: AgentApp = {
             // Counted here rather than in the summary so the shape stays the same
             // whether or not issues were loaded alongside.
             issues: state.issues.filter((issue) => issue.projectAddr === project.addr).length,
+            progress: progressOfProject(project, state.issues),
           })),
           /*
             The same argument `coverage` makes for issues, for the same reason.
@@ -2062,11 +2081,7 @@ export const shipApp: AgentApp = {
           const project = await findProjectIn(context, state.projects, wantedProject)
           issues = issues.filter((issue) => issue.projectAddr === project.addr)
         }
-        if (wantedStatuses) {
-          issues = issues.filter((issue) =>
-            wantedStatuses.includes(issue.status),
-          )
-        }
+        if (wantedStatuses) issues = issues.filter(wantedStatuses)
         // After the other filters, so the count says how many of *these* were left out.
         const archived = issues.filter((issue) => issue.archived).length
         if (!args.flags.archived) issues = issues.filter((issue) => !issue.archived)

@@ -17292,6 +17292,20 @@ function parsePublishResponse(status2, text2) {
   }
   return result;
 }
+function isFileTimes(value) {
+  const t = value;
+  return !!t && typeof t.a === "string" && typeof t.created_at === "number" && (t.h === null || typeof t.h === "string") && (t.under === void 0 || typeof t.under === "string") && Array.isArray(t.changes) && t.changes.every((c) => !!c && typeof c.id === "string" && typeof c.created_at === "number" && Array.isArray(c.fields) && c.fields.every((f) => typeof f === "string"));
+}
+function timesOf({ status: status2, text: text2 }) {
+  if (isRelayBusyResponse(status2, text2))
+    throw new RelayBusyError(status2);
+  const result = parseQueryResponse(status2, text2);
+  if (!result.ok)
+    throw new Error(`query failed: ${result.reason}`);
+  if (!result.times)
+    throw new Error("query failed: not a times answer");
+  return result.times;
+}
 function parseQueryResponse(status2, text2) {
   if (status2 < 200 || status2 >= 300) {
     let reason = text2.slice(0, 200);
@@ -17303,6 +17317,9 @@ function parseQueryResponse(status2, text2) {
   }
   try {
     const parsed = JSON.parse(text2);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray(parsed.times)) {
+      return { ok: true, events: [], times: parsed.times.filter(isFileTimes), httpStatus: status2 };
+    }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray(parsed.events)) {
       const matches = Array.isArray(parsed.matches) ? parsed.matches.filter(isSearchMatch) : [];
       return { ok: true, events: parsed.events, matches, httpStatus: status2 };
@@ -17327,7 +17344,8 @@ function relayFileReadsOf(info) {
     text: list?.newest === true && list.text === true,
     switched: !!files,
     inOrder: strings(files?.requires_prev),
-    search: strings(obj(doc3.file_search)?.types)
+    search: strings(obj(doc3.file_search)?.types),
+    times: list?.newest === true && list.times === true
   };
 }
 var RELAY_BUSY_MESSAGE = "the relay is busy, try again in a moment";
@@ -17489,6 +17507,70 @@ function byMatch(filters) {
 function discriminate(filters) {
   return byFolder(filters) ?? byKind(filters) ?? byMatch(filters);
 }
+var runsBefore = (a, b) => a.created_at > b.created_at || a.created_at === b.created_at && a.id < b.id;
+var MAX_POSITION_SPLIT = 25e4;
+function runsByPosition(filters, events, pageSize) {
+  if (filters.some((filter) => "#h" in filter))
+    return null;
+  const matchers = filters.map(matcherOf);
+  if (matchers.some((matcher) => matcher === null))
+    return null;
+  const n = events.length;
+  if (n * filters.length > MAX_POSITION_SPLIT)
+    return null;
+  const matches = matchers.map((matcher) => events.map((event) => matcher(event)));
+  const reach = matches.map((matched) => {
+    const out = new Array(n + 1).fill(n);
+    for (let p = n - 1; p >= 0; p--) {
+      if (!matched[p])
+        out[p] = p;
+      else
+        out[p] = p + 1 < n && matched[p + 1] && runsBefore(events[p], events[p + 1]) ? out[p + 1] : p + 1;
+    }
+    return out;
+  });
+  const ranks = matches.map((matched) => {
+    const distinct = /* @__PURE__ */ new Map();
+    for (const [k, event] of events.entries())
+      if (matched[k])
+        distinct.set(event.id, event);
+    const ordered = [...distinct.values()].sort((a, b) => runsBefore(a, b) ? -1 : 1);
+    return new Map(ordered.map((event, rank) => [event.id, rank]));
+  });
+  let ways = /* @__PURE__ */ new Map([[0, 1]]);
+  const starts = [];
+  let steps = 0;
+  for (let i = 0; i < filters.length; i++) {
+    const next = /* @__PURE__ */ new Map();
+    const start = /* @__PURE__ */ new Map();
+    const reached = (q, p, count) => {
+      if (!start.has(q))
+        start.set(q, p);
+      next.set(q, Math.min(2, (next.get(q) ?? 0) + count));
+    };
+    for (const [p, count] of ways) {
+      if (ranks[i].size === 0)
+        reached(p, p, count);
+      for (let q = p + 1; q <= reach[i][p]; q++) {
+        if (++steps > MAX_POSITION_SPLIT)
+          return null;
+        if (ranks[i].get(events[q - 1].id) === q - p - 1)
+          reached(q, p, count);
+      }
+    }
+    starts.push(start);
+    ways = next;
+  }
+  if (ways.get(n) !== 1)
+    return null;
+  const runs = new Array(filters.length);
+  for (let i = filters.length - 1, q = n; i >= 0; i--) {
+    const p = starts[i].get(q);
+    runs[i] = events.slice(p, q);
+    q = p;
+  }
+  return runs.every((run) => run.length <= pageSize) ? runs : null;
+}
 function splitRuns(count, events, which) {
   const runs = Array.from({ length: count }, () => []);
   for (const event of events) {
@@ -17583,6 +17665,14 @@ var Relay = class {
     if (!result.ok)
       throw new Error(`query failed: ${result.reason}`);
     return { events: result.events, matches: result.matches ?? [] };
+  }
+  /**
+   * The times read (SPEC §6.13, `"fields": "times"`; NIP-11 `file_list.times`,
+   * {@link relayFileReadsOf}): each filter must say `"fields": "times"`. Never
+   * sent to a relay that does not advertise it.
+   */
+  async queryTimes(filters) {
+    return timesOf(await this.post("/query", filters));
   }
   /**
    * The relay's NIP-11 document, read from its own address. Unauthenticated:
@@ -17702,7 +17792,13 @@ var Relay = class {
    *    bound either, so none was clamped. Weaker, and it cannot fire on a cold
    *    `Relay` that has no evidence yet — deliberately, per SHA-15.
    *
-   * When neither applies the chunk is simply left unresolved: one request is
+   * 3. **By position**, when no discriminator applies but the filters are
+   *    plain NIP-01: the answer is cut into its runs where exactly one cut
+   *    fits ({@link runsByPosition}), and those runs are settled or seeded as
+   *    the first way's are. Tried before the total, since a run's own length
+   *    is better evidence than the sum.
+   *
+   * When none applies the chunk is simply left unresolved: one request is
    * spent and the old path runs, which is a cost in requests and never in
    * correctness.
    */
@@ -17715,7 +17811,7 @@ var Relay = class {
       if (!which && this.observedPageCeiling === 0)
         continue;
       const events = await this.query(indices.map((i) => ({ ...filters[i], limit: pageSize })));
-      const runs = which ? splitRuns(indices.length, events, which) : null;
+      const runs = which ? splitRuns(indices.length, events, which) : runsByPosition(indices.map((i) => filters[i]), events, pageSize);
       if (runs) {
         for (const run of runs) {
           if (run.length > this.observedPageCeiling)
@@ -19228,7 +19324,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.32.0",
+  version: "0.33.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -20969,6 +21065,7 @@ function foldRuleOf(manifest) {
 }
 var BODY_SLOT = "body";
 var SUBTITLE_SLOT = "subtitle";
+var STATUS_SLOT = "status";
 function targetFolders(root) {
   if (!root)
     return void 0;
@@ -20999,16 +21096,21 @@ function foldChanges(changes, rule, root) {
         continue;
       if (field === DELETED_FIELD && !folders)
         continue;
+      const stage = value === "" ? void 0 : stageTagOf(change, field);
       fields[field] = {
         value,
         by: change.pubkey,
         at: change.created_at,
         format: contentFormatOf(change),
-        id: change.id
+        id: change.id,
+        ...stage ? { stage } : {}
       };
     }
   }
   return fields;
+}
+function stageTagOf(event, field) {
+  return asStage(event.tags.find((t) => t[0] === "stage" && t[1] === field)?.[2]);
 }
 function settingsOf(change, rule) {
   const sets = change.tags.filter((t) => t[0] === "set" && t[1] && typeof t[2] === "string");
@@ -21096,10 +21198,11 @@ function rawSlotValue(spec, root, folded, isBody) {
   if (spec.fold) {
     const change = folded[spec.fold];
     if (change)
-      return { value: change.value, format: isBody ? change.format ?? "marker" : void 0 };
+      return { value: change.value, format: isBody ? change.format ?? "marker" : void 0, ...change.stage ? { stage: change.stage } : {} };
     const seedTag = firstTag(root, spec.tag);
+    const rootStage = stageTagOf(root, spec.fold);
     if (seedTag !== void 0)
-      return { value: seedTag, format: isBody ? contentFormatOf(root) : void 0 };
+      return { value: seedTag, format: isBody ? contentFormatOf(root) : void 0, ...rootStage ? { stage: rootStage } : {} };
     if (spec.field === "content" && root.content !== "") {
       return { value: root.content, format: contentFormatOf(root) };
     }
@@ -21111,7 +21214,9 @@ function rawSlotValue(spec, root, folded, isBody) {
     const value = firstTag(root, spec.tag);
     if (value === void 0)
       return void 0;
-    return { value, format: isBody ? contentFormatOf(root) : void 0 };
+    const read = (Array.isArray(spec.tag) ? spec.tag : [spec.tag]).find((name) => firstTag(root, name) !== void 0);
+    const rootStage = read ? stageTagOf(root, read) : void 0;
+    return { value, format: isBody ? contentFormatOf(root) : void 0, ...rootStage ? { stage: rootStage } : {} };
   }
   if (spec.field === "content")
     return { value: root.content, format: contentFormatOf(root) };
@@ -21135,14 +21240,17 @@ function resolveSlot(spec, root, folded, manifest, name) {
   if (spec.map) {
     const entry = manifest.vocabularies?.[spec.map]?.find((v) => v.value === raw);
     value = entry?.label ?? raw;
-    colour = entry?.colour ?? "muted";
+    colour = entry?.colour ?? "neutral";
   }
+  const field = spec.fold ?? (Array.isArray(spec.tag) ? spec.tag[0] : spec.tag);
+  const stage = name === STATUS_SLOT ? stageOf(root.kind, field, spec, manifest, raw, value, source.stage) : void 0;
   return {
     label: spec.label,
     value,
     colour,
     isPubkey: spec.as === "pubkey",
-    field: spec.fold ?? (Array.isArray(spec.tag) ? spec.tag[0] : spec.tag),
+    field,
+    ...stage ? { stage } : {},
     // Present only on a slot that can carry a body. Absent is the honest shape
     // for a title read from a tag — and it keeps the key out of every existing
     // consumer's deep comparisons, which is not the reason but is a real cost
@@ -21192,6 +21300,13 @@ function resolveSlots(projection, root, folded, manifest) {
 function changedAtOf(root, folded) {
   return Math.max(root.created_at, ...Object.values(folded).map((f) => f.at ?? 0));
 }
+function changedByOf(root, folded) {
+  let newest = { at: root.created_at, by: root.pubkey };
+  for (const f of Object.values(folded))
+    if (f.by && (f.at ?? 0) > newest.at)
+      newest = { at: f.at, by: f.by };
+  return newest.by;
+}
 function buildObject(args2) {
   const { root, pointer, manifest, projection, folded } = args2;
   const naddr = encodeNaddr(pointer);
@@ -21225,6 +21340,7 @@ function buildObject(args2) {
     viaRecommendation: args2.viaRecommendation,
     ...args2.archived ? { archived: args2.archived } : {},
     changedAt: changedAtOf(root, folded),
+    changedBy: changedByOf(root, folded),
     ...Object.keys(prevs).length ? { prevs } : {},
     ...deleted?.value === "true" && deleted.by ? { deleted: { by: deleted.by, at: deleted.at ?? root.created_at } } : {}
   };
@@ -21469,7 +21585,8 @@ async function queryChunked(filters, query) {
   for (let start = 0; start < filters.length; start += MAX_FILTERS_PER_QUERY) {
     chunks.push(filters.slice(start, start + MAX_FILTERS_PER_QUERY));
   }
-  return (await Promise.all(chunks.map((chunk) => query(chunk)))).flat();
+  const seen = /* @__PURE__ */ new Set();
+  return (await Promise.all(chunks.map((chunk) => query(chunk)))).flat().filter((e) => !seen.has(e.id) && !!seen.add(e.id));
 }
 function addressPointerOf(reference) {
   try {
@@ -21505,7 +21622,7 @@ function planObject(naddr, pointer, resolved, depth, openRead) {
   ];
   return { naddr, pointer, address, resolved, projection, records, commentKinds, childFilter, filters, opened, history, openUrl };
 }
-async function openedEvents(plans, query) {
+async function openedEvents(plans, query, text2 = true) {
   const opened = /* @__PURE__ */ new Map();
   for (const plan of plans)
     if (plan.opened)
@@ -21523,7 +21640,7 @@ async function openedEvents(plans, query) {
   for (const { kind, pubkey, identifiers } of groups.values()) {
     for (let start = 0; start < identifiers.length; start += RELAY_PAGE_CEILING) {
       const chunk = identifiers.slice(start, start + RELAY_PAGE_CEILING);
-      filters.push({ fields: "newest", kinds: [kind], authors: [pubkey], "#d": chunk, limit: chunk.length, text: true });
+      filters.push({ fields: "newest", kinds: [kind], authors: [pubkey], "#d": chunk, limit: chunk.length, ...text2 ? { text: true } : {} });
     }
   }
   const answered = await queryChunked(filters, query);
@@ -21591,7 +21708,8 @@ function peopleOf({ object: object3, children }) {
   return [...new Set([object3, ...children ?? []].flatMap(pubkeysIn))];
 }
 function withPeople({ object: object3, children }, people) {
-  return { ...object3, people, ...children ? { children: children.map((c) => ({ ...c, people })) } : {} };
+  const progress = children && progressOf(children);
+  return { ...object3, people, ...children ? { children: children.map((c) => ({ ...c, people })) } : {}, ...progress ? { progress } : {} };
 }
 function declaredChildSpec(projection) {
   const spec = projection.slots.list;
@@ -21833,6 +21951,7 @@ function buildChildObject(args2) {
     actions: addressable && !nevent && ownsKind ? actionsOfFile(manifest, projection, root, folded) : [],
     viaRecommendation,
     changedAt: changedAtOf(root, folded),
+    changedBy: changedByOf(root, folded),
     ...archived ? { archived } : {}
   };
 }
@@ -21859,8 +21978,43 @@ var inSet = (set) => (raw, label) => [raw, label].some((v) => v !== void 0 && se
 var isOpenStatusByLabel = inSet(OPEN_STATUSES);
 var isDoneStatusByLabel = inSet(DONE_STATUSES);
 var STAGES = /* @__PURE__ */ new Set(["open", "started", "done", "dropped"]);
+var asStage = (value) => value !== void 0 && STAGES.has(value) ? value : void 0;
+var DIRECTORY_STAGES = {
+  30850: { status: { planned: "open", in_progress: "started", completed: "done", cancelled: "dropped" } },
+  30851: { status: { todo: "open", in_progress: "started", done: "done", cancelled: "dropped" } }
+};
+var DROPPED_STATUSES = /* @__PURE__ */ new Set(["cancelled", "canceled", "duplicate"]);
 var STARTED = /* @__PURE__ */ new Set(["in progress", "started", "doing", "in review", "review"]);
+var isDroppedByLabel = inSet(DROPPED_STATUSES);
 var isStartedByLabel = inSet(STARTED);
+function stageByWords(raw, label) {
+  if (isDroppedByLabel(raw, label))
+    return "dropped";
+  if (isDoneStatusByLabel(raw, label))
+    return "done";
+  if (isStartedByLabel(raw, label))
+    return "started";
+  if (isOpenStatusByLabel(raw, label))
+    return "open";
+  return void 0;
+}
+function stageOf(kind, field, spec, manifest, raw, label, written) {
+  const directory = field !== void 0 ? DIRECTORY_STAGES[kind]?.[field] : void 0;
+  const staged = directory !== void 0 || spec.map !== void 0 && (manifest.vocabularies?.[spec.map] ?? []).some((v) => asStage(v.stage));
+  if (staged && written)
+    return written;
+  if (directory?.[raw])
+    return directory[raw];
+  return stageByWords(raw, label);
+}
+function progressOfStages(stages) {
+  return { done: stages.filter((stage) => stage === "done").length, total: stages.filter((stage) => stage !== "dropped").length };
+}
+function progressOf(children) {
+  if (!children.length || children.some((child) => !child.slots.status))
+    return void 0;
+  return progressOfStages(children.map((child) => child.slots.status?.stage));
+}
 var MAX_LIST_DEPTH2 = 1;
 var isAddressableKind = (kind) => kind >= 3e4 && kind < 4e4;
 var PLACEMENTS = ["h", "buzz-channel"];
@@ -22158,6 +22312,23 @@ function folderAdminsOf(admins, channel) {
     ...new Set(admins.tags.filter((tag) => tag[0] === "p" && tag[1] && tag.slice(2).some((role) => FOLDER_ADMIN_ROLES.has(role))).map((tag) => tag[1]))
   ];
 }
+var KIND_RELAY_MEMBERS = 13534;
+var RELAY_MEMBERS_FILTER = { kinds: [KIND_RELAY_MEMBERS], limit: 1 };
+function workspaceAdminsOf(events, relay) {
+  const roster = events.filter((event) => event.kind === KIND_RELAY_MEMBERS && event.pubkey === relay).sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id))[0];
+  if (!roster)
+    return [];
+  return roster.tags.filter((tag) => tag[0] === "member" && tag[1] && FOLDER_ADMIN_ROLES.has(tag[2] ?? "")).map((tag) => tag[1]);
+}
+function teamStewardsOf(admins, channel, events, isTeam) {
+  const own = folderAdminsOf(admins, channel);
+  if (!isTeam || !admins || !channel || admins.pubkey !== channel.pubkey)
+    return own;
+  if (channel.tags.some((tag) => tag[0] === "t" && tag[1] === "dm"))
+    return own;
+  const hasOwner = admins.tags.some((tag) => tag[0] === "p" && tag[1] && tag.slice(2).includes("owner"));
+  return hasOwner ? own : [.../* @__PURE__ */ new Set([...own, ...workspaceAdminsOf(events, channel.pubkey)])];
+}
 function folderArchiveOf(changes, folder) {
   return folder.channel ? archiveOf(changes, folder.channel, ARCHIVE_RULE, void 0, new Set(folder.admins ?? [])) : void 0;
 }
@@ -22207,7 +22378,9 @@ async function readFolderRecords(query) {
   const events = await query([
     { kinds: [KIND_FOLDER_STATE], limit: 500 },
     { kinds: [KIND_CHANNEL], limit: 500 },
-    { kinds: [KIND_CHANNEL_ADMINS], limit: 500 }
+    { kinds: [KIND_CHANNEL_ADMINS], limit: 500 },
+    // Who looks after a team with no owner (FolderSummary.admins). Same request.
+    RELAY_MEMBERS_FILTER
   ]);
   const byId2 = /* @__PURE__ */ new Map();
   const channelOf = /* @__PURE__ */ new Map();
@@ -22243,7 +22416,7 @@ async function readFolderRecords(query) {
       folder.private = true;
     if (channel.tags.some((tag) => tag[0] === "company"))
       folder.company = true;
-    const admins = folderAdminsOf(adminsOf.get(id), channel);
+    const admins = teamStewardsOf(adminsOf.get(id), channel, events, folder.hasState);
     if (admins.length)
       folder.admins = admins;
     folder.channel = pointerToAddress({ kind: KIND_CHANNEL, pubkey: channel.pubkey, identifier: id, relays: [] });
@@ -22352,11 +22525,14 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
   const identity = await query([
     { kinds: [KIND_FOLDER_STATE], "#d": [folder], limit: 1 },
     { kinds: [KIND_CHANNEL], "#d": [folder], limit: 1 },
-    { kinds: [KIND_CHANNEL_ADMINS], "#d": [folder], limit: 1 }
+    { kinds: [KIND_CHANNEL_ADMINS], "#d": [folder], limit: 1 },
+    // Who looks after it, and every team it lists, when one has no owner. Same request.
+    RELAY_MEMBERS_FILTER
   ]);
   const state = identity.find((e) => e.kind === KIND_FOLDER_STATE && tagValue2(e, "d") === folder);
   const channel = identity.find((e) => e.kind === KIND_CHANNEL && tagValue2(e, "d") === folder);
-  const admins = folderAdminsOf(identity.find((e) => e.kind === KIND_CHANNEL_ADMINS && tagValue2(e, "d") === folder), channel);
+  const roster = identity.filter((e) => e.kind === KIND_RELAY_MEMBERS);
+  const admins = teamStewardsOf(identity.find((e) => e.kind === KIND_CHANNEL_ADMINS && tagValue2(e, "d") === folder), channel, roster, state !== void 0);
   const channelAddress = channel ? pointerToAddress({ kind: KIND_CHANNEL, pubkey: channel.pubkey, identifier: folder, relays: [] }) : void 0;
   const summary = {
     id: folder,
@@ -22431,7 +22607,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
       // Every change, in groups small enough that a busy Folder's changes cannot
       // push one file's off the page — one Folder has already had 688. Same request.
       ...archiveFilters(channelAddress ? [...changesAsked, channelAddress] : changesAsked),
-      // A Folder listed here counts its archive only from its own admins (§3.2). Same request.
+      // A Folder listed here counts its archive only from who looks after it (§3.2). Same request.
       ...nestedFolderIds.length ? [{ kinds: [KIND_CHANNEL_ADMINS], "#d": nestedFolderIds, limit: nestedFolderIds.length }] : []
     ], query),
     queryChunked(rootFilters.filter((filter) => "fields" in filter), query)
@@ -22459,7 +22635,13 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
     if (byFields(pointer.kind)) {
       folded.description = { value: "", by: root.pubkey, at: root.created_at, format: "marker", id: "" };
     }
-    const nestedAdmins = pointer.kind === KIND_CHANNEL ? new Set(folderAdminsOf(events.find((e) => e.kind === KIND_CHANNEL_ADMINS && tagValue2(e, "d") === pointer.identifier), root)) : void 0;
+    const nestedAdmins = pointer.kind === KIND_CHANNEL ? new Set(teamStewardsOf(
+      events.find((e) => e.kind === KIND_CHANNEL_ADMINS && tagValue2(e, "d") === pointer.identifier),
+      root,
+      roster,
+      // A team listed in this one; a DM listed here is still never looked after.
+      true
+    )) : void 0;
     const archive = archiveOf(events, address, archiveRuleOf(resolved.manifest), root, nestedAdmins);
     archiveByAddress.set(address, archive);
     const parent = parentRefOf(resolved.manifest, pointer.kind, root, folded);
@@ -22654,6 +22836,30 @@ function wholeKindsOf(filter, paged) {
     return null;
   return { kinds, limit: limit ?? RELAY_PAGE_CEILING };
 }
+function listReadOf(filter) {
+  const { kinds, authors, limit, fields, text: text2, ...rest } = filter;
+  const ds = rest["#d"];
+  if (Object.keys(rest).length !== 1 || fields !== "newest" || text2 !== void 0 && text2 !== true)
+    return null;
+  if (!Array.isArray(kinds) || kinds.length !== 1 || typeof kinds[0] !== "number")
+    return null;
+  if (!Array.isArray(authors) || authors.length !== 1 || typeof authors[0] !== "string")
+    return null;
+  if (!Array.isArray(ds) || ds.length === 0 || !ds.every((d) => typeof d === "string"))
+    return null;
+  const files = new Set(ds).size;
+  if (typeof limit !== "number" || limit < files || files > RELAY_PAGE_CEILING)
+    return null;
+  return { kind: kinds[0], author: authors[0], ds, text: text2 === true };
+}
+function fileOf(read, d, answer) {
+  const address = `${read.kind}:${read.author}:${d}`;
+  return answer.filter((event) => {
+    if (event.kind === read.kind && event.pubkey === read.author)
+      return event.tags.find((tag) => tag[0] === "d")?.[1] === d;
+    return event.tags.find((tag) => tag[0] === "a")?.[1] === address;
+  });
+}
 var WHOLE_READ_TAGS = /* @__PURE__ */ new Set(["a", "e"]);
 var indexes = /* @__PURE__ */ new WeakMap();
 function naming(events, tag, value) {
@@ -22704,6 +22910,8 @@ function createLoadQuery(query, options = {}) {
   const answers = (held, limit) => !!held && (paged || held.limit <= limit);
   const known = /* @__PURE__ */ new Map();
   const wholes = /* @__PURE__ */ new Map();
+  const files = /* @__PURE__ */ new Map();
+  const fileKey = (read, d) => `${read.text ? "text" : "list"}:${read.kind}:${read.author}:${d}`;
   const flights = /* @__PURE__ */ new Map();
   const remember = (memo, key, entry) => {
     if ((memo.get(key)?.limit ?? -1) > entry.limit)
@@ -22730,7 +22938,29 @@ function createLoadQuery(query, options = {}) {
     const askedWhole = [];
     const joined = [];
     const joinedByTag = [];
+    const askedFiles = [];
+    const joinedFiles = /* @__PURE__ */ new Set();
+    const askedHere = /* @__PURE__ */ new Set();
     for (const filter of filters) {
+      const list = listReadOf(filter);
+      if (list) {
+        const fresh2 = [];
+        for (const d of new Set(list.ds)) {
+          const key = fileKey(list, d);
+          const held = files.get(key);
+          if (held)
+            joinedFiles.add(held);
+          else if (!askedHere.has(key)) {
+            askedHere.add(key);
+            fresh2.push(d);
+          }
+        }
+        if (fresh2.length === 0)
+          continue;
+        send.push({ ...filter, "#d": fresh2, limit: fresh2.length });
+        askedFiles.push({ ...list, ds: fresh2 });
+        continue;
+      }
       const whole = wholeKindsOf(filter, paged);
       if (whole) {
         const held = whole.kinds.map((kind) => wholes.get(kind));
@@ -22766,6 +22996,14 @@ function createLoadQuery(query, options = {}) {
       asked.push({ ...shape, values: fresh });
     }
     const answer = send.length ? ask(send) : Promise.resolve([]);
+    for (const read of askedFiles) {
+      for (const d of read.ds) {
+        const key = fileKey(read, d);
+        const entry = answer.then((events) => fileOf(read, d, events));
+        files.set(key, entry);
+        entry.catch(() => files.get(key) === entry && files.delete(key));
+      }
+    }
     for (const shape of askedWhole) {
       const split = answer.then((events) => completeWhole(shape, events, paged));
       for (const kind of shape.kinds) {
@@ -22779,6 +23017,8 @@ function createLoadQuery(query, options = {}) {
       }
     }
     const out = [...await answer];
+    for (const entry of joinedFiles)
+      out.push(...await entry);
     const again = [];
     for (const { again: filter, entry } of joined) {
       const events = await entry;
@@ -24035,10 +24275,10 @@ function findThread(threads, reference) {
 
 // lib/agent/mentions.ts
 async function relayMembers(context2) {
-  const [list] = await context2.relay.queryAll([{ kinds: [KIND_RELAY_MEMBERS], limit: 1 }]);
+  const [list] = await context2.relay.queryAll([{ kinds: [KIND_RELAY_MEMBERS2], limit: 1 }]);
   return list ? list.tags.filter((tag) => tag[0] === "member" && tag[1]).map((tag) => tag[1]) : [];
 }
-var KIND_RELAY_MEMBERS = 13534;
+var KIND_RELAY_MEMBERS2 = 13534;
 var HEX_KEY = /^[0-9a-f]{64}$/i;
 var HANDLE = /^[a-z0-9._-]+$/i;
 var nip05Lookup = async (domain, name) => {
@@ -24265,7 +24505,7 @@ function rawStatus(object3, vocab) {
   return vocab.entries.find((entry) => entry.label === shown)?.value ?? shown;
 }
 var metaValue = (object3, field) => object3.meta.find((slot) => slot.field === field)?.value || void 0;
-var NO_FILE_READS = { list: false, text: false, switched: false, inOrder: [], search: [] };
+var NO_FILE_READS = { list: false, text: false, times: false, switched: false, inOrder: [], search: [] };
 var fileReads = /* @__PURE__ */ new WeakMap();
 var FILE_READS_FOR_MS = 10 * 6e4;
 function fileReadsFor(context2) {
@@ -24371,7 +24611,7 @@ function changeKindsOf(manifests) {
   ];
 }
 function foldWorkspace(roots, read, manifests, cache, byFields) {
-  const fileOf = new Map(byFields?.files.map((file) => [file.address, file]));
+  const fileOf2 = new Map(byFields?.files.map((file) => [file.address, file]));
   const manifestOf = manifests.of;
   const shipKind = (target) => target !== void 0 && (target.startsWith(`${KIND2.PROJECT}:`) || target.startsWith(`${KIND2.ISSUE}:`));
   const changes = read.filter((event) => shipKind(tagValue4(event, "a")));
@@ -24394,7 +24634,7 @@ function foldWorkspace(roots, read, manifests, cache, byFields) {
   const issues = [];
   for (const [addr2, object3] of objects) {
     const root = rootOf2.get(addr2);
-    const file = fileOf.get(addr2);
+    const file = fileOf2.get(addr2);
     const base = {
       addr: addr2,
       id: pointerOf2(addr2).identifier,
@@ -24417,6 +24657,7 @@ function foldWorkspace(roots, read, manifests, cache, byFields) {
       projects.push({
         ...base,
         status: rawStatus(object3, vocabOf(root)),
+        ...object3.slots.status?.stage ? { stage: object3.slots.status.stage } : {},
         lead: metaValue(object3, "lead"),
         key: metaValue(object3, "key"),
         archived: Boolean(object3.archived),
@@ -24428,6 +24669,7 @@ function foldWorkspace(roots, read, manifests, cache, byFields) {
       issues.push({
         ...base,
         status: rawStatus(object3, vocabOf(root)),
+        ...object3.slots.status?.stage ? { stage: object3.slots.status.stage } : {},
         assignee: metaValue(object3, "assignee"),
         ref: metaValue(object3, "ref"),
         projectAddr: object3.parentRef || void 0,
@@ -24564,11 +24806,15 @@ function summaryLine(summary) {
   return summary ? `
 ${" ".repeat(9)}${clip(summary, ROW_SUMMARY)}` : "";
 }
+function progressOfProject(project, issues) {
+  return progressOfStages(issues.filter((issue2) => issue2.projectAddr === project.addr && (!issue2.archive || issue2.archive.with)).map((issue2) => issue2.stage));
+}
 function projectRow(project, vocab) {
   return [
     project.short,
     statusValue(vocab, project.status).padEnd(12),
     `${String(project.issues).padStart(3)} issues`,
+    ...project.progress ? [`${`${project.progress.done}/${project.progress.total}`.padStart(5)} done`] : [],
     clip(project.title, ROW_TITLE) + (project.archived ? " (archived)" : ""),
     project.lead ? `\u2014 ${project.lead}` : ""
   ].join(" ").trimEnd() + summaryLine(project.summary);
@@ -24828,13 +25074,11 @@ function issueEdits(issue2, args2, projects, files) {
   return edits;
 }
 var OPEN_STATUSES2 = ["todo", "in_progress"];
-var STATUS_ALIASES = { open: OPEN_STATUSES2 };
 function statusesFor(requested, vocab) {
-  const alias = STATUS_ALIASES[requested];
-  if (alias) return alias;
-  if (vocab.entries.some((entry) => entry.value === requested)) return [requested];
+  if (requested === "open") return (issue2) => issue2.stage !== "done" && issue2.stage !== "dropped";
+  if (vocab.entries.some((entry) => entry.value === requested)) return (issue2) => issue2.status === requested;
   throw new BadRequest(
-    `Unknown status "${requested}". Try: ${vocab.entries.map((s) => s.value).join(", ")}, or "open" for ${OPEN_STATUSES2.join(" and ")}.`
+    `Unknown status "${requested}". Try: ${vocab.entries.map((s) => s.value).join(", ")}, or "open" for ${OPEN_STATUSES2.join(" and ")} and any other status not done or dropped.`
   );
 }
 async function resolveIssueFor(context2, reference) {
@@ -25583,7 +25827,8 @@ var shipApp = {
             ...projectSummary(project, directory, state.vocab.project),
             // Counted here rather than in the summary so the shape stays the same
             // whether or not issues were loaded alongside.
-            issues: state.issues.filter((issue2) => issue2.projectAddr === project.addr).length
+            issues: state.issues.filter((issue2) => issue2.projectAddr === project.addr).length,
+            progress: progressOfProject(project, state.issues)
           })),
           /*
                       The same argument `coverage` makes for issues, for the same reason.
@@ -25632,11 +25877,7 @@ var shipApp = {
           const project = await findProjectIn(context2, state.projects, wantedProject);
           issues = issues.filter((issue2) => issue2.projectAddr === project.addr);
         }
-        if (wantedStatuses) {
-          issues = issues.filter(
-            (issue2) => wantedStatuses.includes(issue2.status)
-          );
-        }
+        if (wantedStatuses) issues = issues.filter(wantedStatuses);
         const archived = issues.filter((issue2) => issue2.archived).length;
         if (!args2.flags.archived) issues = issues.filter((issue2) => !issue2.archived);
         const directory = await directoryFor(

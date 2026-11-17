@@ -18,6 +18,7 @@ import { isWslKernel, parseGitHead, refuseUnsignable, runtimeSource } from '../l
 import { mayPublish } from '../lib/agent/credentials'
 import { loadCredentials } from '../lib/agent/credentials'
 import { archivable, archivedRemoved, assigneeFor, clip, findIssue, findProject, issueEdits, issueLine, issueRow, moveFile, participants, parseSince, projectEdits, projectRow, pullRequestOn, resolvePubkeys, shipApp, statusesFor } from '../lib/agent/apps/ship'
+import * as shipModule from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
 import { cascadeArchives, type Issue, type Project, type Vocabulary } from '../lib/agent/apps/ship-workspace'
 import { buildActionEvent, buildActionEvents, topLevelFolders, type FolderSummary } from '@estiva-app/interop'
@@ -313,8 +314,41 @@ console.log('\n— what "open" means —')
   what was asked — so the alias exists to stop the most natural question having
   the narrowest answer.
 */
-check('open covers todo and in_progress', statusesFor('open', ISSUE_VOCAB).join(',') === 'todo,in_progress')
-check('a real status stays itself', statusesFor('done', ISSUE_VOCAB).join(',') === 'done')
+/*
+  Since EAC-3 `open` goes by what each status means, its stage, as Ship and
+  every app count it: a status no listing names is open unless its change
+  says done or dropped, and one whose stage nothing reads is open too.
+*/
+type Wanted = ((issue: { status: string; stage?: string }) => boolean) | readonly string[]
+const kept = (wanted: Wanted, issues: { status: string; stage?: string }[]) =>
+  issues.filter((issue) => (typeof wanted === 'function' ? wanted(issue) : wanted.includes(issue.status))).map((issue) => issue.status)
+const STAGED = [
+  { status: 'todo', stage: 'open' },
+  { status: 'in_progress', stage: 'started' },
+  { status: 'done', stage: 'done' },
+  { status: 'cancelled', stage: 'dropped' },
+  { status: 'blocked', stage: 'started' },
+  { status: 'shipped', stage: 'done' },
+  { status: 'waiting' },
+]
+check('open keeps todo, in progress, and a status no listing names unless its change says done or dropped (EAC-3)', kept(statusesFor('open', ISSUE_VOCAB) as Wanted, STAGED).join(',') === 'todo,in_progress,blocked,waiting')
+check('a real status stays itself', kept(statusesFor('done', ISSUE_VOCAB) as Wanted, STAGED).join(',') === 'done')
+
+/* A project's progress in `ship projects`, as Ship counts it (EAC-3): done over every issue not dropped, by stage. */
+const P = '30850:x:p'
+const progressIssues = [
+  { projectAddr: P, stage: 'done' },
+  { projectAddr: P, stage: 'started' },
+  { projectAddr: P, stage: 'dropped' },
+  { projectAddr: P },
+  { projectAddr: P, stage: 'done', archive: { at: 1, with: P } },
+  { projectAddr: P, stage: 'done', archive: { at: 1 } },
+  { projectAddr: '30850:x:other', stage: 'done' },
+]
+const counted = (shipModule as { progressOfProject?: (p: { addr: string }, i: unknown[]) => { done: number; total: number } }).progressOfProject?.({ addr: P }, progressIssues)
+check('a project counts its issues done over all but the dropped, one archived with it in and one archived on its own out (EAC-3)', JSON.stringify(counted) === JSON.stringify({ done: 2, total: 4 }), JSON.stringify(counted))
+const progressRow = projectRow({ ref: 'x', short: '94a7be2c', title: 'Probe', status: 'Planned', folder: 'f', issues: 4, progress: { done: 1, total: 3 } } as never, PROJECT_VOCAB)
+check('ship projects prints each project’s done of all but the cancelled (EAC-3)', progressRow.includes('4 issues   1/3 done'), progressRow)
 refuses('an unknown status is refused', () => statusesFor('wibble', ISSUE_VOCAB), 'Unknown status')
 refuses('and the refusal mentions open', () => statusesFor('wibble', ISSUE_VOCAB), 'open')
 
