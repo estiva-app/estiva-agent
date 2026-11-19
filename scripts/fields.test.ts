@@ -18,126 +18,14 @@
  * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-file-is-its-fields-each-kept-in-order-by-the-relay.md
  * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/merging-two-changes-to-one-text-never-loses-words.md
  */
-import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { fieldsSetBy, filesOf } from '@estiva-app/interop'
 import type { SignedEvent } from '@estiva-app/protocol'
-import type { AgentContext } from '../lib/agent/cli'
-import { shipApp } from '../lib/agent/apps/ship'
+import { QA1, SELF, FOLDER, addressOf, check, doc, fieldChange, finish, mine, relay, run, signed, tag, textChange } from './fields-relay'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const manifest = JSON.parse(readFileSync(join(here, '..', 'conformance', 'ship-manifest.json'), 'utf8')) as { event: SignedEvent }
-
-let failures = 0
-function check(label: string, condition: boolean, detail = '') {
-  console.log(`${condition ? '✅' : '❌'} ${label}${detail ? ` — ${detail}` : ''}`)
-  if (!condition) failures++
-}
-
-const tag = (event: { tags: string[][] } | undefined, name: string) => event?.tags.find((t) => t[0] === name)?.[1]
-const addressOf = (e: SignedEvent) => `${e.kind}:${e.pubkey}:${tag(e, 'd')}`
-const id = (seed: string) => createHash('sha256').update(seed).digest('hex')
-
-const SELF = 'a'.repeat(64)
-const QA1 = 'b'.repeat(64)
-const FOLDER = '0f0f0f0f-0000-4000-8000-000000000001'
-const FILE_KINDS = [30850, 30851]
-let clock = Math.floor(Date.now() / 1000) - 3600
-
-const signed = (pubkey: string, kind: number, tags: string[][], content = ''): SignedEvent => {
-  clock += 1
-  return { id: id(`${pubkey}${kind}${JSON.stringify(tags)}${clock}`), pubkey, created_at: clock, kind, tags, content, sig: '' }
-}
-const doc = (...blocks: [string, string][]) =>
-  JSON.stringify({ type: 'doc', content: blocks.map(([block, text]) => ({ type: 'paragraph', id: block, content: [{ type: 'text', text }] })) })
-const textChange = (author: string, addr: string, value: string, prev: string) =>
-  signed(author, 1851, [['a', addr], ['O', addr.split(':')[2]], ['field', 'description'], ['value', value], ['content-format', 'estiva-blocks-1'], ['h', FOLDER], ['ts', String((clock + 1) * 1000)], ['prev', prev]])
-const fieldChange = (author: string, addr: string, field: string, value: string, prev: string) =>
-  signed(author, 1851, [['a', addr], ['O', addr.split(':')[2]], ['field', field], ['value', value], ['h', FOLDER], ['ts', String((clock + 1) * 1000)], ['prev', prev]])
-
-/**
- * A relay answering NIP-01 filters, the list read (`"fields": "newest"`, with
- * `"text"` beside `#d`) and its search over current words, and refusing a
- * change whose `prev` is not its field's current change, as buzz does.
- */
-function relay(events: SignedEvent[], options: { inOrder?: boolean; refuseKind5?: boolean; beforePublish?: (e: SignedEvent) => void } = {}) {
-  const asked: Record<string, unknown>[] = []
-  const published: SignedEvent[] = []
-  const values = (e: SignedEvent, name: string) => e.tags.filter((t) => t[0] === name).map((t) => t[1])
-  const matches = (e: SignedEvent, filter: Record<string, unknown>) =>
-    (!Array.isArray(filter.ids) || filter.ids.includes(e.id)) &&
-    (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
-    (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
-    Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-  const current = () => filesOf(events, { withText: true })
-  const listRead = (filter: Record<string, unknown>) => {
-    const { fields: _fields, text, search, ...rest } = filter as { fields: string; text?: boolean; search?: string }
-    const files = current()
-    const out: SignedEvent[] = []
-    for (const root of events.filter((e) => FILE_KINDS.includes(e.kind) && matches(e, rest))) {
-      const file = files.find((f) => f.address === addressOf(root))
-      if (!file || file.fields.deleted?.value === 'true') continue
-      if (search !== undefined && !wordsOf(file).some((word) => word.startsWith(search.toLowerCase()))) continue
-      out.push(root)
-      for (const [field, change] of Object.entries(file.fields)) {
-        // A list never carries a change that sets only the text.
-        if (field === 'description' && !text && fieldsSetBy(change.event).length === 1) continue
-        if (!out.includes(change.event)) out.push(change.event)
-      }
-    }
-    return out
-  }
-  const wordsOf = (file: ReturnType<typeof current>[number]) =>
-    [tag(file.root, 'name'), file.fields.title?.value, file.fields.description?.value].join(' ').toLowerCase().split(/[^\p{L}\p{N}]+/u)
-  const answer = (filters: Record<string, unknown>[]) => {
-    asked.push(...filters)
-    const out = new Map<string, SignedEvent>()
-    for (const filter of filters) {
-      if ('search' in filter && !('fields' in filter)) continue // §5.2's search: nothing here is found by it
-      for (const e of 'fields' in filter ? listRead(filter) : events.filter((e) => matches(e, filter))) out.set(e.id, e)
-    }
-    return [...out.values()]
-  }
-  const head = (addr: string, field: string) => {
-    const file = current().find((f) => f.address === addr)
-    return file?.fields[field]?.id ?? file?.root.id
-  }
-  const publish = async (e: SignedEvent) => {
-    options.beforePublish?.(e)
-    if (e.kind === 5 && options.refuseKind5) return { ok: false, reason: 'invalid: a project is deleted by its deleted field, not kind 5' }
-    if (e.kind === 1851) {
-      for (const { field } of fieldsSetBy(e)) {
-        const prev = tag(e, 'prev')
-        if (prev && prev !== head(tag(e, 'a')!, field)) return { ok: false, reason: `conflict: ${field} follows ${head(tag(e, 'a')!, field)}` }
-      }
-    }
-    published.push(e)
-    events.push(e)
-    return { ok: true, eventId: e.id }
-  }
-  let seq = 0
-  const context = {
-    relayUrl: 'https://estiva.example',
-    relay: {
-      info: async () => ({
-        file_list: { newest: true, text: true },
-        file_search: { types: ['osnova.project'] },
-        ...(options.inOrder ? { files: { newest: true, requires_prev: ['osnova.project'] } } : {}),
-      }),
-      queryAll: async (f: Record<string, unknown>[]) => answer(f),
-      query: async (f: Record<string, unknown>[]) => answer(f),
-      queryWithMatches: async (f: Record<string, unknown>[]) => {
-        const found = answer(f)
-        return { events: found, matches: found.filter((e) => e.kind === 30850).map((e) => ({ a: addressOf(e), match: { fields: ['text'] } })) }
-      },
-      publish,
-    },
-    signer: { pubkey: SELF, sign: async (e: SignedEvent) => ({ ...e, pubkey: SELF, id: id(JSON.stringify(e) + seq++), sig: '' }) },
-  } as unknown as AgentContext
-  return { context, asked, published, events }
-}
 
 /** A project by QA-1 in the QA Folder, its text saved twice: the second save is the version the agent reads. */
 function workspace(options: Parameters<typeof relay>[1] & { fieldDelete?: boolean } = {}) {
@@ -159,14 +47,6 @@ function withFieldDelete(event: SignedEvent): SignedEvent {
   return { ...event, content: JSON.stringify({ ...content, vocabularies, actions: content.actions.map((action) => (action.id === 'delete-project' ? deleteProject : action)) }) }
 }
 
-const run = async (context: AgentContext, name: string, positional: string[], flags: Record<string, string | true> = {}) => {
-  try {
-    return { ok: true as const, answer: (await shipApp.commands.find((command) => command.name === name)!.run(context, { positional, flags })) as Record<string, unknown> }
-  } catch (error) {
-    return { ok: false as const, message: (error as Error).message }
-  }
-}
-const mine = (published: SignedEvent[]) => published.filter((e) => e.pubkey === SELF)
 
 // — Opening a project —
 {
@@ -264,7 +144,7 @@ const mine = (published: SignedEvent[]) => published.filter((e) => e.pubkey === 
 }
 
 // — Delete and restore, where projects are kept in order —
-for (const how of [{ inOrder: true }, { refuseKind5: true }, { fieldDelete: true }] as const) {
+for (const how of [{ inOrder: ['osnova.project'] }, { refuseKind5: 'project' }, { fieldDelete: true }] as const) {
   const { context, published, addr, root } = workspace(how)
   const label = 'inOrder' in how ? 'advertised in order' : 'refuseKind5' in how ? 'refusing kind:5' : "Ship's manifest declaring the field, relay not switched"
   await run(context, 'delete-project', [addr], { yes: true })
@@ -304,8 +184,4 @@ for (const how of [{ inOrder: true }, { refuseKind5: true }, { fieldDelete: true
   check('the description change follows the record', record !== undefined && tag(described, 'prev') === record.id, JSON.stringify({ record: record?.id, prev: tag(described, 'prev') }))
 }
 
-if (failures) {
-  console.error(`\n${failures} check(s) failed.`)
-  process.exit(1)
-}
-console.log('\nAll field checks passed.')
+finish('field')

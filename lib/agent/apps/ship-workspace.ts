@@ -138,6 +138,8 @@ export interface Issue {
   heads?: Record<string, string>
   /** As a project's: the text's current change when the text was read by fields. */
   version?: string
+  /** As a project's (SPEC §6.5, ISS-7): who deleted it and when; a deleted issue is read only by its id. */
+  deleted?: { by: string; at: number }
 }
 
 /**
@@ -540,6 +542,7 @@ function foldWorkspace(
         folder: tagValue(root, 'h') ?? '',
         archived: Boolean(object.archived),
         ownArchive: object.archived,
+        ...(deleted ? { deleted } : {}),
       })
     }
   }
