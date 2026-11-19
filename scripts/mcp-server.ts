@@ -196,6 +196,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'boolean',
             description: 'Optional. Include archived issues — archived themselves or with their project. Hidden by default, and a line says how many.',
           },
+          search: {
+            type: 'string',
+            description: 'Optional. Only the issues the relay finds by these words in their current title, summary, ref or text — never by words only an older text held.',
+          },
         },
         additionalProperties: false,
       },
@@ -384,6 +388,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'string',
             description: 'Optional. The issue body. An empty string clears it.',
           },
+          version: {
+            type: 'string',
+            description:
+              'With `description`, where `ship_get_issue` printed one: that `version`, the text your change was made on. A change saved since on other blocks is merged in and the answer says whose; one on the same block saves nothing and names who made it.',
+          },
           mention: MENTION_PROPERTY,
           project: {
             type: 'string',
@@ -450,10 +459,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'ship_delete_issue',
       description:
-        'Ask the relay to drop one Estiva Ship issue record. ' +
-        'IRREVERSIBLE, and the only tool here that is. Every other write is a change a later change supersedes; this asks the relay to drop the event, and republishing does not undo it. ' +
+        'Delete one Estiva Ship issue. **`ship_archive` is almost always the right tool instead** — it hides the issue, is reversible, and records who did it. ' +
+        'Where the relay keeps issues in order, a delete is a change: the issue leaves every list and search, keeps its id, number and conversation, shows who deleted it, and `restore: true` with its id or address brings it back whole. Elsewhere it is IRREVERSIBLE: it asks the relay to drop the event, republishing does not undo it, and the conversations about it stop being reachable from the issue. ' +
         'Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. ' +
-        'It removes the issue, not the discussion: the conversations about it are separate events with their own authors, they are not deleted, and they stop being reachable from the issue. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
@@ -469,6 +477,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           reason: {
             type: 'string',
             description: 'Optional. Recorded on the deletion request.',
+          },
+          restore: {
+            type: 'boolean',
+            description: 'Optional. Bring back an issue deleted by a change; `ref` is then its id or address, since it is on no list.',
           },
         },
         required: ['ref'],
@@ -872,7 +884,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'ship_list_issues':
         return await dispatch(
           command('issues'),
-          args({ ...flagsFrom(input, ['project', 'status']), ...(input.archived === true ? { archived: true as const } : {}) }),
+          args({ ...flagsFrom(input, ['project', 'status', 'search']), ...(input.archived === true ? { archived: true as const } : {}) }),
         )
 
       case 'ship_activity':
@@ -911,7 +923,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Same reason as `ship_edit_project` below: an empty string is how a
         // description is cleared, and `flagsFrom` would drop it.
         const flags: Record<string, string | true> = {}
-        for (const name of ['title', 'summary', 'description', 'mention', 'project']) {
+        for (const name of ['title', 'summary', 'description', 'version', 'mention', 'project']) {
           const value = input[name]
           if (typeof value === 'string') flags[name] = value
         }
@@ -937,7 +949,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const flags: Record<string, string | true> = {}
         if (input.confirm === true) flags.yes = true
         if (typeof input.reason === 'string' && input.reason) flags.reason = input.reason
-        if (request.params.name === 'ship_delete_project' && input.restore === true) flags.restore = true
+        if (input.restore === true) flags.restore = true
         const which = request.params.name === 'ship_delete_issue' ? 'delete-issue' : 'delete-project'
         return await dispatch(command(which), args(flags, [str(input.ref)]))
       }

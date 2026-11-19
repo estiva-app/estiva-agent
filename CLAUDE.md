@@ -283,13 +283,17 @@ or `none` to clear it; a display name is refused for the reason `assign` refuses
 one. Each field is a separate change event, so a refusal part-way leaves the
 earlier fields standing and the answer says which those were.
 
-**A project is written field by field** (ALO-7, SPEC §6.2). Each change names
-the one it follows (`prev`), through interop's `writeChange`:
+**A project and an issue are written field by field** (ALO-7 for projects,
+ISS-7 for issues; SPEC §6.2). Each change names the one it follows (`prev`),
+through interop's `writeChange` — `edit-project`, `edit-issue`, `set-status`,
+`assign` and `archive` alike:
 
 - **`--description` needs `--version`**, as `show` printed it, like `file
-  describe`. It must be a save of this project's text or its record, or nothing
+  describe`. It must be a save of this file's text or its record, or nothing
   is published. Made on an older text, the change is merged onto what was saved
-  since (§13.3) and the answer's `merged` says whose change it kept.
+  since (§13.3) and the answer's `merged` says whose change it kept. The merge
+  is the agent's own, so it holds on a team whose issues the relay does not
+  keep in order yet as well.
 - **When somebody changed the same block** (or edited one you deleted),
   nothing is saved — no other field of that edit either, since the text goes
   first — and the refusal names them and when, and shows both versions. Read
@@ -297,12 +301,22 @@ the one it follows (`prev`), through interop's `writeChange`:
   person you are working with before dropping any (Miky, 2026-11-02).
 - **Any other field set again keeps the later**: a status written from an
   older copy is written after the newer one and stands, as people's do.
-- **A delete is a `deleted` change** (§6.5) where the relay keeps projects in
+- **A delete is a `deleted` change** (§6.5) where the relay keeps the type in
   order (NIP-11 `files`), or refuses a `kind:5` on one (the QA fence): the
-  project leaves every list and search, keeps its id, opens by it, and
-  `delete-project <id> --restore` brings it back whole. It is that change on
-  any relay once Ship's manifest declares `delete-project` as the field
-  (ALO-6); before that, elsewhere it is still a `kind:5`.
+  file leaves every list and search, keeps its id (an issue its number and
+  conversation), opens by it with who deleted it, and `delete-project <id>
+  --restore` / `delete-issue <id> --restore` brings it back whole. It is that
+  change on any relay once Ship's manifest declares the delete as the field
+  (ALO-6 for projects; issues at their switch); before that, elsewhere it is
+  still a `kind:5`.
+- **A new file's text is its first change** (§6.1, ISS-7): `create-issue` and
+  `create-project` write a record with no text, then the text after it. A text
+  that does not land is sent once more; still missing, the answer names the
+  file and says its text did not land — it is not created as asked, so write
+  the text to it before saying it was.
+- **An issue is found by a word of its current text** (§6.13) where the relay
+  searches issues: `show "<word>"`, and `issues --search "<words>"`. Never by a
+  word only an older text held, and a write still takes a ref, id or title.
 
 **An agent below the minimum version refuses every write** and still reads
 (Miky, 2026-11-02): `minimum-version.json` on `main`, read at most once an hour

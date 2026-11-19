@@ -17349,6 +17349,23 @@ function relayFileReadsOf(info) {
   };
 }
 var RELAY_BUSY_MESSAGE = "the relay is busy, try again in a moment";
+function refusalCodeOf(result) {
+  const reason = (result.reason ?? "").trim();
+  if (reason === RELAY_BUSY_MESSAGE)
+    return "busy";
+  const coded = /^(?:restricted|invalid): ([a-z][a-z0-9-]*): /.exec(reason)?.[1];
+  if (coded)
+    return coded.slice(0, 40);
+  const prefix = /^([a-z][a-z-]*):/.exec(reason)?.[1];
+  if (prefix)
+    return prefix.slice(0, 40);
+  if (/^[a-z][a-z0-9_]*$/.test(reason))
+    return reason.replace(/_/g, "-").slice(0, 40);
+  const status2 = result.httpStatus;
+  if (status2 !== void 0 && (status2 < 200 || status2 >= 300))
+    return `http-${status2}`;
+  return "uncoded";
+}
 var REFUSAL_PREFIX = /^(rate-limited|restricted|auth-required|blocked|invalid|pow|duplicate|mute):/;
 function isRelayBusyResponse(status2, text2) {
   if (status2 === 502)
@@ -17605,8 +17622,10 @@ var Relay = class {
     this.headers = opts.headers ?? (() => ({}));
     this.transport = opts.fetch;
     this.busyRetryDelaysMs = opts.busyRetryDelaysMs ?? BUSY_RETRY_DELAYS_MS;
+    this.onRefused = opts.onRefused;
   }
   busyRetryDelaysMs;
+  onRefused;
   /** {@link Relay.send} through {@link retryWhileBusy}. */
   post(path, payload) {
     return retryWhileBusy(() => this.send(path, payload), this.busyRetryDelaysMs);
@@ -17636,9 +17655,14 @@ var Relay = class {
   }
   async publish(event) {
     const { status: status2, text: text2 } = await this.post("/events", event);
-    if (isRelayBusyResponse(status2, text2))
-      return { ok: false, reason: RELAY_BUSY_MESSAGE, httpStatus: status2 };
-    return parsePublishResponse(status2, text2);
+    const result = isRelayBusyResponse(status2, text2) ? { ok: false, reason: RELAY_BUSY_MESSAGE, httpStatus: status2 } : parsePublishResponse(status2, text2);
+    if (!result.ok && this.onRefused) {
+      try {
+        this.onRefused(refusalCodeOf(result));
+      } catch {
+      }
+    }
+    return result;
   }
   /**
    * `filters` is an array — the bridge expects `Vec<Value>`.
@@ -18119,7 +18143,7 @@ function mergeTexts(base, theirs, mine) {
     return { merged: theirs };
   if (same(theirs, base))
     return { merged: mine };
-  const docs = [base, theirs, mine].map(asDocument);
+  const docs = [base.value === "" ? { type: "doc", content: [] } : asDocument(base), asDocument(theirs), asDocument(mine)];
   if (docs.every((d) => d !== void 0)) {
     const [b, t, m] = docs;
     const result = mergeBlockDocuments(b, t, m);
@@ -19324,7 +19348,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.33.0",
+  version: "0.34.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -20451,6 +20475,10 @@ async function threadsOf(reference, rootIds, query, cache, limit = CONVERSATION_
   return { roots, replies };
 }
 var ACTION_EFFECTS = ["safe", "writes", "destructive"];
+function resolvedOption(entry) {
+  const stage = asStage(entry.stage);
+  return { value: entry.value, label: entry.label, colour: entry.colour, ...stage ? { stage } : {} };
+}
 function proseFormatOf(declared) {
   return declared === BLOCK_DOCUMENT_FORMAT ? BLOCK_DOCUMENT_FORMAT : void 0;
 }
@@ -20511,13 +20539,7 @@ function resolveActions(manifest, kind, folded) {
           ...spec.target ? { target: spec.target } : {},
           // Prose only where the value is `content` — a tag is a scalar (§7.3).
           ...spec.target === "content" && proseFormatOf(spec.format) ? { format: proseFormatOf(spec.format) } : {},
-          ...spec.enum && manifest.vocabularies?.[spec.enum] ? {
-            options: manifest.vocabularies[spec.enum].map((v) => ({
-              value: v.value,
-              label: v.label,
-              colour: v.colour
-            }))
-          } : {}
+          ...spec.enum && manifest.vocabularies?.[spec.enum] ? { options: manifest.vocabularies[spec.enum].map(resolvedOption) } : {}
         })),
         // The parent is not a property and never appears in `properties`; it
         // comes from `emits`, and a form that omitted it would publish an
@@ -20537,7 +20559,7 @@ function resolveActions(manifest, kind, folded) {
       ...action.effect ? { effect: action.effect } : {},
       control,
       ...format ? { format } : {},
-      options: vocab?.map((v) => ({ value: v.value, label: v.label, colour: v.colour })),
+      options: vocab?.map(resolvedOption),
       current: action.emits.field ? folded[action.emits.field]?.value : void 0,
       field: action.emits.field
     });
@@ -21111,6 +21133,12 @@ function foldChanges(changes, rule, root) {
 }
 function stageTagOf(event, field) {
   return asStage(event.tags.find((t) => t[0] === "stage" && t[1] === field)?.[2]);
+}
+function stageTagFor(field, value, options) {
+  if (value === "")
+    return void 0;
+  const stage = asStage(options?.find((option) => option.value === value)?.stage);
+  return stage ? ["stage", field, stage] : void 0;
 }
 function settingsOf(change, rule) {
   const sets = change.tags.filter((t) => t[0] === "set" && t[1] && typeof t[2] === "string");
@@ -22103,6 +22131,12 @@ function buildCreationEvent(args2) {
   tags.push([placement, folder], ...prose);
   for (const person of people)
     tags.push(["p", person]);
+  for (const [name, held] of Object.entries(value)) {
+    const vocabName = properties[name]?.enum;
+    const stage = vocabName ? stageTagFor(name, held, args2.vocabularies?.[vocabName]) : void 0;
+    if (stage)
+      tags.push(stage);
+  }
   return {
     pubkey: args2.pubkey,
     created_at: Math.floor(args2.createdAtMs / 1e3),
@@ -22289,9 +22323,9 @@ function buildOneActionEvent(args2) {
   if (moved?.field === declared.emits.field && typeof value === "string" && parentAddress.test(value)) {
     tags.push([MOVED_TO_TAG, value]);
   }
-  const stage = declared.emits.field && declared.input?.enum ? manifest.vocabularies?.[declared.input.enum]?.find((entry) => entry.value === value)?.stage : void 0;
-  if (declared.emits.field && stage && STAGES.has(stage))
-    tags.push(["stage", declared.emits.field, stage]);
+  const stage = declared.emits.field && declared.input?.enum && typeof value === "string" ? stageTagFor(declared.emits.field, value, manifest.vocabularies?.[declared.input.enum]) : void 0;
+  if (stage)
+    tags.push(stage);
   return {
     pubkey: args2.pubkey,
     created_at: Math.floor(args2.createdAtMs / 1e3),
@@ -22591,7 +22625,8 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
   ];
   const nestedFolderIds = pointers.filter(({ pointer }) => pointer.kind === KIND_CHANNEL).map(({ pointer }) => pointer.identifier);
   const otherChangeKinds = changeKinds.filter((kind) => kind !== ARCHIVE_RULE.changeKind);
-  const byFields = (kind) => options.listRead === true && FILE_KINDS.includes(kind);
+  const listKinds = options.listRead === true ? options.listReadKinds ?? FILE_KINDS : [];
+  const byFields = (kind) => listKinds.includes(kind) && FILE_KINDS.includes(kind);
   const changesAsked = addresses.filter((address) => !byFields(addressPointerOf(address)?.kind ?? NaN));
   const rootFilters = [...groups.values()].map(({ pointer, addresses: group }) => ({
     kinds: [pointer.kind],
@@ -23223,6 +23258,7 @@ async function writeChange(args2) {
   }
   return { ok: false, refused: `still refused after ${tries} tries: ${last}` };
 }
+var BASE_KINDS = new Set(Object.keys(BASE_TYPE_OF_KIND).map(Number));
 
 // node_modules/@estiva-app/interop/dist/objectUrl.js
 var TRAILING_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -24675,7 +24711,8 @@ function foldWorkspace(roots, read, manifests, cache, byFields) {
         projectAddr: object3.parentRef || void 0,
         folder: tagValue4(root, "h") ?? "",
         archived: Boolean(object3.archived),
-        ownArchive: object3.archived
+        ownArchive: object3.archived,
+        ...deleted ? { deleted } : {}
       });
     }
   }
@@ -25248,7 +25285,7 @@ async function moveFile(context2, args2) {
   }
   return { moved: plan.moved, eventIds };
 }
-var DELETED_FIELD2 = "deleted";
+var DELETED_FIELD3 = "deleted";
 function fieldAction(workspace, addr2, field) {
   const resolved = workspace.manifestFor(addr2);
   const kind = addr2.split(":")[0];
@@ -25257,7 +25294,7 @@ function fieldAction(workspace, addr2, field) {
     (candidate) => candidate.emits?.field === field && (Array.isArray(candidate.appliesTo) ? candidate.appliesTo.includes(kind) : candidate.appliesTo === kind)
   );
   if (resolved && action) return { manifest: resolved.manifest, action };
-  if (resolved?.manifest.records && field === DELETED_FIELD2) {
+  if (resolved?.manifest.records && field === DELETED_FIELD3) {
     const deletion = { id: "delete", label: "Delete", appliesTo: kind, emits: { kind: resolved.manifest.records.changeKind, field }, input: { type: "string" } };
     return { manifest: { ...resolved.manifest, actions: [...actions, deletion] }, action: deletion };
   }
@@ -25268,7 +25305,7 @@ async function setField(context2, workspace, target, field, value, note, content
   const [outcome] = await act(context2, workspace, target, action.id, value, [KIND_CHANGE], { note, contentFormat });
   return outcome;
 }
-async function writeField(context2, workspace, target, field, value, note, prev, contentFormat) {
+async function writeField(context2, workspace, target, field, value, note, prev, contentFormat, base) {
   const { manifest, action } = fieldAction(workspace, target.addr, field);
   const [kind, pubkey, ...rest] = target.addr.split(":");
   const query = relayQuery(context2);
@@ -25277,6 +25314,7 @@ async function writeField(context2, workspace, target, field, value, note, prev,
     value,
     prev,
     ...contentFormat ? { format: contentFormat } : {},
+    ...base ? { base } : {},
     build: (input) => {
       const built = buildActionEvent({
         manifest,
@@ -25316,7 +25354,7 @@ async function mergedLine(context2, result) {
   return "unchanged" in result ? `Nothing to save: ${by}'s change at ${at} already has everything yours did.` : `Merged: the text had been changed by ${by} at ${at}, after the version you read. Their change is kept as it is, with yours where it touched nothing of theirs.`;
 }
 var askedBlock = (text2) => text2 === void 0 ? "(deleted)" : JSON.stringify(text2);
-async function textAsks(context2, title, asks, theirs, alsoNotSaved) {
+async function textAsks(context2, title, asks, theirs, alsoNotSaved, noun = "project") {
   const { by, at } = await changeBy(context2, theirs);
   const blocks = asks.map(
     (ask) => [
@@ -25329,18 +25367,21 @@ async function textAsks(context2, title, asks, theirs, alsoNotSaved) {
     [
       `Nothing was saved${alsoNotSaved.length ? `, ${alsoNotSaved.join(", ")} included` : ""}: the text of \u201C${title}\u201D is now as ${by} left it at ${at}, and your change and theirs meet in ${asks.length === 1 ? "one place" : `${asks.length} places`}.`,
       ...blocks,
-      `Keep ${by}'s words: read the project again, rewrite your change on top of the text as it is now, and save it with the new version. Ask the person you are working with before dropping any of their words.`,
+      `Keep ${by}'s words: read the ${noun} again, rewrite your change on top of the text as it is now, and save it with the new version. Ask the person you are working with before dropping any of their words.`,
       // A block they deleted holds no words of theirs to keep: whether it stays deleted is the person's call.
       ...asks.some((ask) => ask.theirs === void 0) ? [`${by} deleted a block you changed: ask the person you are working with whether it stays deleted or comes back with your change.`] : []
     ].join("\n")
   );
 }
-async function projectsByWords(context2, reference) {
+async function filesByWords(context2, reference, kinds = [KIND2.PROJECT, KIND2.ISSUE]) {
   const words = reference.trim();
-  if (!words || !(await fileReadsFor(context2)).search.includes(TYPE_OF[KIND2.PROJECT])) return [];
-  const { matches } = await context2.relay.queryWithMatches([{ fields: "newest", kinds: [KIND2.PROJECT], search: words }]);
+  const searched = (await fileReadsFor(context2)).search;
+  const asked = kinds.filter((kind) => searched.includes(TYPE_OF[kind]));
+  if (!words || asked.length === 0) return [];
+  const { matches } = await context2.relay.queryWithMatches([{ fields: "newest", kinds: asked, search: words }]);
   return matches.map((match) => match.a);
 }
+var projectsByWords = (context2, reference) => filesByWords(context2, reference, [KIND2.PROJECT]);
 async function findProjectIn(context2, projects, reference, { writes = false } = {}) {
   const resolved = resolveMaybe(projects, reference, PROJECT_BY);
   if ("found" in resolved) return resolved.found;
@@ -25374,11 +25415,70 @@ async function withText(context2, query, cache, file) {
 async function textAtVersion(context2, file, version2) {
   const [event] = await relayQuery(context2)([{ ids: [version2] }]);
   const first = (name) => event?.tags.find((tag) => tag[0] === name)?.[1];
-  const inLine = event?.kind === KIND_CHANGE && first("a") === file.addr && (first("O") === void 0 || first("O") === file.addr.split(":").slice(2).join(":")) && first("h") === file.contentFolder && fieldsSetBy(event).some((set) => set.field === TEXT_FIELD);
+  const inLine = event?.kind === KIND_CHANGE && first("a") === file.addr && (first("O") === void 0 || first("O") === file.addr.split(":").slice(2).join(":")) && first("h") === homeOf(file) && fieldsSetBy(event).some((set) => set.field === TEXT_FIELD);
   const ours = event?.id === version2 && (event.id === file.rootId || inLine);
   const text2 = ours ? textOf3(event) : void 0;
   if (!text2) throw new BadRequest(`--version ${version2} is not a saved version of the text of \u201C${file.title}\u201D. Pass the \`version\` \`ship show\` printed for it. Nothing was published.`);
-  return { description: text2.value, descriptionFormat: text2.format === BLOCK_DOCUMENT_FORMAT ? "blocks" : "marker" };
+  return { description: text2.value, descriptionFormat: text2.format === BLOCK_DOCUMENT_FORMAT ? "blocks" : "marker", text: text2 };
+}
+var homeOf = (file) => "contentFolder" in file ? file.contentFolder : file.folder;
+var nounOf3 = (file) => "contentFolder" in file ? "project" : "issue";
+var nameOf2 = (file) => "contentFolder" in file ? `\u201C${file.title}\u201D` : file.ref ?? file.addr;
+async function writeAfter(context2, state, file, target, field, value, note, contentFormat) {
+  if (!file.heads) return setField(context2, state, target, field, value, note, contentFormat);
+  const written = await writeField(context2, state, target, field, value, note, file.heads[field] ?? file.rootId, contentFormat);
+  return written.ok ? { ok: true, eventId: written.id } : { ok: false, reason: "refused" in written ? written.refused : "a change crossed it" };
+}
+async function textBase(context2, file, description, version2, command2) {
+  if (version2 !== void 0 && description === void 0) throw new BadRequest("--version goes with --description: it is the version of the text your change was made on.");
+  if (description === void 0 || file.version === void 0) return { subject: file };
+  if (!version2) {
+    throw new BadRequest(
+      `${command2} --description needs --version, as \`ship show\` printed it for ${nameOf2(file)}: a change made on an older text is merged onto what was saved since, never written over it. Nothing was published.`
+    );
+  }
+  if (version2 === file.version) return { subject: file };
+  const read = await textAtVersion(context2, file, version2);
+  return { subject: { ...file, description: read.description, descriptionFormat: read.descriptionFormat }, base: read.text };
+}
+async function writeFirstChanges(context2, state, target, rootId, noun, title, writes) {
+  const ids = {};
+  for (const [index, write] of writes.entries()) {
+    const send = () => writeField(context2, state, target, write.field, write.value, write.note, rootId, write.contentFormat);
+    let written = await send();
+    if (!written.ok) written = await send();
+    if (!written.ok) {
+      const why = "refused" in written ? written.refused : "a change crossed it";
+      const missing = writes.slice(index).map((each) => each.field === TEXT_FIELD ? "text" : each.field);
+      throw new BadRequest(
+        `The ${noun} \u201C${title}\u201D exists as ${target.addr}, but its ${missing.join(" and ")} did not land: ${why}. It is not created as asked: its ${missing.join(" and ")} must still be written to it.`
+      );
+    }
+    ids[write.field] = written.id;
+  }
+  return ids;
+}
+async function writeEdits(context2, state, file, target, edits, base, plan) {
+  const applied = [];
+  let mentioned = {};
+  const ordered = [...edits.filter((edit) => edit.field === TEXT_FIELD), ...edits.filter((edit) => edit.field !== TEXT_FIELD)];
+  for (const edit of ordered) {
+    const standing = `Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`;
+    if (file.heads && edit.field === TEXT_FIELD) {
+      const result = await writeField(context2, state, target, edit.field, edit.value, edit.note, file.version ?? file.rootId, edit.contentFormat, base);
+      if (!result.ok && "asks" in result) {
+        throw await textAsks(context2, file.title, result.asks, result.theirs, ordered.slice(1).map((other) => other.field), nounOf3(file));
+      }
+      if (!result.ok) throw refused(`${edit.field} on ${nameOf2(file)}`, result.refused, standing);
+      applied.push({ ...appliedEdit(edit, result.id), merged: await mergedLine(context2, result) });
+    } else {
+      const result = await writeAfter(context2, state, file, target, edit.field, edit.value, edit.note, edit.contentFormat);
+      if (!result.ok) throw refused(`${edit.field} on ${nameOf2(file)}`, result.reason, standing);
+      applied.push(appliedEdit(edit, result.eventId));
+    }
+    if (edit.field === "description") mentioned = await publishMentionAdds(context2, plan, `The description of ${nameOf2(file)}`);
+  }
+  return { applied, mentioned };
 }
 function textVersion(change, versions, withText2) {
   const version2 = (versions.get(change.field) ?? 0) + 1;
@@ -25545,9 +25645,8 @@ async function archiveFile(context2, args2, command2) {
     const action = target.kind === "project" ? "archive-project" : "archive-issue";
     const note = typeof resolution === "string" ? resolution : "";
     const file = { addr: target.file.addr, author: target.file.author, folder };
-    if (target.kind === "project" && target.file.heads) {
-      const written = await writeField(context2, state, file, "archived", archived ? "true" : "", note, target.file.heads.archived ?? target.file.rootId);
-      result = written.ok ? { ok: true, eventId: written.id } : { ok: false, reason: "refused" in written ? written.refused : void 0 };
+    if (target.file.heads) {
+      result = await writeAfter(context2, state, target.file, file, "archived", archived ? "true" : "", note);
     } else {
       ;
       [result] = await act(context2, state, file, action, archived ? "true" : "", [KIND_CHANGE], { note });
@@ -25569,21 +25668,23 @@ async function archiveFile(context2, args2, command2) {
     note: archived ? `Hidden from Ship's lists and from \`ship issues\` / \`ship projects\` unless --archived: ${hides}. A link still opens it, with the resolution first. Reverse with --unarchive; nothing is deleted.` : "Back in the lists, with what was hidden with it."
   };
 }
-async function setDeleted(context2, state, project, deleted, reason) {
-  const target = { addr: project.addr, author: project.author, folder: project.contentFolder };
-  const prev = project.heads?.[DELETED_FIELD2] ?? project.rootId;
-  const result = await writeField(context2, state, target, DELETED_FIELD2, deleted ? "true" : "", reason ?? (deleted ? "Delete" : "Restore"), prev);
-  if (!result.ok) throw refused(`${deleted ? "deleting" : "restoring"} \u201C${project.title}\u201D`, "refused" in result ? result.refused : void 0);
-  const changed = { title: project.title, addr: project.addr };
+async function setDeleted2(context2, state, file, deleted, reason) {
+  const target = { addr: file.addr, author: file.author, folder: homeOf(file) };
+  const prev = file.heads?.[DELETED_FIELD3] ?? file.rootId;
+  const result = await writeField(context2, state, target, DELETED_FIELD3, deleted ? "true" : "", reason ?? (deleted ? "Delete" : "Restore"), prev);
+  if (!result.ok) throw refused(`${deleted ? "deleting" : "restoring"} ${nameOf2(file)}`, "refused" in result ? result.refused : void 0);
+  const changed = { ..."ref" in file && file.ref ? { ref: file.ref } : {}, title: file.title, addr: file.addr };
+  const keeps = nounOf3(file) === "project" ? "its record, its issues and every change" : "its record, its number, its conversation and every change";
   return deleted ? {
     deleted: changed,
     eventId: result.id,
-    survives: "It keeps its id, its record, its issues and every change: it is off the agent's lists and out of the relay's search, still opens by its id, and --restore brings it back whole. Ship still shows it until Ship reads deletes this way."
+    survives: `It keeps its id, ${keeps}: it is off the agent's lists and out of the relay's search, still opens by its id, and --restore brings it back whole.`
   } : { restored: changed, eventId: result.id, note: "Back in the lists and in search, as it was." };
 }
-async function restoreProject(context2, query, reference) {
+async function restoreFile(context2, query, reference, kind) {
+  const noun = kind === KIND2.PROJECT ? "project" : "issue";
   const needle = reference.trim().toLowerCase();
-  const roots = await query([{ kinds: [KIND2.PROJECT] }]);
+  const roots = await query([{ kinds: [kind] }]);
   const addresses = [...new Set(roots.map((root) => `${root.kind}:${root.pubkey}:${root.tags.find((t) => t[0] === "d")?.[1] ?? ""}`))];
   const named = addresses.filter((addr2) => {
     const d = addr2.split(":").slice(2).join(":").toLowerCase();
@@ -25591,14 +25692,14 @@ async function restoreProject(context2, query, reference) {
   });
   if (named.length !== 1) {
     throw new BadRequest(
-      named.length ? `"${reference}" is the start of ${named.length} projects' ids. Pass the whole address.` : `No project has the id or address "${reference}". A deleted project is named by its id, as \`ship show\` or the delete printed it.`
+      named.length ? `"${reference}" is the start of ${named.length} ${noun}s' ids. Pass the whole address.` : `No ${noun} has the id or address "${reference}". A deleted ${noun} is named by its id, as \`ship show\` or the delete printed it.`
     );
   }
   const state = await fieldsReader(context2, query)(named);
-  const project = state.projects[0];
-  if (!project) throw new BadRequest(`The project ${named[0]} could not be read. Nothing was published.`);
-  if (!project.deleted) return { unchanged: { title: project.title, addr: project.addr }, note: "That project is not deleted, so there is nothing to restore." };
-  return setDeleted(context2, state, project, false);
+  const file = kind === KIND2.PROJECT ? state.projects[0] : state.issues[0];
+  if (!file) throw new BadRequest(`The ${noun} ${named[0]} could not be read. Nothing was published.`);
+  if (!file.deleted) return { unchanged: { title: file.title, addr: file.addr }, note: `That ${noun} is not deleted, so there is nothing to restore.` };
+  return setDeleted2(context2, state, file, false);
 }
 async function descriptionLinks(context2, state, subject, readMore) {
   const titles = new Map([...state.issues, ...state.projects].map((file) => [file.addr, file.title]));
@@ -25655,12 +25756,22 @@ async function showIssue(context2, state, issue2, { historyText, every }, readMo
     context2,
     state,
     issue2.addr,
-    [issue2.author, issue2.assignee, issue2.archive?.by],
+    [issue2.author, issue2.assignee, issue2.archive?.by, issue2.deleted?.by],
     { historyText, threads, every }
   );
   return {
     kind: "issue",
     ...issueSummary(issue2, directory, state.vocab.issue),
+    // SPEC §6.5, as a project's: off every list and out of search, still opened by its id, and who deleted it.
+    ...issue2.deleted ? {
+      deleted: {
+        by: who(directory, issue2.deleted.by),
+        at: new Date(issue2.deleted.at).toISOString(),
+        note: "Deleted: on no list and in no search. It keeps its record, number and changes, and delete-issue --restore brings it back whole."
+      }
+    } : {},
+    // The text's version (ISS-7): `edit-issue --description` takes it back, and merges onto anything saved since.
+    ...issue2.version !== void 0 ? { version: issue2.version } : {},
     /*
       A block document from Ship's editor is printed as text, one chunk
       per block, because that is what `edit-issue --description` takes
@@ -25698,7 +25809,7 @@ async function oneFile(context2, query, reference) {
   const [roots, renamed, byWords] = await Promise.all([
     rootsRead,
     context2.relay.query([{ kinds: [KIND_CHANGE], search: reference.trim(), search_mode: "prefix", limit: RENAME_SEARCH_LIMIT }]),
-    projectsByWords(context2, reference)
+    filesByWords(context2, reference)
   ]);
   if (renamed.length >= RENAME_SEARCH_LIMIT) return void 0;
   const tag = (event, name) => event.tags.find((t) => t[0] === name)?.[1];
@@ -25745,8 +25856,12 @@ async function oneFile(context2, query, reference) {
   const asProject = resolveMaybe(state.projects.filter((project) => candidates.has(project.addr)), reference, PROJECT_BY);
   if ("found" in asIssue && asIssue.by === "part" || "found" in asProject && asProject.by === "part") return void 0;
   if ("none" in asIssue && "none" in asProject) {
-    const byText = byWords.flatMap((addr2) => state.projects.filter((project) => project.addr === addr2));
-    return byText.length === 1 ? { state, project: byText[0], readMore: read, threadsOf: threadsOf2 } : void 0;
+    const byText = byWords.flatMap((addr2) => [...state.projects, ...state.issues].filter((file2) => file2.addr === addr2));
+    if (byText.length !== 1) return void 0;
+    const [file] = byText;
+    if ("contentFolder" in file) return { state, project: file, readMore: read, threadsOf: threadsOf2 };
+    if (file.projectAddr && !state.projects.some((project) => project.addr === file.projectAddr)) state = await read([...scope, file.projectAddr]);
+    return { state, issue: state.issues.find((each) => each.addr === file.addr), readMore: read, threadsOf: threadsOf2 };
   }
   if ("found" in asProject && "none" in asIssue) return { state, project: asProject.found, readMore: read, threadsOf: threadsOf2 };
   if (!("found" in asIssue) || !("none" in asProject)) return void 0;
@@ -25857,7 +25972,7 @@ var shipApp = {
     {
       name: "issues",
       summary: "issues, newest first",
-      usage: "issues [--project <ref>] [--status <value>] [--archived] [--json]",
+      usage: "issues [--project <ref>] [--status <value>] [--search <words>] [--archived] [--json]",
       lines(result) {
         const vocab = result[VOCAB] ?? noVocab;
         return [
@@ -25878,6 +25993,14 @@ var shipApp = {
           issues = issues.filter((issue2) => issue2.projectAddr === project.addr);
         }
         if (wantedStatuses) issues = issues.filter(wantedStatuses);
+        const search = flagValue(args2, "search");
+        if (search !== void 0) {
+          if (!(await fileReadsFor(context2)).search.includes(TYPE_OF[KIND2.ISSUE])) {
+            throw new BadRequest("This relay does not find issues by the words of their text yet, so --search has nothing to ask. Nothing was filtered.");
+          }
+          const found = await filesByWords(context2, search, [KIND2.ISSUE]);
+          issues = issues.filter((issue2) => found.includes(issue2.addr));
+        }
         const archived = issues.filter((issue2) => issue2.archived).length;
         if (!args2.flags.archived) issues = issues.filter((issue2) => !issue2.archived);
         const directory = await directoryFor(
@@ -26054,14 +26177,19 @@ Pass an address to say which.`
         if (!("found" in asIssue)) {
           if ("ambiguous" in asIssue) throw new BadRequest(asIssue.ambiguous);
           if ("ambiguous" in asProject) throw new BadRequest(asProject.ambiguous);
-          const byText = (await projectsByWords(context2, reference)).flatMap((addr2) => state.projects.filter((project) => project.addr === addr2));
-          if (byText.length === 1) return opened(byText[0]);
-          if (byText.length > 1) {
-            throw new BadRequest(
-              `"${reference}" is in the words of ${byText.length} projects:
-${byText.slice(0, 8).map((project) => `  ${PROJECT_BY.label(project)}`).join("\n")}
-${PROJECT_BY.hint}`
-            );
+          const words = await filesByWords(context2, reference);
+          const projects = words.flatMap((addr2) => state.projects.filter((project) => project.addr === addr2));
+          const issues = words.flatMap((addr2) => state.issues.filter((issue3) => issue3.addr === addr2));
+          if (projects.length === 1 && issues.length === 0) return opened(projects[0]);
+          if (issues.length === 1 && projects.length === 0) {
+            const issue3 = await withText(context2, query, state.cache, issues[0]);
+            return showIssue(context2, state, issue3, await options(state, issue3.addr));
+          }
+          if (projects.length + issues.length > 1) {
+            const listed = [...projects.map((project) => `  project ${PROJECT_BY.label(project)}`), ...issues.map((issue3) => `  issue   ${ISSUE_BY.label(issue3)}`)];
+            throw new BadRequest(`"${reference}" is in the words of ${listed.length} files:
+${listed.slice(0, 8).join("\n")}
+Pass a ref, a title, or the first 8 characters of an id.`);
           }
           throw new BadRequest(`No issue or project matches "${reference}".`);
         }
@@ -26227,7 +26355,7 @@ Pass an address to say which.`
             `Unknown status "${status2}". Try: ${state.vocab.issue.entries.map((s) => s.value).join(", ")}`
           );
         }
-        const result = await setField(context2, state, issueTarget(issue2), "status", wanted, `Status \u2192 ${wanted}`);
+        const result = await writeAfter(context2, state, issue2, issueTarget(issue2), "status", wanted, `Status \u2192 ${wanted}`);
         published2(result, `a status change on ${issue2.ref ?? issue2.addr}`);
         return {
           state: await stateAfter(context2, state, issue2, { status: wanted }),
@@ -26246,7 +26374,7 @@ Pass an address to say which.`
         if (!reference || !who3) throw new BadRequest('assign needs a reference and a pubkey, "me", or "none".');
         const assignee = assigneeFor(who3, context2.signer.pubkey);
         const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
-        const result = await setField(context2, state, issueTarget(issue2), "assignee", assignee, assignee ? "Assign" : "Unassign");
+        const result = await writeAfter(context2, state, issue2, issueTarget(issue2), "assignee", assignee, assignee ? "Assign" : "Unassign");
         published2(result, `an assignment on ${issue2.ref ?? issue2.addr}`);
         return {
           state: await stateAfter(context2, state, issue2, { assignee: assignee.toLowerCase() }),
@@ -26259,37 +26387,26 @@ Pass an address to say which.`
       name: "edit-issue",
       signs: [KIND_CHANGE],
       summary: "change an issue\u2019s title, summary, description, or which project it is in",
-      usage: 'edit-issue <ref> [--title "..."] [--summary "..."] [--description "..."] [--mention <key|npub|handle>[,\u2026]] [--project <ref|none>]',
+      usage: 'edit-issue <ref> [--title "..."] [--summary "..."] [--description "..." --version <from show>] [--mention <key|npub|handle>[,\u2026]] [--project <ref|none>]',
       async run(context2, args2) {
         const reference = args2.positional[0];
         if (!reference) throw new BadRequest("edit-issue needs an issue reference.");
         const asked = await descriptionMentions(context2, args2);
         const query = loadQuery(context2);
         const state = await loadWorkspace(context2, query);
+        const description = flagValue(args2, "description");
         const found = findIssue(state.issues, reference);
-        const issue2 = flagValue(args2, "description") === void 0 ? found : await withText(context2, query, state.cache, found);
-        const edits = issueEdits(issue2, args2, state.projects, await filesIn(context2, args2, issue2));
+        const issue2 = description === void 0 ? found : await withText(context2, query, state.cache, found);
+        const { subject, base } = await textBase(context2, issue2, description, flagValue(args2, "version"), "edit-issue");
+        const edits = issueEdits(subject, args2, state.projects, await filesIn(context2, args2, subject));
         const folder = issue2.folder;
         if (!folder) {
           throw new BadRequest(
             `${issue2.ref ?? issue2.addr} names no team, so a change to it has nowhere to be published.`
           );
         }
-        const plan = addsFor(context2, { addr: issue2.addr, folder }, issue2, edits, asked);
-        const applied = [];
-        let mentioned = {};
-        for (const edit of edits) {
-          const result = await setField(context2, state, { addr: issue2.addr, author: issue2.author, folder }, edit.field, edit.value, edit.note, edit.contentFormat);
-          if (!result.ok) {
-            throw refused(
-              `${edit.field} on ${issue2.ref ?? issue2.addr}`,
-              result.reason,
-              `Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`
-            );
-          }
-          applied.push(appliedEdit(edit, result.eventId));
-          if (edit.field === "description") mentioned = await publishMentionAdds(context2, plan, `The description of ${issue2.ref ?? issue2.addr}`);
-        }
+        const plan = addsFor(context2, { addr: issue2.addr, folder }, subject, edits, asked);
+        const { applied, mentioned } = await writeEdits(context2, state, issue2, { addr: issue2.addr, author: issue2.author, folder }, edits, base, plan);
         const moved = applied.find((entry) => entry.field === "project" && entry.to);
         const destination = moved && state.projects.find((candidate) => candidate.addr === moved.to);
         const conversationStaysBehind = destination && destination.contentFolder !== folder ? `The issue's conversation stays in team ${folder}, which is not ${destination.title}'s (${destination.contentFolder}). Moving an issue cannot move its messages: an event's team is immutable.` : void 0;
@@ -26313,18 +26430,8 @@ Pass an address to say which.`
         const query = loadQuery(context2);
         const state = await loadWorkspace(context2, query);
         const description = flagValue(args2, "description");
-        const version2 = flagValue(args2, "version");
-        if (version2 !== void 0 && description === void 0) throw new BadRequest("--version goes with --description: it is the version of the text your change was made on.");
         const project = description === void 0 ? await findProjectIn(context2, state.projects, reference, { writes: true }) : await withText(context2, query, state.cache, await findProjectIn(context2, state.projects, reference, { writes: true }));
-        let subject = project;
-        if (description !== void 0 && project.version !== void 0) {
-          if (!version2) {
-            throw new BadRequest(
-              `edit-project --description needs --version, as \`ship show\` printed it for \u201C${project.title}\u201D: a change made on an older text is merged onto what was saved since, never written over it. Nothing was published.`
-            );
-          }
-          if (version2 !== project.version) subject = { ...project, ...await textAtVersion(context2, project, version2) };
-        }
+        const { subject, base } = await textBase(context2, project, description, flagValue(args2, "version"), "edit-project");
         const edits = projectEdits(subject, args2, context2.signer.pubkey, state.vocab.project, await filesIn(context2, args2, subject));
         const folder = project.contentFolder;
         if (!folder) {
@@ -26333,27 +26440,7 @@ Pass an address to say which.`
           );
         }
         const plan = addsFor(context2, { addr: project.addr, folder }, subject, edits, asked);
-        const applied = [];
-        let mentioned = {};
-        const target = { addr: project.addr, author: project.author, folder };
-        const ordered = [...edits.filter((edit) => edit.field === TEXT_FIELD), ...edits.filter((edit) => edit.field !== TEXT_FIELD)];
-        for (const edit of ordered) {
-          const standing = `Already published and standing: ${applied.map((entry) => entry.field).join(", ") || "nothing"}.`;
-          if (project.heads) {
-            const prev = edit.field === TEXT_FIELD ? version2 ?? project.version ?? project.rootId : project.heads[edit.field] ?? project.rootId;
-            const result = await writeField(context2, state, target, edit.field, edit.value, edit.note, prev, edit.contentFormat);
-            if (!result.ok && "asks" in result) {
-              throw await textAsks(context2, project.title, result.asks, result.theirs, ordered.slice(1).map((other) => other.field));
-            }
-            if (!result.ok) throw refused(`${edit.field} on \u201C${project.title}\u201D`, result.refused, standing);
-            applied.push({ ...appliedEdit(edit, result.id), merged: await mergedLine(context2, result) });
-          } else {
-            const result = await setField(context2, state, target, edit.field, edit.value, edit.note, edit.contentFormat);
-            if (!result.ok) throw refused(`${edit.field} on \u201C${project.title}\u201D`, result.reason, standing);
-            applied.push(appliedEdit(edit, result.eventId));
-          }
-          if (edit.field === "description") mentioned = await publishMentionAdds(context2, plan, `The description of \u201C${project.title}\u201D`);
-        }
+        const { applied, mentioned } = await writeEdits(context2, state, project, { addr: project.addr, author: project.author, folder }, edits, base, plan);
         return { changed: { title: project.title, addr: project.addr, folder }, applied, ...mentioned };
       }
     },
@@ -26466,24 +26553,33 @@ Pass an address to say which.`
         */
     {
       name: "delete-issue",
-      signs: [KIND_DELETION],
-      summary: "ask the relay to drop an issue record \u2014 irreversible",
-      usage: 'delete-issue <ref> [--yes] [--reason "\u2026"]',
+      // The `deleted` change where the relay keeps issues in order (SPEC §6.5, ISS-7); a `kind:5` until then.
+      signs: [KIND_DELETION, KIND_CHANGE],
+      summary: "delete an issue \u2014 a `deleted` change --restore undoes where the relay keeps issues in order, else an irreversible request; prefer archive",
+      usage: 'delete-issue <ref> [--yes] [--reason "\u2026"] [--restore]',
       async run(context2, args2) {
         const reference = args2.positional[0];
         if (!reference) throw new BadRequest("delete-issue needs an issue reference.");
+        if (args2.flags.restore) return restoreFile(context2, loadQuery(context2), reference, KIND2.ISSUE);
         const { state, issue: issue2 } = await resolveIssueFor(context2, reference);
-        const conversations = ((await conversationsFor(context2, state, [issue2.addr])).byObject.get(issue2.addr) ?? []).length;
-        const survives = `Its ${conversations} conversation(s) are separate events with their own authors and are NOT deleted \u2014 they stay in the team and stop being reachable from the issue.`;
+        const reads2 = await fileReadsFor(context2);
+        const declared = state.manifestFor(issue2.addr)?.manifest.actions?.find((action) => action.id === "delete-issue");
+        const byField = reads2.switched && reads2.inOrder.includes(TYPE_OF[KIND2.ISSUE]) || declared?.emits?.field === DELETED_FIELD3;
+        const reason = flagValue(args2, "reason");
         if (!args2.flags.yes) {
+          const conversations2 = ((await conversationsFor(context2, state, [issue2.addr])).byObject.get(issue2.addr) ?? []).length;
           return {
             wouldDelete: { ref: issue2.ref, addr: issue2.addr, title: issue2.title, folder: issue2.folder },
-            survives,
-            note: "Nothing was published. Pass --yes to send the deletion request."
+            survives: byField ? `It keeps its id, its number and its ${conversations2} conversation(s); --restore brings it back whole.` : `Its ${conversations2} conversation(s) are separate events with their own authors and are NOT deleted \u2014 they stay in the team and stop being reachable from the issue.`,
+            note: byField ? "Nothing was published. A delete takes it off the agent's lists, Ship's and the relay's search; it still opens by its id. Archiving is usually what is wanted \u2014 see `archive`. Pass --yes to delete it." : "Nothing was published. Archiving is reversible and usually what is wanted \u2014 see `archive`. Pass --yes to send the deletion request."
           };
         }
-        const [result] = await act(context2, state, issueTarget(issue2), "delete-issue", "", [KIND_DELETION], { reason: flagValue(args2, "reason") });
+        if (byField) return setDeleted2(context2, state, issue2, true, reason);
+        const [result] = await act(context2, state, issueTarget(issue2), "delete-issue", "", [KIND_DELETION], { reason });
+        if (!result.ok && /deleted by its deleted field/.test(result.reason ?? "")) return setDeleted2(context2, state, issue2, true, reason);
         published2(result, `deleting ${issue2.ref ?? issue2.addr}`);
+        const conversations = ((await conversationsFor(context2, state, [issue2.addr])).byObject.get(issue2.addr) ?? []).length;
+        const survives = `Its ${conversations} conversation(s) are separate events with their own authors and are NOT deleted \u2014 they stay in the team and stop being reachable from the issue.`;
         return {
           deleted: { ref: issue2.ref, addr: issue2.addr, title: issue2.title },
           eventId: result.eventId,
@@ -26502,13 +26598,13 @@ Pass an address to say which.`
         const reference = args2.positional[0];
         if (!reference) throw new BadRequest("delete-project needs a project reference.");
         const query = loadQuery(context2);
-        if (args2.flags.restore) return restoreProject(context2, query, reference);
+        if (args2.flags.restore) return restoreFile(context2, query, reference, KIND2.PROJECT);
         const state = await loadWorkspace(context2, query);
         const project = await findProjectIn(context2, state.projects, reference, { writes: true });
         const issues = state.issues.filter((issue2) => issue2.projectAddr === project.addr).length;
         const reads2 = await fileReadsFor(context2);
         const declared = state.manifestFor(project.addr)?.manifest.actions?.find((action) => action.id === "delete-project");
-        const byField = reads2.switched && reads2.inOrder.includes(TYPE_OF[KIND2.PROJECT]) || declared?.emits?.field === DELETED_FIELD2;
+        const byField = reads2.switched && reads2.inOrder.includes(TYPE_OF[KIND2.PROJECT]) || declared?.emits?.field === DELETED_FIELD3;
         const folder = project.contentFolder;
         if (!folder) throw new BadRequest(`\u201C${project.title}\u201D names no team at all, so a deletion cannot be addressed to one.`);
         const survives = `Its ${issues} issue(s) are separate events and are NOT deleted. Since SHI-7 they stay reachable in \`ship issues\`, listed with no project.`;
@@ -26520,7 +26616,7 @@ Pass an address to say which.`
           };
         }
         const reason = flagValue(args2, "reason");
-        if (byField) return setDeleted(context2, state, project, true, reason);
+        if (byField) return setDeleted2(context2, state, project, true, reason);
         const all = await readFolders(context2);
         const listing = all.filter((f) => f.addresses?.includes(project.addr)).map((f) => ({ folder: f.id, hasState: f.hasState }));
         const folders = listing.length > 0 ? listing : [{ folder: project.contentFolder, hasState: all.find((f) => f.id === project.contentFolder)?.hasState ?? false }];
@@ -26529,7 +26625,7 @@ Pass an address to say which.`
           reason,
           listedIn: folders.map((f) => ({ id: f.folder, hasState: f.hasState }))
         });
-        if (!result.ok && /deleted by its deleted field/.test(result.reason ?? "")) return setDeleted(context2, state, project, true, reason);
+        if (!result.ok && /deleted by its deleted field/.test(result.reason ?? "")) return setDeleted2(context2, state, project, true, reason);
         published2(result, `deleting \u201C${project.title}\u201D`);
         const unlisted = unlists.find((answer) => !answer.ok) ?? unlists.at(-1);
         return {
@@ -26589,8 +26685,8 @@ Pass an address to say which.`
           { addr: team.channel ?? `${KIND_CHANNEL_METADATA}::${team.id}`, author: "", folder: team.id },
           "add-project",
           {
+            // No text on the record (SPEC §6.1, ISS-7): it is the first change, below.
             name: title,
-            ...body && !body.contentFormat ? { description: body.value } : {},
             ...key ? { key } : {},
             ...route === "seed" ? { summary } : {}
           },
@@ -26599,14 +26695,10 @@ Pass an address to say which.`
         );
         const created = { result, placed, addr: `${KIND2.PROJECT}:${context2.signer.pubkey}:${id}` };
         published2(created.result, `a new project "${title}"`);
-        const first = async (field, value, note, contentFormat) => {
-          const written = await writeField(context2, state, { addr: created.addr, author: context2.signer.pubkey, folder: team.id }, field, value, note, created.result.eventId, contentFormat);
-          return written.ok ? { ok: true, eventId: written.id } : { ok: false, reason: "refused" in written ? written.refused : "a change crossed it" };
-        };
-        const described = body?.contentFormat ? await first("description", body.value, "Description", body.contentFormat) : void 0;
-        if (described) published2(described, `the description of "${title}" \u2014 the project itself was created, ${created.addr}, without one`);
-        const summarized = route === "change" ? await first("summary", summary, "Summary") : void 0;
-        if (summarized) published2(summarized, `the summary of "${title}" \u2014 the project itself was created, ${created.addr}, without one`);
+        await writeFirstChanges(context2, state, { addr: created.addr, author: context2.signer.pubkey, folder: team.id }, created.result.eventId, "project", title, [
+          ...body ? [{ field: TEXT_FIELD, value: body.value, note: "Description", contentFormat: body.contentFormat }] : [],
+          ...route === "change" ? [{ field: "summary", value: summary, note: "Summary" }] : []
+        ]);
         const mentioned = await publishMentionAdds(context2, adds, `The project "${title}" (${created.addr})`);
         return {
           created: { title, ...summary ? { summary } : {}, ...key ? { key } : {}, addr: created.addr, team: { id: team.id, name: team.name } },
@@ -26623,7 +26715,7 @@ Pass an address to say which.`
     },
     {
       name: "create-issue",
-      // The change only when a manifest takes no summary on the record (`summaryRoute`).
+      // The text as its first change (ISS-7); the summary too when a manifest takes none on the record (`summaryRoute`).
       signs: [KIND2.ISSUE, KIND_CHANGE],
       summary: "file one new issue in a project",
       usage: 'create-issue --project <ref> --title "..." [--summary "..."] [--description "..."] [--mention <key|npub|handle>[,\u2026]]',
@@ -26650,14 +26742,16 @@ Pass an address to say which.`
           state,
           { addr: project.addr, author: project.author, folder },
           "add-issue",
-          { title, ...body ? { description: body.value } : {}, ...route === "seed" ? { summary } : {} },
+          { title, ...route === "seed" ? { summary } : {} },
           [KIND2.ISSUE],
-          { newId: id, contentFormat: body?.contentFormat }
+          { newId: id }
         );
         const created = { result, id, addr: addr2 };
         published2(created.result, `a new issue in ${project.title}`);
-        const summarized = route === "change" ? await setField(context2, state, { addr: addr2, author: context2.signer.pubkey, folder }, "summary", summary, "Summary") : void 0;
-        if (summarized) published2(summarized, `the summary of "${title}" \u2014 the issue itself was created, ${addr2}, without one`);
+        await writeFirstChanges(context2, state, { addr: addr2, author: context2.signer.pubkey, folder }, created.result.eventId, "issue", title, [
+          ...body ? [{ field: TEXT_FIELD, value: body.value, note: "Description", contentFormat: body.contentFormat }] : [],
+          ...route === "change" ? [{ field: "summary", value: summary, note: "Summary" }] : []
+        ]);
         const mentioned = await publishMentionAdds(context2, adds, `The issue "${title}" (${addr2})`);
         return {
           state: issueLine({ ref: NO_REF, id: created.id, status: state.vocab.issue.fallback, comments: [] }, void 0),
@@ -27536,6 +27630,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           archived: {
             type: "boolean",
             description: "Optional. Include archived issues \u2014 archived themselves or with their project. Hidden by default, and a line says how many."
+          },
+          search: {
+            type: "string",
+            description: "Optional. Only the issues the relay finds by these words in their current title, summary, ref or text \u2014 never by words only an older text held."
           }
         },
         additionalProperties: false
@@ -27692,6 +27790,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: "string",
             description: "Optional. The issue body. An empty string clears it."
           },
+          version: {
+            type: "string",
+            description: "With `description`, where `ship_get_issue` printed one: that `version`, the text your change was made on. A change saved since on other blocks is merged in and the answer says whose; one on the same block saves nothing and names who made it."
+          },
           mention: MENTION_PROPERTY,
           project: {
             type: "string",
@@ -27750,7 +27852,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_delete_issue",
-      description: "Ask the relay to drop one Estiva Ship issue record. IRREVERSIBLE, and the only tool here that is. Every other write is a change a later change supersedes; this asks the relay to drop the event, and republishing does not undo it. Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. It removes the issue, not the discussion: the conversations about it are separate events with their own authors, they are not deleted, and they stop being reachable from the issue. " + WRITE_NOTE,
+      description: "Delete one Estiva Ship issue. **`ship_archive` is almost always the right tool instead** \u2014 it hides the issue, is reversible, and records who did it. Where the relay keeps issues in order, a delete is a change: the issue leaves every list and search, keeps its id, number and conversation, shows who deleted it, and `restore: true` with its id or address brings it back whole. Elsewhere it is IRREVERSIBLE: it asks the relay to drop the event, republishing does not undo it, and the conversations about it stop being reachable from the issue. Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. " + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -27765,6 +27867,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           reason: {
             type: "string",
             description: "Optional. Recorded on the deletion request."
+          },
+          restore: {
+            type: "boolean",
+            description: "Optional. Bring back an issue deleted by a change; `ref` is then its id or address, since it is on no list."
           }
         },
         required: ["ref"],
@@ -28091,7 +28197,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "ship_list_issues":
         return await dispatch(
           command("issues"),
-          args({ ...flagsFrom(input, ["project", "status"]), ...input.archived === true ? { archived: true } : {} })
+          args({ ...flagsFrom(input, ["project", "status", "search"]), ...input.archived === true ? { archived: true } : {} })
         );
       case "ship_activity":
         return await dispatch(command("activity"), args(flagsFrom(input, ["since", "project", "by", "limit"])));
@@ -28119,7 +28225,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await dispatch(command("assign"), args({}, [str(input.ref), str(input.pubkey)]));
       case "ship_edit_issue": {
         const flags = {};
-        for (const name of ["title", "summary", "description", "mention", "project"]) {
+        for (const name of ["title", "summary", "description", "version", "mention", "project"]) {
           const value = input[name];
           if (typeof value === "string") flags[name] = value;
         }
@@ -28139,7 +28245,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const flags = {};
         if (input.confirm === true) flags.yes = true;
         if (typeof input.reason === "string" && input.reason) flags.reason = input.reason;
-        if (request.params.name === "ship_delete_project" && input.restore === true) flags.restore = true;
+        if (input.restore === true) flags.restore = true;
         const which = request.params.name === "ship_delete_issue" ? "delete-issue" : "delete-project";
         return await dispatch(command(which), args(flags, [str(input.ref)]));
       }
