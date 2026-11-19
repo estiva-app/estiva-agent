@@ -1,4 +1,4 @@
 {
-  "minimum": "0.29.0",
-  "why": "0.29.0 moves a project and the topics under it with the relay's move, one per Folder, so both lists change together (TEA-3). An older agent adds to the new Folder before removing from the old one, which would leave a topic in two teams, and the relay now refuses that: a topic is listed by one team. Raise this when the workspace starts expecting something every writer must do; an agent below it refuses writes and still reads."
+  "minimum": "0.34.0",
+  "why": "0.34.0 writes an issue after the change it follows, creates one with its text as its own change, and deletes one as a change that can be undone (ISS-7). From the issues switch the relay keeps issues in order for every team and refuses an issue change that names no change it follows, a permanent delete of an issue, and a new project or issue whose first record carries its text (ISS-8). Raise this when the workspace starts expecting something every writer must do; an agent below it refuses writes and still reads."
 }
