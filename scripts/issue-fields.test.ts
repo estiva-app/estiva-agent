@@ -81,6 +81,15 @@ for (const keepsOrder of [true, false]) {
   check(`${label}: the answer names QA-1, shows both versions and says to read the issue again`, /as QA-1 left it at \d{4}-/.test(message) && message.includes('One, rewritten by QA-1.') && message.includes('One, rewritten by Claude.') && /read the issue again/.test(message), message.split('\n')[0])
 }
 
+// — A status set with nobody crossing it follows the status change it replaces, not the record —
+{
+  // On a team not switched yet, where nothing corrects a wrong `prev` with a refusal.
+  const { context, published, addr, status } = workspace({ keepsOrder: false })
+  const answer = await run(context, 'set-status', [addr, 'in_progress'])
+  const saved = mine(published).find((e) => tag(e, 'field') === 'status')
+  check('set-status follows the current status change', answer.ok && tag(saved, 'prev') === status.id, answer.ok ? tag(saved, 'prev') : answer.message)
+}
+
 // — A status, an assignee and an archive set from an older copy: the later stands —
 for (const [command, positional, flags, field, value] of [
   ['set-status', ['in_progress'], {}, 'status', 'in_progress'],
@@ -173,6 +182,10 @@ for (const how of [{ inOrder: ISSUES }, { refuseKind5: 'issue' as const }]) {
   check('show finds an issue by a word in its current text', now.ok && now.answer.title === 'Login is slow', now.ok ? String(now.answer.title) : now.message)
   const listed = await run(context, 'issues', [], { search: 'rollout', json: true })
   check('issues --search lists it', listed.ok && (listed.answer.issues as { ref?: string }[]).map((i) => i.ref).join() === 'LAU-1', listed.ok ? JSON.stringify(listed.answer.issues) : listed.message)
+  // The relay ranks a title match first; the list keeps its order, not newest first.
+  const ranked = { ...context, relay: { ...context.relay, queryWithMatches: async () => ({ events: [], matches: [{ a: `30851:${QA1}:beef0000-0000-4000-8000-000000000001` }, { a: `30851:${QA1}:beef0000-0000-4000-8000-000000000002` }] }) } } as unknown as typeof context
+  const both = await run(ranked, 'issues', [], { search: 'slow', json: true })
+  check('issues --search keeps the relay\'s order, best first', both.ok && (both.answer.issues as { ref?: string }[]).map((i) => i.ref).join() === 'LAU-1,LAU-2', both.ok ? (both.answer.issues as { ref?: string }[]).map((i) => i.ref).join() : both.message)
   const { context: c2, events: e2, addr, read } = workspace()
   e2.push(textChange(QA1, addr, doc(['b1', 'One.'], ['b2', 'Two.']), read.id))
   const old = await run(c2, 'show', ['rollout'])

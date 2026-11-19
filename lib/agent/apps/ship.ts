@@ -2246,12 +2246,15 @@ export const shipApp: AgentApp = {
         if (wantedStatuses) issues = issues.filter(wantedStatuses)
         // The issues the relay finds by a word of their current title, summary, ref or text (SPEC §6.13, ISS-7), best first.
         const search = flagValue(args, 'search')
+        // Newest first, or with --search the relay's order: a title match before one in the text.
+        let order = (a: Issue, b: Issue) => b.createdAt - a.createdAt
         if (search !== undefined) {
           if (!(await fileReadsFor(context)).search.includes(TYPE_OF[KIND.ISSUE])) {
             throw new BadRequest('This relay does not find issues by the words of their text yet, so --search has nothing to ask. Nothing was filtered.')
           }
           const found = await filesByWords(context, search, [KIND.ISSUE])
           issues = issues.filter((issue) => found.includes(issue.addr))
+          order = (a, b) => found.indexOf(a.addr) - found.indexOf(b.addr)
         }
         // After the other filters, so the count says how many of *these* were left out.
         const archived = issues.filter((issue) => issue.archived).length
@@ -2266,7 +2269,7 @@ export const shipApp: AgentApp = {
           [VOCAB]: state.vocab.issue,
           issues: issues
             .slice()
-            .sort((a, b) => b.createdAt - a.createdAt)
+            .sort(order)
             .map((issue) => issueSummary(issue, directory, state.vocab.issue)),
           // The same honesty `projects` owes (AGE-7): a shorter list is not a smaller workspace.
           hidden: {

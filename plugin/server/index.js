@@ -26001,12 +26001,14 @@ var shipApp = {
         }
         if (wantedStatuses) issues = issues.filter(wantedStatuses);
         const search = flagValue(args2, "search");
+        let order = (a, b) => b.createdAt - a.createdAt;
         if (search !== void 0) {
           if (!(await fileReadsFor(context2)).search.includes(TYPE_OF[KIND2.ISSUE])) {
             throw new BadRequest("This relay does not find issues by the words of their text yet, so --search has nothing to ask. Nothing was filtered.");
           }
           const found = await filesByWords(context2, search, [KIND2.ISSUE]);
           issues = issues.filter((issue2) => found.includes(issue2.addr));
+          order = (a, b) => found.indexOf(a.addr) - found.indexOf(b.addr);
         }
         const archived = issues.filter((issue2) => issue2.archived).length;
         if (!args2.flags.archived) issues = issues.filter((issue2) => !issue2.archived);
@@ -26016,7 +26018,7 @@ var shipApp = {
         );
         return {
           [VOCAB]: state.vocab.issue,
-          issues: issues.slice().sort((a, b) => b.createdAt - a.createdAt).map((issue2) => issueSummary(issue2, directory, state.vocab.issue)),
+          issues: issues.slice().sort(order).map((issue2) => issueSummary(issue2, directory, state.vocab.issue)),
           // The same honesty `projects` owes (AGE-7): a shorter list is not a smaller workspace.
           hidden: {
             archived: args2.flags.archived ? 0 : archived,
