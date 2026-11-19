@@ -1406,7 +1406,13 @@ async function writeFirstChanges(
   for (const [index, write] of writes.entries()) {
     const send = () => writeField(context, state, target, write.field, write.value, write.note, rootId, write.contentFormat)
     let written = await send()
-    if (!written.ok) written = await send()
+    if (!written.ok) {
+      // A send whose answer was lost may still have landed: then it is not sent twice.
+      const [landed] = (await relayQuery(context)([{ kinds: [KIND_CHANGE], authors: [context.signer.pubkey], '#a': [target.addr] }])).filter(
+        (event) => fieldsSetBy(event).some((set) => set.field === write.field && set.value === write.value),
+      )
+      written = landed ? { ok: true, id: landed.id, event: landed } : await send()
+    }
     if (!written.ok) {
       const why = 'refused' in written ? written.refused : 'a change crossed it'
       const missing = writes.slice(index).map((each) => (each.field === TEXT_FIELD ? 'text' : each.field))
@@ -1785,7 +1791,10 @@ async function setDeleted(context: AgentContext, state: Workspace, file: ShipFil
 async function restoreFile(context: AgentContext, query: QueryFn, reference: string, kind: number) {
   const noun = kind === KIND.PROJECT ? 'project' : 'issue'
   const needle = reference.trim().toLowerCase()
-  const roots = await query([{ kinds: [kind] }])
+  // A whole address or id is read by itself; only a prefix needs every record of the kind (~960 issues).
+  const [, pubkey, ...rest] = needle.split(':')
+  const whole = needle.startsWith(`${kind}:`) && /^[0-9a-f]{64}$/.test(pubkey ?? '') ? { authors: [pubkey], '#d': [rest.join(':')] } : /^[0-9a-f-]{36}$/.test(needle) ? { '#d': [needle] } : {}
+  const roots = await query([{ kinds: [kind], ...whole }])
   const addresses = [...new Set(roots.map((root) => `${root.kind}:${root.pubkey}:${root.tags.find((t) => t[0] === 'd')?.[1] ?? ''}`))]
   const named = addresses.filter((addr) => {
     const d = addr.split(':').slice(2).join(':').toLowerCase()

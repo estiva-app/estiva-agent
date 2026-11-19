@@ -128,6 +128,23 @@ for (const [command, positional, flags, field, value] of [
   check('then the answer is not "created": it names the issue and says its text did not land', !created.ok && record !== undefined && created.message.includes(addressOf(record)) && /text did not land/.test(created.message), created.ok ? JSON.stringify(created.answer) : created.message)
 }
 
+{
+  // The relay takes the text but its answer is lost: the text is not sent twice.
+  let lost = false
+  const setup = workspace({
+    beforePublish: (e) => {
+      if (!lost && e.pubkey === SELF && tag(e, 'field') === 'description') {
+        lost = true
+        setup.events.push(e)
+        return { ok: false, reason: 'error: relay busy' }
+      }
+    },
+  })
+  const created = await run(setup.context, 'create-issue', [], { project: addressOf(setup.project), title: 'Probe', description: 'Its text.' })
+  const texts = setup.events.filter((e) => e.pubkey === SELF && tag(e, 'field') === 'description')
+  check('a text whose answer was lost is not sent again, and the issue is created', created.ok && texts.length === 1, created.ok ? String(texts.length) : created.message)
+}
+
 // — Delete and restore —
 for (const how of [{ inOrder: ISSUES }, { refuseKind5: 'issue' as const }]) {
   const label = 'inOrder' in how ? 'relay announcing issues in order' : 'team refusing kind:5 (the fence)'

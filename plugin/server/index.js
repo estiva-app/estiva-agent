@@ -25446,7 +25446,12 @@ async function writeFirstChanges(context2, state, target, rootId, noun, title, w
   for (const [index, write] of writes.entries()) {
     const send = () => writeField(context2, state, target, write.field, write.value, write.note, rootId, write.contentFormat);
     let written = await send();
-    if (!written.ok) written = await send();
+    if (!written.ok) {
+      const [landed] = (await relayQuery(context2)([{ kinds: [KIND_CHANGE], authors: [context2.signer.pubkey], "#a": [target.addr] }])).filter(
+        (event) => fieldsSetBy(event).some((set) => set.field === write.field && set.value === write.value)
+      );
+      written = landed ? { ok: true, id: landed.id, event: landed } : await send();
+    }
     if (!written.ok) {
       const why = "refused" in written ? written.refused : "a change crossed it";
       const missing = writes.slice(index).map((each) => each.field === TEXT_FIELD ? "text" : each.field);
@@ -25684,7 +25689,9 @@ async function setDeleted2(context2, state, file, deleted, reason) {
 async function restoreFile(context2, query, reference, kind) {
   const noun = kind === KIND2.PROJECT ? "project" : "issue";
   const needle = reference.trim().toLowerCase();
-  const roots = await query([{ kinds: [kind] }]);
+  const [, pubkey, ...rest] = needle.split(":");
+  const whole = needle.startsWith(`${kind}:`) && /^[0-9a-f]{64}$/.test(pubkey ?? "") ? { authors: [pubkey], "#d": [rest.join(":")] } : /^[0-9a-f-]{36}$/.test(needle) ? { "#d": [needle] } : {};
+  const roots = await query([{ kinds: [kind], ...whole }]);
   const addresses = [...new Set(roots.map((root) => `${root.kind}:${root.pubkey}:${root.tags.find((t) => t[0] === "d")?.[1] ?? ""}`))];
   const named = addresses.filter((addr2) => {
     const d = addr2.split(":").slice(2).join(":").toLowerCase();
