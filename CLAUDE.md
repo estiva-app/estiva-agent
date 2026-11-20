@@ -262,7 +262,8 @@ no app: `create --type` takes the noun the app's manifest gives the type
 (`document`), and any type an app declares a Folder action for can be started.
 Leaf draws the title and the summary above the text, so do not open the text
 with the title again as a heading. Claude Desktop and the plugin reach them as
-`file_show`, `file_create`, `file_describe` and `file_comment` (e0e3e907).
+`file_show`, `file_create`, `file_describe` and `file_comment` (e0e3e907),
+and `file archive` as `file_archive` (AGE-21).
 
 - **`show`** takes the file's link as well as its address — a Leaf
   `/document/<slug>-<d>` link, or any app's, read as `links` reads one: the

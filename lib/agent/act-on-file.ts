@@ -17,6 +17,10 @@ import {
   createLoadQuery,
   folderOf,
   KIND_CHANNEL_METADATA,
+  filesOf,
+  openFile,
+  prevsAfterSwitch,
+  writeChange,
   resolveForeignObject,
   resolveManifest,
   type Archive,
@@ -27,6 +31,7 @@ import {
 import { addrToNaddr, imetaTag, KIND, RELAY_BUSY_MESSAGE, type Imeta } from '@estiva-app/protocol'
 import { BadRequest, type AgentContext } from './cli'
 import { commentLinkTags } from './links'
+import { fileReadsFor } from './apps/ship-workspace'
 
 /** A `d` may itself hold a colon, so everything after the pubkey is the identifier. */
 export function pointerOf(address: string) {
@@ -128,6 +133,8 @@ export async function actOnFile(
   files: readonly Imeta[] = [],
   /** What the person said about a change, as its content — an archive's resolution (FOL-46). */
   note?: string,
+  /** The field this change sets, to write it after the change it follows (§6.2); omitted, it is published as built. */
+  ordered?: string,
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
   const query = relayQuery(context)
   const pointer = pointerOf(file.address)
@@ -141,27 +148,62 @@ export async function actOnFile(
   const folder = folderOf(root)
   if (!folder) throw new BadRequest(`${file.title} has no team on the relay, so there is nowhere to write.`)
 
-  const built = buildActionEvent({
-    manifest: resolved.manifest,
-    kind: pointer.kind,
-    address: file.address,
-    objectAuthor: pointer.pubkey,
-    folder,
-    actionId,
-    value,
-    replyTo,
-    contentFormat,
-    ...(note ? { note } : {}),
-    linkTags: actionId === 'comment' ? await commentLinkTags(context, value, { file: file.address, parent: replyTo?.id }) : undefined,
-    pubkey: context.signer.pubkey,
-    createdAtMs: Date.now(),
-  })
-  if (typeof built === 'string') throw new BadRequest(`${file.title} does not take ${actionId}: ${built}`)
-  if (built.kind !== signs) {
-    throw new BadRequest(`The manifest read for ${file.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`)
+  const linkTags = actionId === 'comment' ? await commentLinkTags(context, value, { file: file.address, parent: replyTo?.id }) : undefined
+  /** The event for this value, checked: built by the manifest, the kind this command signs, the tags the caller means. */
+  const build = (input: { value: string; prev?: string; createdAtMs: number }) => {
+    const built = buildActionEvent({
+      manifest: resolved.manifest,
+      kind: pointer.kind,
+      address: file.address,
+      objectAuthor: pointer.pubkey,
+      folder,
+      actionId,
+      value: input.value,
+      replyTo,
+      contentFormat,
+      ...(note ? { note } : {}),
+      ...(input.prev ? { prev: input.prev } : {}),
+      linkTags,
+      pubkey: context.signer.pubkey,
+      createdAtMs: input.createdAtMs,
+    })
+    if (typeof built === 'string') throw new BadRequest(`${file.title} does not take ${actionId}: ${built}`)
+    if (built.kind !== signs) {
+      throw new BadRequest(`The manifest read for ${file.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`)
+    }
+    const wrong = shape?.(built.tags.filter((tag) => tag[0] !== 'prev'), folder)
+    if (wrong) throw new BadRequest(`The manifest read for ${file.title} builds "${actionId}" ${wrong}. Nothing was published.`)
+    return built
   }
-  const wrong = shape?.(built.tags, folder)
-  if (wrong) throw new BadRequest(`The manifest read for ${file.title} builds "${actionId}" ${wrong}. Nothing was published.`)
+
+  if (ordered) {
+    /*
+      A field's change names the one it follows (SPEC §6.2), as `ship archive`
+      writes it: a relay that keeps the type in order refuses one that names
+      none, and answers a stale one with `conflict:`, which `writeChange` takes.
+      The field's current change, or the file's first record when it never changed.
+    */
+    const handle = { kind: pointer.kind, pubkey: pointer.pubkey, d: pointer.identifier }
+    // The relay's list read where its NIP-11 offers one; elsewhere the file's changes, folded as every reader folds them.
+    const listed = (await fileReadsFor(context)).list ? (await prevsAfterSwitch(query, handle, [ordered]).catch(() => undefined))?.[ordered] : undefined
+    const prev =
+      listed ??
+      filesOf([root, ...(await query([{ kinds: [signs], '#a': [file.address] }]))]).find((one) => one.address === file.address)?.fields[ordered]?.id ??
+      root.id
+    const written = await writeChange({
+      field: ordered,
+      value,
+      prev,
+      build,
+      sign: (event) => context.signer.sign(event),
+      publish: (event) => context.relay.publish(event),
+      query,
+      current: async (field) => (await openFile(query, handle, { text: false }).catch(() => undefined))?.fields[field]?.event,
+    })
+    return written.ok ? { ok: true, eventId: written.id } : { ok: false, reason: 'refused' in written ? written.refused : 'a change crossed it' }
+  }
+
+  const built = build({ value, createdAtMs: Date.now() })
   const signed = await context.signer.sign(files.length ? { ...built, tags: [...built.tags, ...files.map(imetaTag)] } : built)
   const result = await context.relay.publish(signed)
   return { ...result, eventId: result.eventId ?? signed.id }

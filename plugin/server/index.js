@@ -23167,6 +23167,12 @@ function textOf3(event) {
   const value = tagValue3(event, TEXT_FIELD) ?? event.content;
   return { value, ...format ? { format } : {} };
 }
+async function prevsAfterSwitch(query, file, fields) {
+  const opened = await openFile(query, file, { text: fields.includes(TEXT_FIELD) });
+  if (!opened)
+    return void 0;
+  return Object.fromEntries(fields.filter((f) => !f.startsWith("member:")).map((f) => [f, opened.fields[f]?.id ?? opened.root.id]));
+}
 function conflictOf(reason) {
   if (!reason.startsWith("conflict:"))
     return void 0;
@@ -23692,8 +23698,336 @@ function drawnLinks(read, names, titleOf = () => void 0) {
 }
 var personOf = (reference) => reference.replace(/^nostr:/i, "");
 
+// lib/agent/apps/ship-workspace.ts
+var KIND2 = { PROJECT: 30850, ISSUE: 30851 };
+var KIND_HANDLER_RECOMMENDATION2 = 31989;
+var tagValue4 = (event, name) => event.tags.find((tag) => tag[0] === name)?.[1];
+var textUnread = (file) => file.heads !== void 0 && file.version === void 0;
+function cascadeArchives(workspace, folders = []) {
+  for (const project of workspace.projects) {
+    let archive = project.ownArchive;
+    if (!archive) {
+      const listing = folders.filter((folder) => folder.addresses?.includes(project.addr));
+      const placed = listing.length ? listing : folders.filter((folder) => folder.id === project.contentFolder);
+      const archivedFolder = placed.length && placed.every((folder) => folder.archived && folder.archived.with !== project.addr) ? placed[0] : void 0;
+      if (archivedFolder?.archived) archive = { ...archivedFolder.archived, with: archivedFolder.channel ?? archivedFolder.id };
+    }
+    project.archive = archive;
+    project.archived = Boolean(archive);
+  }
+  const byAddr = new Map(workspace.projects.map((project) => [project.addr, project]));
+  for (const issue2 of workspace.issues) {
+    const project = issue2.projectAddr ? byAddr.get(issue2.projectAddr) : void 0;
+    issue2.archive = issue2.ownArchive ?? (project?.archive ? { ...project.archive, with: project.addr } : void 0);
+    issue2.archived = Boolean(issue2.archive);
+  }
+}
+var pointerOf = (address) => {
+  const [kind, pubkey, ...rest] = address.split(":");
+  return { kind: Number(kind), pubkey, identifier: rest.join(":"), relays: [] };
+};
+async function manifestsFor(roots, query, cache) {
+  const kinds = [KIND2.PROJECT, KIND2.ISSUE];
+  const sharing = Promise.all(kinds.map((kind) => resolveManifest(pointerOf(`${kind}:${NOBODY}:`), query, cache)));
+  sharing.catch(() => {
+  });
+  const authors = [...new Set((await roots).map((root) => root.pubkey))];
+  const recommendations = authors.length ? await query([{ kinds: [KIND_HANDLER_RECOMMENDATION2], authors, "#d": kinds.map(String) }]) : [];
+  const recommends = new Set(recommendations.map((event) => `${tagValue4(event, "d")}:${event.pubkey}`));
+  const resolved = /* @__PURE__ */ new Map();
+  await Promise.all(
+    [...recommends].map(async (key) => {
+      const [kind, author] = key.split(":");
+      resolved.set(`${kind}:${author}`, await resolveManifest(pointerOf(`${kind}:${author}:`), query, cache) ?? void 0);
+    })
+  );
+  const shared = new Map((await sharing).map((manifest, i) => [kinds[i], manifest ?? void 0]));
+  return {
+    of: (pointer) => recommends.has(`${pointer.kind}:${pointer.pubkey}`) ? resolved.get(`${pointer.kind}:${pointer.pubkey}`) : shared.get(pointer.kind),
+    /** What an author who recommends nothing reads a kind with — the workspace's vocabulary. */
+    shared: (kind) => shared.get(kind),
+    all: () => [...shared.values(), ...resolved.values()].filter((m) => m !== void 0)
+  };
+}
+var NOBODY = "0".repeat(64);
+var newer2 = (a, b) => a.created_at > b.created_at || a.created_at === b.created_at && a.id < b.id;
+function vocabularyOf(resolved, kind) {
+  const spec = resolved?.manifest.projections?.[String(kind)]?.slots?.status;
+  const entries = spec?.map && resolved?.manifest.vocabularies?.[spec.map] || [];
+  return { entries: entries.map(({ value, label }) => ({ value, label })), fallback: spec?.default ?? entries[0]?.value ?? "" };
+}
+function rawStatus(object3, vocab) {
+  const shown = object3.slots.status?.value;
+  if (shown === void 0 || shown === "") return vocab.fallback;
+  return vocab.entries.find((entry) => entry.label === shown)?.value ?? shown;
+}
+var metaValue = (object3, field) => object3.meta.find((slot) => slot.field === field)?.value || void 0;
+var NO_FILE_READS = { list: false, text: false, times: false, switched: false, inOrder: [], search: [] };
+var fileReads = /* @__PURE__ */ new WeakMap();
+var FILE_READS_FOR_MS = 10 * 6e4;
+function fileReadsFor(context2) {
+  const held = fileReads.get(context2);
+  if (held && Date.now() - held.at < FILE_READS_FOR_MS) return held.reads;
+  const reads2 = Promise.resolve().then(() => context2.relay.info()).then(relayFileReadsOf, () => NO_FILE_READS);
+  fileReads.set(context2, { at: Date.now(), reads: reads2 });
+  return reads2;
+}
+var TYPE_OF = { [KIND2.PROJECT]: "osnova.project", [KIND2.ISSUE]: "osnova.issue" };
+async function loadWorkspace(context2, query = loadQuery(context2), { history = false } = {}) {
+  const cache = createProjectionCache();
+  if (!history && (await fileReadsFor(context2)).list) {
+    const files = (await Promise.all([KIND2.PROJECT, KIND2.ISSUE].map((kind) => listFiles(query, { kinds: [kind] })))).flat();
+    return foldFiles(files, query, cache, /* @__PURE__ */ new Set());
+  }
+  const early = query([{ kinds: [KIND_CHANGE] }]);
+  early.catch(() => {
+  });
+  const roots = await readRoots(query);
+  const manifests = await manifestsFor(roots, query, cache);
+  const changes = await query([{ kinds: changeKindsOf(manifests) }]);
+  return foldWorkspace(roots, changes, manifests, cache);
+}
+function readRoots(query) {
+  return query([{ kinds: [KIND2.PROJECT, KIND2.ISSUE] }]);
+}
+function filesReader(query, roots, cache = createProjectionCache()) {
+  const manifests = manifestsFor(roots, query, cache);
+  manifests.catch(() => {
+  });
+  const asked = /* @__PURE__ */ new Map();
+  const changesTo = async (kind, wanted) => {
+    const read = asked.get(kind) ?? { files: /* @__PURE__ */ new Set(), reads: [] };
+    asked.set(kind, read);
+    const unasked = [...wanted].filter((addr2) => !read.files.has(addr2));
+    for (const addr2 of unasked) read.files.add(addr2);
+    if (unasked.length) read.reads.push(query([{ kinds: [kind], "#a": unasked }]));
+    const seen = /* @__PURE__ */ new Set();
+    return (await Promise.all(read.reads)).flat().filter((event) => !seen.has(event.id) && seen.add(event.id) && event.tags.some((t) => t[0] === "a" && wanted.has(t[1])));
+  };
+  return async (addresses) => {
+    const wanted = new Set(addresses);
+    const theirs = (await roots).filter((root) => wanted.has(addressOf(root)));
+    const byTarget = async (kinds) => wanted.size ? (await Promise.all(kinds.map((kind) => changesTo(kind, wanted)))).flat() : [];
+    const owners = [...new Set(theirs.map((root) => `${root.kind}:${root.pubkey}:`))];
+    const [resolved, changes] = await Promise.all([
+      manifests,
+      byTarget([KIND_CHANGE]),
+      ...owners.map((owner) => resolveManifest(pointerOf(owner), query, cache))
+    ]);
+    const more = await byTarget(changeKindsOf(resolved).filter((kind) => kind !== KIND_CHANGE));
+    return foldWorkspace(theirs, [...changes, ...more], resolved, cache);
+  };
+}
+function fieldsReader(context2, query, cache = createProjectionCache()) {
+  return async (addresses, text2 = []) => {
+    const reads2 = await fileReadsFor(context2);
+    const opened = new Set(reads2.text ? text2 : []);
+    const listed = /* @__PURE__ */ new Map();
+    for (const address of new Set(addresses)) {
+      if (opened.has(address)) continue;
+      const { kind, identifier } = pointerOf(address);
+      listed.set(kind, [...listed.get(kind) ?? [], identifier]);
+    }
+    const owners = [...new Set([...addresses, ...opened].map((address) => `${pointerOf(address).kind}:${pointerOf(address).pubkey}:`))];
+    const [lists, opens] = await Promise.all([
+      Promise.all([...listed].map(([kind, ds]) => listFiles(query, { kinds: [kind], "#d": ds }))),
+      Promise.all([...opened].map((address) => {
+        const { kind, pubkey, identifier } = pointerOf(address);
+        return openFile(query, { kind, pubkey, d: identifier }, { text: true });
+      })),
+      // Each file's manifest as its own author resolves it, into the cache its conversation is read through next.
+      ...owners.map((owner) => resolveManifest(pointerOf(owner), query, cache))
+    ]);
+    const wanted = /* @__PURE__ */ new Set([...addresses, ...opened]);
+    const files = [...lists.flat(), ...opens.flatMap((file) => file ? [file] : [])].filter((file) => wanted.has(file.address));
+    const missing = [...wanted].filter((address) => !files.some((file) => file.address === address));
+    if (missing.length) {
+      const events = await query([
+        ...missing.map((address) => ({ kinds: [pointerOf(address).kind], authors: [pointerOf(address).pubkey], "#d": [pointerOf(address).identifier] })),
+        { kinds: [KIND_CHANGE], "#a": missing }
+      ]);
+      for (const file of filesOf(events, { withText: true })) {
+        if (!missing.includes(file.address)) continue;
+        files.push(file);
+        opened.add(file.address);
+      }
+    }
+    return foldFiles(files, query, cache, opened);
+  };
+}
+async function foldFiles(files, query, cache, withText2) {
+  const roots = files.map((file) => file.root);
+  const manifests = await manifestsFor(roots, query, cache);
+  const changes = files.flatMap((file) => file.events.filter((event) => event !== file.root));
+  return foldWorkspace(roots, changes, manifests, cache, { files, withText: withText2 });
+}
+var addressOf = (root) => `${root.kind}:${root.pubkey}:${tagValue4(root, "d")}`;
+function changeKindsOf(manifests) {
+  return [
+    .../* @__PURE__ */ new Set([KIND_CHANGE, ...manifests.all().flatMap((resolved) => resolved.manifest.records ? [resolved.manifest.records.changeKind] : [])])
+  ];
+}
+function foldWorkspace(roots, read, manifests, cache, byFields) {
+  const fileOf2 = new Map(byFields?.files.map((file) => [file.address, file]));
+  const manifestOf = manifests.of;
+  const shipKind = (target) => target !== void 0 && (target.startsWith(`${KIND2.PROJECT}:`) || target.startsWith(`${KIND2.ISSUE}:`));
+  const changes = read.filter((event) => shipKind(tagValue4(event, "a")));
+  const objects = new Map(projectEvents([...roots, ...changes], manifestOf).map((object3) => [object3.address, object3]));
+  const rootOf2 = /* @__PURE__ */ new Map();
+  for (const root of roots) {
+    const addr2 = `${root.kind}:${root.pubkey}:${tagValue4(root, "d")}`;
+    const held = rootOf2.get(addr2);
+    if (!held || newer2(root, held)) rootOf2.set(addr2, root);
+  }
+  const vocab = {
+    project: vocabularyOf(manifests.shared(KIND2.PROJECT), KIND2.PROJECT),
+    issue: vocabularyOf(manifests.shared(KIND2.ISSUE), KIND2.ISSUE)
+  };
+  const vocabOf = (root) => {
+    const resolved = manifestOf(root);
+    return resolved === manifests.shared(root.kind) ? root.kind === KIND2.PROJECT ? vocab.project : vocab.issue : vocabularyOf(resolved, root.kind);
+  };
+  const projects = [];
+  const issues = [];
+  for (const [addr2, object3] of objects) {
+    const root = rootOf2.get(addr2);
+    const file = fileOf2.get(addr2);
+    const base = {
+      addr: addr2,
+      id: pointerOf(addr2).identifier,
+      author: root.pubkey,
+      createdAt: root.created_at,
+      title: object3.slots.title?.value ?? "",
+      // Every file kind's `subtitle` is its summary, built into interop (SPEC
+      // §7.2, §6.12), so Ship's manifest need not declare it.
+      summary: object3.slots.subtitle?.value,
+      description: object3.slots.body?.value ?? "",
+      descriptionFormat: object3.slots.body?.format,
+      rootId: root.id,
+      ...file ? {
+        heads: Object.fromEntries(Object.entries(file.fields).map(([field, current2]) => [field, current2.id])),
+        ...byFields?.withText.has(addr2) ? { version: file.fields[TEXT_FIELD]?.id ?? root.id } : {}
+      } : {}
+    };
+    const deleted = file?.fields.deleted?.value === "true" ? { by: file.fields.deleted.pubkey, at: file.fields.deleted.at } : void 0;
+    if (object3.kind === KIND2.PROJECT) {
+      projects.push({
+        ...base,
+        status: rawStatus(object3, vocabOf(root)),
+        ...object3.slots.status?.stage ? { stage: object3.slots.status.stage } : {},
+        lead: metaValue(object3, "lead"),
+        key: metaValue(object3, "key"),
+        archived: Boolean(object3.archived),
+        ownArchive: object3.archived,
+        contentFolder: folderOf(root) ?? "",
+        ...deleted ? { deleted } : {}
+      });
+    } else {
+      issues.push({
+        ...base,
+        status: rawStatus(object3, vocabOf(root)),
+        ...object3.slots.status?.stage ? { stage: object3.slots.status.stage } : {},
+        assignee: metaValue(object3, "assignee"),
+        ref: metaValue(object3, "ref"),
+        projectAddr: object3.parentRef || void 0,
+        folder: tagValue4(root, "h") ?? "",
+        archived: Boolean(object3.archived),
+        ownArchive: object3.archived,
+        ...deleted ? { deleted } : {}
+      });
+    }
+  }
+  cascadeArchives({ projects, issues });
+  const activity = [...changes].sort(byOrder).flatMap((event) => {
+    const field = tagValue4(event, "field");
+    const value = tagValue4(event, "value");
+    if (!field || value === void 0) return [];
+    const ts = Number.parseInt(tagValue4(event, "ts") ?? "", 10);
+    return [{
+      id: event.id,
+      author: event.pubkey,
+      createdAt: event.created_at,
+      ts: Number.isFinite(ts) ? ts : void 0,
+      target: tagValue4(event, "a"),
+      field,
+      value,
+      note: event.content,
+      format: contentFormatOf(event)
+    }];
+  });
+  const statusAt = /* @__PURE__ */ new Map();
+  const current = new Map(issues.map((issue2) => [issue2.addr, issue2.status]));
+  for (const change of activity) {
+    if (change.field !== "status" || change.value !== current.get(change.target)) continue;
+    statusAt.set(change.target, changedAt2(change));
+  }
+  for (const issue2 of issues) issue2.statusChangedAt = statusAt.get(issue2.addr);
+  return {
+    projects,
+    issues,
+    activity,
+    vocab,
+    manifestFor: (addr2) => manifestOf(pointerOf(addr2)),
+    objects,
+    cache,
+    byFields: Boolean(byFields)
+  };
+}
+var changedAt2 = (change) => change.ts !== void 0 && Math.floor(change.ts / 1e3) === change.createdAt ? change.ts : change.createdAt * 1e3;
+var THREAD_LIMIT = 1e3;
+var asMessage = (event) => ({
+  id: event.id,
+  author: event.pubkey,
+  body: event.content,
+  createdAt: event.created_at,
+  ts: trustedTs(event),
+  kind: event.kind,
+  folder: tagValue4(event, "h")
+});
+async function conversationsFor(context2, workspace, addresses) {
+  const byObject = await threadsFor(relayQuery(context2), workspace.cache, addresses.filter((addr2) => workspace.objects.has(addr2)));
+  return { byObject, edits: await editsFor(context2, byObject) };
+}
+async function threadsFor(query, cache, addresses) {
+  const objects = addresses.map((address) => ({ ref: address, address }));
+  const byObject = /* @__PURE__ */ new Map();
+  if (objects.length === 0) return byObject;
+  const rootsByObject = await conversationsOf(objects, query, cache);
+  const allRoots = [...new Set(Object.values(rootsByObject).flat().map((message) => message.id))];
+  const roots = {};
+  const replies = {};
+  const read = async (chunk) => {
+    const threads = await threadsOf(objects[0].address, chunk, query, cache, THREAD_LIMIT);
+    const answered = Object.values(threads.replies).reduce((sum, list) => sum + list.length, 0);
+    if (answered >= THREAD_LIMIT && chunk.length > 1) {
+      const half = Math.ceil(chunk.length / 2);
+      await read(chunk.slice(0, half));
+      await read(chunk.slice(half));
+      return;
+    }
+    Object.assign(roots, threads.roots);
+    for (const [id, list] of Object.entries(threads.replies)) replies[id] = list;
+  };
+  for (let i = 0; i < allRoots.length; i += 100) await read(allRoots.slice(i, i + 100));
+  for (const object3 of objects) {
+    const ids = (rootsByObject[object3.address] ?? []).map((message) => message.id);
+    byObject.set(
+      object3.address,
+      ids.filter((id) => roots[id]).map((id) => ({ id, root: asMessage(roots[id]), replies: (replies[id] ?? []).map(asMessage) })).sort((a, b) => (b.root.ts ?? b.root.createdAt * 1e3) - (a.root.ts ?? a.root.createdAt * 1e3))
+    );
+  }
+  return byObject;
+}
+async function editsFor(context2, byObject) {
+  const messages = [...byObject.values()].flat().flatMap((thread) => [thread.root, ...thread.replies]);
+  const decorations = messages.length ? await decorationsOf(messages.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })), relayQuery(context2)) : { byId: {} };
+  const edits = {};
+  for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit;
+  return edits;
+}
+
 // lib/agent/act-on-file.ts
-function pointerOf(address) {
+function pointerOf2(address) {
   const [kind, pubkey, ...rest] = address.split(":");
   return { kind: Number(kind), pubkey, identifier: rest.join(":"), relays: [] };
 }
@@ -23711,17 +24045,17 @@ function loadQuery(context2) {
   return createLoadQuery(relayQuery(context2), { paged: true });
 }
 async function folderOfFile(context2, address) {
-  const pointer = pointerOf(address);
+  const pointer = pointerOf2(address);
   const [root] = await relayQuery(context2)([{ kinds: [pointer.kind], authors: [pointer.pubkey], "#d": [pointer.identifier], limit: 1 }]);
   return root && folderOf(root) || void 0;
 }
 async function archivedRefusal(context2, address, archive, cache) {
   if (!archive) return void 0;
-  if (!archive.with) return archivedLine(archive, void 0, pointerOf(address).kind === KIND.DOCUMENT ? { in: "Peek" } : {});
+  if (!archive.with) return archivedLine(archive, void 0, pointerOf2(address).kind === KIND.DOCUMENT ? { in: "Peek" } : {});
   return archivedLine(archive, await nounOf2(context2, archive.with, cache));
 }
 async function nounOf2(context2, address, cache) {
-  const named = pointerOf(address);
+  const named = pointerOf2(address);
   const pointer = named.pubkey ? named : { ...named, kind: KIND_CHANNEL_METADATA };
   const resolved = await resolveManifest(pointer, relayQuery(context2), cache).catch(() => null);
   const noun = resolved?.manifest.projections?.[String(pointer.kind)]?.noun?.trim();
@@ -23736,9 +24070,9 @@ async function archiveOfFile(context2, address, cache) {
   const file = await resolveForeignObject(addrToNaddr(address), relayQuery(context2), async () => ({}), void 0, cache, { archivedWith: true });
   return file?.archived;
 }
-async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, contentFormat, files = [], note) {
+async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, contentFormat, files = [], note, ordered) {
   const query = relayQuery(context2);
-  const pointer = pointerOf(file.address);
+  const pointer = pointerOf2(file.address);
   const resolved = await resolveManifest(pointer, query);
   if (!resolved) throw new BadRequest(`No app claims ${file.title}'s kind, so there is no declared way to change it.`);
   const actionId = pick2(resolved.manifest, pointer.kind);
@@ -23747,27 +24081,49 @@ async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, co
   if (!root) throw new BadRequest(`Nothing readable at ${file.address}: no such file, or one in a team this key cannot read. Nothing was published.`);
   const folder = folderOf(root);
   if (!folder) throw new BadRequest(`${file.title} has no team on the relay, so there is nowhere to write.`);
-  const built = buildActionEvent({
-    manifest: resolved.manifest,
-    kind: pointer.kind,
-    address: file.address,
-    objectAuthor: pointer.pubkey,
-    folder,
-    actionId,
-    value,
-    replyTo,
-    contentFormat,
-    ...note ? { note } : {},
-    linkTags: actionId === "comment" ? await commentLinkTags(context2, value, { file: file.address, parent: replyTo?.id }) : void 0,
-    pubkey: context2.signer.pubkey,
-    createdAtMs: Date.now()
-  });
-  if (typeof built === "string") throw new BadRequest(`${file.title} does not take ${actionId}: ${built}`);
-  if (built.kind !== signs) {
-    throw new BadRequest(`The manifest read for ${file.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`);
+  const linkTags = actionId === "comment" ? await commentLinkTags(context2, value, { file: file.address, parent: replyTo?.id }) : void 0;
+  const build = (input) => {
+    const built2 = buildActionEvent({
+      manifest: resolved.manifest,
+      kind: pointer.kind,
+      address: file.address,
+      objectAuthor: pointer.pubkey,
+      folder,
+      actionId,
+      value: input.value,
+      replyTo,
+      contentFormat,
+      ...note ? { note } : {},
+      ...input.prev ? { prev: input.prev } : {},
+      linkTags,
+      pubkey: context2.signer.pubkey,
+      createdAtMs: input.createdAtMs
+    });
+    if (typeof built2 === "string") throw new BadRequest(`${file.title} does not take ${actionId}: ${built2}`);
+    if (built2.kind !== signs) {
+      throw new BadRequest(`The manifest read for ${file.title} declares "${actionId}" as a kind:${built2.kind}, which this command does not write (it writes ${signs}). Nothing was published.`);
+    }
+    const wrong = shape?.(built2.tags.filter((tag) => tag[0] !== "prev"), folder);
+    if (wrong) throw new BadRequest(`The manifest read for ${file.title} builds "${actionId}" ${wrong}. Nothing was published.`);
+    return built2;
+  };
+  if (ordered) {
+    const handle = { kind: pointer.kind, pubkey: pointer.pubkey, d: pointer.identifier };
+    const listed = (await fileReadsFor(context2)).list ? (await prevsAfterSwitch(query, handle, [ordered]).catch(() => void 0))?.[ordered] : void 0;
+    const prev = listed ?? filesOf([root, ...await query([{ kinds: [signs], "#a": [file.address] }])]).find((one) => one.address === file.address)?.fields[ordered]?.id ?? root.id;
+    const written = await writeChange({
+      field: ordered,
+      value,
+      prev,
+      build,
+      sign: (event) => context2.signer.sign(event),
+      publish: (event) => context2.relay.publish(event),
+      query,
+      current: async (field) => (await openFile(query, handle, { text: false }).catch(() => void 0))?.fields[field]?.event
+    });
+    return written.ok ? { ok: true, eventId: written.id } : { ok: false, reason: "refused" in written ? written.refused : "a change crossed it" };
   }
-  const wrong = shape?.(built.tags, folder);
-  if (wrong) throw new BadRequest(`The manifest read for ${file.title} builds "${actionId}" ${wrong}. Nothing was published.`);
+  const built = build({ value, createdAtMs: Date.now() });
   const signed = await context2.signer.sign(files.length ? { ...built, tags: [...built.tags, ...files.map(imetaTag)] } : built);
   const result = await context2.relay.publish(signed);
   return { ...result, eventId: result.eventId ?? signed.id };
@@ -24257,7 +24613,7 @@ function findMessage(messages, reference) {
     hint: "Pass a message id, or a distinctive phrase from it."
   });
 }
-var asMessage = (event) => ({
+var asMessage2 = (event) => ({
   id: event.id,
   author: event.pubkey,
   body: event.content,
@@ -24274,7 +24630,7 @@ async function readConversation(context2, file, cache, beside = async () => void
     return { conversations: [], edits: {}, resolved: /* @__PURE__ */ new Set(), besides: await beside([]) };
   }
   const threads = await threadsOf(file.address, rootIds, query, cache, 1e3);
-  const conversations = rootIds.filter((id) => threads.roots[id]).map((id) => ({ root: asMessage(threads.roots[id]), replies: (threads.replies[id] ?? []).map(asMessage) }));
+  const conversations = rootIds.filter((id) => threads.roots[id]).map((id) => ({ root: asMessage2(threads.roots[id]), replies: (threads.replies[id] ?? []).map(asMessage2) }));
   const all = conversations.flatMap((thread) => [thread.root, ...thread.replies]);
   const [decorations, besides] = await Promise.all([
     decorationsOf(
@@ -24476,334 +24832,6 @@ function summaryRoute(manifest, createAction, kind) {
   const create = manifest?.actions?.find((action) => action.id === createAction);
   if (create?.input?.properties?.summary) return "seed";
   return summaryAction(manifest, kind) ? "change" : void 0;
-}
-
-// lib/agent/apps/ship-workspace.ts
-var KIND2 = { PROJECT: 30850, ISSUE: 30851 };
-var KIND_HANDLER_RECOMMENDATION2 = 31989;
-var tagValue4 = (event, name) => event.tags.find((tag) => tag[0] === name)?.[1];
-var textUnread = (file) => file.heads !== void 0 && file.version === void 0;
-function cascadeArchives(workspace, folders = []) {
-  for (const project of workspace.projects) {
-    let archive = project.ownArchive;
-    if (!archive) {
-      const listing = folders.filter((folder) => folder.addresses?.includes(project.addr));
-      const placed = listing.length ? listing : folders.filter((folder) => folder.id === project.contentFolder);
-      const archivedFolder = placed.length && placed.every((folder) => folder.archived && folder.archived.with !== project.addr) ? placed[0] : void 0;
-      if (archivedFolder?.archived) archive = { ...archivedFolder.archived, with: archivedFolder.channel ?? archivedFolder.id };
-    }
-    project.archive = archive;
-    project.archived = Boolean(archive);
-  }
-  const byAddr = new Map(workspace.projects.map((project) => [project.addr, project]));
-  for (const issue2 of workspace.issues) {
-    const project = issue2.projectAddr ? byAddr.get(issue2.projectAddr) : void 0;
-    issue2.archive = issue2.ownArchive ?? (project?.archive ? { ...project.archive, with: project.addr } : void 0);
-    issue2.archived = Boolean(issue2.archive);
-  }
-}
-var pointerOf2 = (address) => {
-  const [kind, pubkey, ...rest] = address.split(":");
-  return { kind: Number(kind), pubkey, identifier: rest.join(":"), relays: [] };
-};
-async function manifestsFor(roots, query, cache) {
-  const kinds = [KIND2.PROJECT, KIND2.ISSUE];
-  const sharing = Promise.all(kinds.map((kind) => resolveManifest(pointerOf2(`${kind}:${NOBODY}:`), query, cache)));
-  sharing.catch(() => {
-  });
-  const authors = [...new Set((await roots).map((root) => root.pubkey))];
-  const recommendations = authors.length ? await query([{ kinds: [KIND_HANDLER_RECOMMENDATION2], authors, "#d": kinds.map(String) }]) : [];
-  const recommends = new Set(recommendations.map((event) => `${tagValue4(event, "d")}:${event.pubkey}`));
-  const resolved = /* @__PURE__ */ new Map();
-  await Promise.all(
-    [...recommends].map(async (key) => {
-      const [kind, author] = key.split(":");
-      resolved.set(`${kind}:${author}`, await resolveManifest(pointerOf2(`${kind}:${author}:`), query, cache) ?? void 0);
-    })
-  );
-  const shared = new Map((await sharing).map((manifest, i) => [kinds[i], manifest ?? void 0]));
-  return {
-    of: (pointer) => recommends.has(`${pointer.kind}:${pointer.pubkey}`) ? resolved.get(`${pointer.kind}:${pointer.pubkey}`) : shared.get(pointer.kind),
-    /** What an author who recommends nothing reads a kind with — the workspace's vocabulary. */
-    shared: (kind) => shared.get(kind),
-    all: () => [...shared.values(), ...resolved.values()].filter((m) => m !== void 0)
-  };
-}
-var NOBODY = "0".repeat(64);
-var newer2 = (a, b) => a.created_at > b.created_at || a.created_at === b.created_at && a.id < b.id;
-function vocabularyOf(resolved, kind) {
-  const spec = resolved?.manifest.projections?.[String(kind)]?.slots?.status;
-  const entries = spec?.map && resolved?.manifest.vocabularies?.[spec.map] || [];
-  return { entries: entries.map(({ value, label }) => ({ value, label })), fallback: spec?.default ?? entries[0]?.value ?? "" };
-}
-function rawStatus(object3, vocab) {
-  const shown = object3.slots.status?.value;
-  if (shown === void 0 || shown === "") return vocab.fallback;
-  return vocab.entries.find((entry) => entry.label === shown)?.value ?? shown;
-}
-var metaValue = (object3, field) => object3.meta.find((slot) => slot.field === field)?.value || void 0;
-var NO_FILE_READS = { list: false, text: false, times: false, switched: false, inOrder: [], search: [] };
-var fileReads = /* @__PURE__ */ new WeakMap();
-var FILE_READS_FOR_MS = 10 * 6e4;
-function fileReadsFor(context2) {
-  const held = fileReads.get(context2);
-  if (held && Date.now() - held.at < FILE_READS_FOR_MS) return held.reads;
-  const reads2 = Promise.resolve().then(() => context2.relay.info()).then(relayFileReadsOf, () => NO_FILE_READS);
-  fileReads.set(context2, { at: Date.now(), reads: reads2 });
-  return reads2;
-}
-var TYPE_OF = { [KIND2.PROJECT]: "osnova.project", [KIND2.ISSUE]: "osnova.issue" };
-async function loadWorkspace(context2, query = loadQuery(context2), { history = false } = {}) {
-  const cache = createProjectionCache();
-  if (!history && (await fileReadsFor(context2)).list) {
-    const files = (await Promise.all([KIND2.PROJECT, KIND2.ISSUE].map((kind) => listFiles(query, { kinds: [kind] })))).flat();
-    return foldFiles(files, query, cache, /* @__PURE__ */ new Set());
-  }
-  const early = query([{ kinds: [KIND_CHANGE] }]);
-  early.catch(() => {
-  });
-  const roots = await readRoots(query);
-  const manifests = await manifestsFor(roots, query, cache);
-  const changes = await query([{ kinds: changeKindsOf(manifests) }]);
-  return foldWorkspace(roots, changes, manifests, cache);
-}
-function readRoots(query) {
-  return query([{ kinds: [KIND2.PROJECT, KIND2.ISSUE] }]);
-}
-function filesReader(query, roots, cache = createProjectionCache()) {
-  const manifests = manifestsFor(roots, query, cache);
-  manifests.catch(() => {
-  });
-  const asked = /* @__PURE__ */ new Map();
-  const changesTo = async (kind, wanted) => {
-    const read = asked.get(kind) ?? { files: /* @__PURE__ */ new Set(), reads: [] };
-    asked.set(kind, read);
-    const unasked = [...wanted].filter((addr2) => !read.files.has(addr2));
-    for (const addr2 of unasked) read.files.add(addr2);
-    if (unasked.length) read.reads.push(query([{ kinds: [kind], "#a": unasked }]));
-    const seen = /* @__PURE__ */ new Set();
-    return (await Promise.all(read.reads)).flat().filter((event) => !seen.has(event.id) && seen.add(event.id) && event.tags.some((t) => t[0] === "a" && wanted.has(t[1])));
-  };
-  return async (addresses) => {
-    const wanted = new Set(addresses);
-    const theirs = (await roots).filter((root) => wanted.has(addressOf(root)));
-    const byTarget = async (kinds) => wanted.size ? (await Promise.all(kinds.map((kind) => changesTo(kind, wanted)))).flat() : [];
-    const owners = [...new Set(theirs.map((root) => `${root.kind}:${root.pubkey}:`))];
-    const [resolved, changes] = await Promise.all([
-      manifests,
-      byTarget([KIND_CHANGE]),
-      ...owners.map((owner) => resolveManifest(pointerOf2(owner), query, cache))
-    ]);
-    const more = await byTarget(changeKindsOf(resolved).filter((kind) => kind !== KIND_CHANGE));
-    return foldWorkspace(theirs, [...changes, ...more], resolved, cache);
-  };
-}
-function fieldsReader(context2, query, cache = createProjectionCache()) {
-  return async (addresses, text2 = []) => {
-    const reads2 = await fileReadsFor(context2);
-    const opened = new Set(reads2.text ? text2 : []);
-    const listed = /* @__PURE__ */ new Map();
-    for (const address of new Set(addresses)) {
-      if (opened.has(address)) continue;
-      const { kind, identifier } = pointerOf2(address);
-      listed.set(kind, [...listed.get(kind) ?? [], identifier]);
-    }
-    const owners = [...new Set([...addresses, ...opened].map((address) => `${pointerOf2(address).kind}:${pointerOf2(address).pubkey}:`))];
-    const [lists, opens] = await Promise.all([
-      Promise.all([...listed].map(([kind, ds]) => listFiles(query, { kinds: [kind], "#d": ds }))),
-      Promise.all([...opened].map((address) => {
-        const { kind, pubkey, identifier } = pointerOf2(address);
-        return openFile(query, { kind, pubkey, d: identifier }, { text: true });
-      })),
-      // Each file's manifest as its own author resolves it, into the cache its conversation is read through next.
-      ...owners.map((owner) => resolveManifest(pointerOf2(owner), query, cache))
-    ]);
-    const wanted = /* @__PURE__ */ new Set([...addresses, ...opened]);
-    const files = [...lists.flat(), ...opens.flatMap((file) => file ? [file] : [])].filter((file) => wanted.has(file.address));
-    const missing = [...wanted].filter((address) => !files.some((file) => file.address === address));
-    if (missing.length) {
-      const events = await query([
-        ...missing.map((address) => ({ kinds: [pointerOf2(address).kind], authors: [pointerOf2(address).pubkey], "#d": [pointerOf2(address).identifier] })),
-        { kinds: [KIND_CHANGE], "#a": missing }
-      ]);
-      for (const file of filesOf(events, { withText: true })) {
-        if (!missing.includes(file.address)) continue;
-        files.push(file);
-        opened.add(file.address);
-      }
-    }
-    return foldFiles(files, query, cache, opened);
-  };
-}
-async function foldFiles(files, query, cache, withText2) {
-  const roots = files.map((file) => file.root);
-  const manifests = await manifestsFor(roots, query, cache);
-  const changes = files.flatMap((file) => file.events.filter((event) => event !== file.root));
-  return foldWorkspace(roots, changes, manifests, cache, { files, withText: withText2 });
-}
-var addressOf = (root) => `${root.kind}:${root.pubkey}:${tagValue4(root, "d")}`;
-function changeKindsOf(manifests) {
-  return [
-    .../* @__PURE__ */ new Set([KIND_CHANGE, ...manifests.all().flatMap((resolved) => resolved.manifest.records ? [resolved.manifest.records.changeKind] : [])])
-  ];
-}
-function foldWorkspace(roots, read, manifests, cache, byFields) {
-  const fileOf2 = new Map(byFields?.files.map((file) => [file.address, file]));
-  const manifestOf = manifests.of;
-  const shipKind = (target) => target !== void 0 && (target.startsWith(`${KIND2.PROJECT}:`) || target.startsWith(`${KIND2.ISSUE}:`));
-  const changes = read.filter((event) => shipKind(tagValue4(event, "a")));
-  const objects = new Map(projectEvents([...roots, ...changes], manifestOf).map((object3) => [object3.address, object3]));
-  const rootOf2 = /* @__PURE__ */ new Map();
-  for (const root of roots) {
-    const addr2 = `${root.kind}:${root.pubkey}:${tagValue4(root, "d")}`;
-    const held = rootOf2.get(addr2);
-    if (!held || newer2(root, held)) rootOf2.set(addr2, root);
-  }
-  const vocab = {
-    project: vocabularyOf(manifests.shared(KIND2.PROJECT), KIND2.PROJECT),
-    issue: vocabularyOf(manifests.shared(KIND2.ISSUE), KIND2.ISSUE)
-  };
-  const vocabOf = (root) => {
-    const resolved = manifestOf(root);
-    return resolved === manifests.shared(root.kind) ? root.kind === KIND2.PROJECT ? vocab.project : vocab.issue : vocabularyOf(resolved, root.kind);
-  };
-  const projects = [];
-  const issues = [];
-  for (const [addr2, object3] of objects) {
-    const root = rootOf2.get(addr2);
-    const file = fileOf2.get(addr2);
-    const base = {
-      addr: addr2,
-      id: pointerOf2(addr2).identifier,
-      author: root.pubkey,
-      createdAt: root.created_at,
-      title: object3.slots.title?.value ?? "",
-      // Every file kind's `subtitle` is its summary, built into interop (SPEC
-      // §7.2, §6.12), so Ship's manifest need not declare it.
-      summary: object3.slots.subtitle?.value,
-      description: object3.slots.body?.value ?? "",
-      descriptionFormat: object3.slots.body?.format,
-      rootId: root.id,
-      ...file ? {
-        heads: Object.fromEntries(Object.entries(file.fields).map(([field, current2]) => [field, current2.id])),
-        ...byFields?.withText.has(addr2) ? { version: file.fields[TEXT_FIELD]?.id ?? root.id } : {}
-      } : {}
-    };
-    const deleted = file?.fields.deleted?.value === "true" ? { by: file.fields.deleted.pubkey, at: file.fields.deleted.at } : void 0;
-    if (object3.kind === KIND2.PROJECT) {
-      projects.push({
-        ...base,
-        status: rawStatus(object3, vocabOf(root)),
-        ...object3.slots.status?.stage ? { stage: object3.slots.status.stage } : {},
-        lead: metaValue(object3, "lead"),
-        key: metaValue(object3, "key"),
-        archived: Boolean(object3.archived),
-        ownArchive: object3.archived,
-        contentFolder: folderOf(root) ?? "",
-        ...deleted ? { deleted } : {}
-      });
-    } else {
-      issues.push({
-        ...base,
-        status: rawStatus(object3, vocabOf(root)),
-        ...object3.slots.status?.stage ? { stage: object3.slots.status.stage } : {},
-        assignee: metaValue(object3, "assignee"),
-        ref: metaValue(object3, "ref"),
-        projectAddr: object3.parentRef || void 0,
-        folder: tagValue4(root, "h") ?? "",
-        archived: Boolean(object3.archived),
-        ownArchive: object3.archived,
-        ...deleted ? { deleted } : {}
-      });
-    }
-  }
-  cascadeArchives({ projects, issues });
-  const activity = [...changes].sort(byOrder).flatMap((event) => {
-    const field = tagValue4(event, "field");
-    const value = tagValue4(event, "value");
-    if (!field || value === void 0) return [];
-    const ts = Number.parseInt(tagValue4(event, "ts") ?? "", 10);
-    return [{
-      id: event.id,
-      author: event.pubkey,
-      createdAt: event.created_at,
-      ts: Number.isFinite(ts) ? ts : void 0,
-      target: tagValue4(event, "a"),
-      field,
-      value,
-      note: event.content,
-      format: contentFormatOf(event)
-    }];
-  });
-  const statusAt = /* @__PURE__ */ new Map();
-  const current = new Map(issues.map((issue2) => [issue2.addr, issue2.status]));
-  for (const change of activity) {
-    if (change.field !== "status" || change.value !== current.get(change.target)) continue;
-    statusAt.set(change.target, changedAt2(change));
-  }
-  for (const issue2 of issues) issue2.statusChangedAt = statusAt.get(issue2.addr);
-  return {
-    projects,
-    issues,
-    activity,
-    vocab,
-    manifestFor: (addr2) => manifestOf(pointerOf2(addr2)),
-    objects,
-    cache,
-    byFields: Boolean(byFields)
-  };
-}
-var changedAt2 = (change) => change.ts !== void 0 && Math.floor(change.ts / 1e3) === change.createdAt ? change.ts : change.createdAt * 1e3;
-var THREAD_LIMIT = 1e3;
-var asMessage2 = (event) => ({
-  id: event.id,
-  author: event.pubkey,
-  body: event.content,
-  createdAt: event.created_at,
-  ts: trustedTs(event),
-  kind: event.kind,
-  folder: tagValue4(event, "h")
-});
-async function conversationsFor(context2, workspace, addresses) {
-  const byObject = await threadsFor(relayQuery(context2), workspace.cache, addresses.filter((addr2) => workspace.objects.has(addr2)));
-  return { byObject, edits: await editsFor(context2, byObject) };
-}
-async function threadsFor(query, cache, addresses) {
-  const objects = addresses.map((address) => ({ ref: address, address }));
-  const byObject = /* @__PURE__ */ new Map();
-  if (objects.length === 0) return byObject;
-  const rootsByObject = await conversationsOf(objects, query, cache);
-  const allRoots = [...new Set(Object.values(rootsByObject).flat().map((message) => message.id))];
-  const roots = {};
-  const replies = {};
-  const read = async (chunk) => {
-    const threads = await threadsOf(objects[0].address, chunk, query, cache, THREAD_LIMIT);
-    const answered = Object.values(threads.replies).reduce((sum, list) => sum + list.length, 0);
-    if (answered >= THREAD_LIMIT && chunk.length > 1) {
-      const half = Math.ceil(chunk.length / 2);
-      await read(chunk.slice(0, half));
-      await read(chunk.slice(half));
-      return;
-    }
-    Object.assign(roots, threads.roots);
-    for (const [id, list] of Object.entries(threads.replies)) replies[id] = list;
-  };
-  for (let i = 0; i < allRoots.length; i += 100) await read(allRoots.slice(i, i + 100));
-  for (const object3 of objects) {
-    const ids = (rootsByObject[object3.address] ?? []).map((message) => message.id);
-    byObject.set(
-      object3.address,
-      ids.filter((id) => roots[id]).map((id) => ({ id, root: asMessage2(roots[id]), replies: (replies[id] ?? []).map(asMessage2) })).sort((a, b) => (b.root.ts ?? b.root.createdAt * 1e3) - (a.root.ts ?? a.root.createdAt * 1e3))
-    );
-  }
-  return byObject;
-}
-async function editsFor(context2, byObject) {
-  const messages = [...byObject.values()].flat().flatMap((thread) => [thread.root, ...thread.replies]);
-  const decorations = messages.length ? await decorationsOf(messages.map((message) => ({ id: message.id, at: message.createdAt, body: message.body })), relayQuery(context2)) : { byId: {} };
-  const edits = {};
-  for (const [id, decoration] of Object.entries(decorations.byId)) if (decoration.edit) edits[id] = decoration.edit;
-  return edits;
 }
 
 // lib/agent/apps/ship.ts
@@ -27129,7 +27157,7 @@ var peekApp = {
         const query = relayQuery(context2);
         const folder = findFolder(topLevelFolders(await listFolders(loadQuery(context2), { recordChannels: false })), folderRef);
         const channel = folder.channel ?? `${KIND_CHANNEL_METADATA}::${folder.id}`;
-        const pointer = pointerOf(channel);
+        const pointer = pointerOf2(channel);
         const creator = await resolveActingManifest(pointer, FOLDER_ACTIONS_ADDRESS, query);
         if (!creator) throw new BadRequest(`${folder.name ?? folder.id} offers no way to create a file. Nothing was published.`);
         if (summary && summaryRoute(creator.manifest, "create-file", KIND_BARE_FILE) !== "seed") {
@@ -27203,6 +27231,12 @@ var appliesTo2 = (action, kind) => (Array.isArray(action.appliesTo) ? action.app
 var describeAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.field === "description" && appliesTo2(action, kind))?.id;
 var commentAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.kind === KIND.COMMENT && appliesTo2(action, kind))?.id;
 var archiveAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.field === "archived" && appliesTo2(action, kind))?.id;
+async function nameOf3(context2, address, cache) {
+  if (!ADDRESS3.test(address)) return "its team";
+  const above = await resolveForeignObject(addrToNaddr(address), relayQuery(context2), async () => ({}), void 0, cache).catch(() => void 0);
+  const title = above?.slots.title?.value;
+  return title ? `\u201C${title}\u201D` : address;
+}
 function addressArg(args2, command2) {
   const address = args2.positional[0];
   if (!address || !ADDRESS3.test(address)) {
@@ -27283,7 +27317,7 @@ function findFolder2(folders, reference) {
 }
 async function creatorOf(context2, channel, type, cache) {
   const query = relayQuery(context2);
-  const pointer = pointerOf(channel);
+  const pointer = pointerOf2(channel);
   const folder = await resolveForeignObject(addrToNaddr(channel), query, async () => ({}), void 0, cache);
   const nouns = /* @__PURE__ */ new Set();
   const found = /* @__PURE__ */ new Map();
@@ -27355,7 +27389,7 @@ var fileApp = {
         const { kind, actionId, manifest: creator } = await creatorOf(context2, channel, type, createProjectionCache());
         const id = randomUUID2();
         const address = `${kind}:${context2.signer.pubkey}:${id}`;
-        const resolved = await resolveManifest(pointerOf(address), query);
+        const resolved = await resolveManifest(pointerOf2(address), query);
         if (!resolved?.manifest.actions?.some((action) => action.id === actionId)) {
           throw new BadRequest(`The app that owns a ${type} declares no "${actionId}" for this key's files. Nothing was published.`);
         }
@@ -27368,7 +27402,7 @@ var fileApp = {
           manifest: creator,
           kind: KIND_CHANNEL_METADATA,
           address: channel,
-          objectAuthor: pointerOf(channel).pubkey,
+          objectAuthor: pointerOf2(channel).pubkey,
           folder: folder.id,
           actionId,
           value: { title, ...route === "seed" ? { summary } : {} },
@@ -27572,29 +27606,32 @@ var fileApp = {
         const resolution = args2.flags.resolution;
         if (resolution === true) throw new BadRequest("--resolution takes the text to show, in quotes.");
         if (!archived && resolution !== void 0) throw new BadRequest("--resolution goes with an archive; bringing a file back takes none.");
+        if (pointerOf2(address).kind === KIND_FOLDER) {
+          throw new BadRequest("A team is archived with `ship archive`, which checks that this identity is one of its owners or admins. Nothing was published.");
+        }
         const cache = createProjectionCache();
         const file = await readFile2(context2, address, cache);
         const title = file.slots.title?.value ?? address;
-        const archive = await archiveOfFile(context2, address, cache);
-        const own = Boolean(archive && !archive.with);
+        const own = Boolean(file.archived);
         const unchanged = { file: title, address };
         if (archived && own) return { unchanged, note: "That file is already archived. Pass --unarchive to bring it back." };
         if (!archived && !own) {
+          const above = (await archiveOfFile(context2, address, cache))?.with;
           return {
             unchanged,
-            note: archive?.with ? `That file is not archived itself; it is hidden with ${archive.with}, and is listed again only when that is unarchived. Nothing was published.` : "That file is not archived, so there is nothing to bring back."
+            note: above ? `That file is not archived itself; it is hidden with ${await nameOf3(context2, above, cache)}, and is listed again only when that is unarchived. Nothing was published.` : "That file is not archived, so there is nothing to bring back."
           };
         }
         const value = archived ? "true" : "";
         const note = archived && typeof resolution === "string" ? resolution : void 0;
-        const result = await actOnFile(context2, { address, title }, archiveAction, value, KIND_CHANGE, void 0, changeShape(address, "archived", value), void 0, [], note);
+        const result = await actOnFile(context2, { address, title }, archiveAction, value, KIND_CHANGE, void 0, changeShape(address, "archived", value), void 0, [], note, "archived");
         published(result, `${archived ? "archiving" : "unarchiving"} ${title}`);
         return {
           changed: { file: title, address, url: file.openUrl },
           archived,
           ...note ? { resolution: note } : {},
           eventId: result.eventId,
-          note: archived ? "Hidden from its app's lists, with what sits under it. A link still opens it, with the resolution first. Reverse with --unarchive; nothing is deleted." : "Back in the lists, with what was hidden with it."
+          note: archived ? "Hidden from its app's lists, with what sits under it. A link still opens it, with the resolution first. Reverse with --unarchive; nothing is deleted." : "Back in the lists, with what was hidden with it \u2014 unless a file above it is archived too, which hides it until that is unarchived."
         };
       }
     }

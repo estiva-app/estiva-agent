@@ -17,6 +17,7 @@ import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
 import { archivedRefusal } from '../lib/agent/act-on-file'
 import { shipApp } from '../lib/agent/apps/ship'
+import { fileApp } from '../lib/agent/apps/file'
 import { loadWorkspace } from '../lib/agent/apps/ship-workspace'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -116,6 +117,25 @@ console.log('\n— An issue archived with its project —')
   const edit = await refusal(run('edit-comment', context, [issue.addr], { message: comment.id, body: 'Rewritten.' }))
   check('ship edit-comment there says the same', edit === 'Unarchive the project to comment. Nothing was published.', edit)
   check('…and nothing is published', published.length === 0, JSON.stringify(published.map((e) => e.kind)))
+}
+
+console.log('\n— file archive on an issue archived with its project (AGE-21) —')
+{
+  const { context, published, events } = workspace()
+  events.push(archive(project.addr, project.author, project.contentFolder, true))
+  const archiveCommand = fileApp.commands.find((command) => command.name === 'archive')
+  const back = archiveCommand ? ((await archiveCommand.run(context, { positional: [issue.addr], flags: { unarchive: true } } as never)) as Record<string, any>) : {}
+  check(
+    'unarchiving it publishes nothing and names the project it is hidden with',
+    published.length === 0 && String(back.note).includes(`hidden with “${project.title}”`),
+    JSON.stringify(back),
+  )
+  const own = archiveCommand ? ((await archiveCommand.run(context, { positional: [issue.addr], flags: { resolution: 'Its own.' } } as never)) as Record<string, any>) : {}
+  check(
+    'archiving it still publishes its own archive',
+    published.length === 1 && tag(published[0], 'a') === issue.addr && tag(published[0], 'value') === 'true' && own.archived === true,
+    JSON.stringify(published.map((e) => e.tags)),
+  )
 }
 
 console.log('\n— A project archived itself —')

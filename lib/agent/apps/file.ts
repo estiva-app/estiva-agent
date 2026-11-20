@@ -78,6 +78,14 @@ const commentAction = (manifest: Manifest, kind: number) =>
 const archiveAction = (manifest: Manifest, kind: number) =>
   manifest.actions?.find((action) => action.emits?.field === 'archived' && appliesTo(action, kind))?.id
 
+/** A file above another, by the title a person knows it by — or "its team" when it is a team, named by its channel. */
+async function nameOf(context: AgentContext, address: string, cache: ProjectionCache): Promise<string> {
+  if (!ADDRESS.test(address)) return 'its team'
+  const above = await resolveForeignObject(addrToNaddr(address), relayQuery(context), async () => ({}), undefined, cache).catch(() => undefined)
+  const title = above?.slots.title?.value
+  return title ? `“${title}”` : address
+}
+
 function addressArg(args: { positional: string[] }, command: string): string {
   const address = args.positional[0]
   if (!address || !ADDRESS.test(address)) {
@@ -536,27 +544,33 @@ export const fileApp: AgentApp = {
         if (resolution === true) throw new BadRequest('--resolution takes the text to show, in quotes.')
         if (!archived && resolution !== undefined) throw new BadRequest('--resolution goes with an archive; bringing a file back takes none.')
 
+        // A team's archive counts only from its owners and admins (SPEC §3.2), which `ship archive` checks; this does not.
+        if (pointerOf(address).kind === KIND_FOLDER) {
+          throw new BadRequest('A team is archived with `ship archive`, which checks that this identity is one of its owners or admins. Nothing was published.')
+        }
+
         const cache = createProjectionCache()
         const file = await readFile(context, address, cache)
         const title = file.slots.title?.value ?? address
-        const archive = await archiveOfFile(context, address, cache)
-        const own = Boolean(archive && !archive.with)
+        // The file's own archive; one inherited from a file above it is read only when it is needed, to say so.
+        const own = Boolean(file.archived)
         const unchanged = { file: title, address }
 
         // Said rather than silently done, as `ship archive` says it: the listings hide the result.
         if (archived && own) return { unchanged, note: 'That file is already archived. Pass --unarchive to bring it back.' }
         if (!archived && !own) {
+          const above = (await archiveOfFile(context, address, cache))?.with
           return {
             unchanged,
-            note: archive?.with
-              ? `That file is not archived itself; it is hidden with ${archive.with}, and is listed again only when that is unarchived. Nothing was published.`
+            note: above
+              ? `That file is not archived itself; it is hidden with ${await nameOf(context, above, cache)}, and is listed again only when that is unarchived. Nothing was published.`
               : 'That file is not archived, so there is nothing to bring back.',
           }
         }
 
         const value = archived ? 'true' : ''
         const note = archived && typeof resolution === 'string' ? resolution : undefined
-        const result = await actOnFile(context, { address, title }, archiveAction, value, KIND_CHANGE, undefined, changeShape(address, 'archived', value), undefined, [], note)
+        const result = await actOnFile(context, { address, title }, archiveAction, value, KIND_CHANGE, undefined, changeShape(address, 'archived', value), undefined, [], note, 'archived')
         published(result, `${archived ? 'archiving' : 'unarchiving'} ${title}`)
 
         return {
@@ -566,7 +580,7 @@ export const fileApp: AgentApp = {
           eventId: result.eventId,
           note: archived
             ? "Hidden from its app's lists, with what sits under it. A link still opens it, with the resolution first. Reverse with --unarchive; nothing is deleted."
-            : 'Back in the lists, with what was hidden with it.',
+            : 'Back in the lists, with what was hidden with it — unless a file above it is archived too, which hides it until that is unarchived.',
         }
       },
     },

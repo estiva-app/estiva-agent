@@ -74,8 +74,10 @@ function leaf({ archiveKind = 1851, archived = false } = {}) {
   ])
 }
 
+// Without the command (the code before AGE-21) every check fails on its assertion, not on a throw.
+const command = fileApp.commands.find((candidate) => candidate.name === 'archive')
 const run = (context: AgentContext, positional: string[], flags: Record<string, string | boolean>) =>
-  fileApp.commands.find((command) => command.name === 'archive')!.run(context, { positional, flags } as never) as Promise<Record<string, unknown>>
+  (command ? command.run(context, { positional, flags } as never) : Promise.resolve({})) as Promise<Record<string, unknown>>
 const refusal = (promise: Promise<unknown>) => promise.then(() => '', (error: Error) => error.message)
 
 {
@@ -88,11 +90,15 @@ const refusal = (promise: Promise<unknown>) => promise.then(() => '', (error: Er
       tag(change, 'value') === 'true' && tag(change, 'h') === FOLDER && change?.content === 'A probe’s leftover.' && change?.pubkey === SELF,
     JSON.stringify(published.map((e) => [e.kind, e.tags, e.content])),
   )
+  const root = (await context.relay.queryAll([{ kinds: [30842], '#d': ['doc1'] }] as never))[0] as SignedEvent
+  check('it names the change it follows: the file’s first record, when archived was never set', tag(change, 'prev') === root?.id, JSON.stringify(change?.tags))
   check('and answers with the file it archived', (out.changed as { file?: string })?.file === 'Plan' && out.archived === true, JSON.stringify(out))
 }
 {
   const { context, published } = leaf({ archived: true })
   await run(context, [DOC], { unarchive: true })
+  const current = ((await context.relay.queryAll([{ kinds: [1851], '#a': [DOC] }] as never)) as SignedEvent[]).find((e) => tag(e, 'field') === 'archived')
+  check('unarchive follows the archive it undoes', tag(published[0], 'prev') === current?.id, JSON.stringify(published[0]?.tags))
   check(
     'unarchive sets archived to the empty value, with no resolution',
     published.length === 1 && tag(published[0], 'field') === 'archived' && tag(published[0], 'value') === '' && published[0].content === '',
@@ -129,6 +135,12 @@ const refusal = (promise: Promise<unknown>) => promise.then(() => '', (error: Er
   const { context, published } = leaf()
   const refused = await refusal(run(context, [`30842:${SELF}:nobody`], { resolution: 'x' }))
   check('an address nothing answers for is refused with nothing published', published.length === 0 && /Nothing readable/.test(refused), refused || `${published.length} published`)
+}
+
+{
+  const { context, published } = leaf()
+  const refused = await refusal(run(context, [`39000:${SELF}:${FOLDER}`], { resolution: 'x' }))
+  check('a team’s address is refused, pointing to ship archive, with nothing published', published.length === 0 && /ship archive/.test(refused), refused || `${published.length} published`)
 }
 
 console.log(failures ? `\n${failures} failed.` : '\nAll file archive checks passed.')
