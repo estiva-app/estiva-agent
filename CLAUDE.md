@@ -148,6 +148,13 @@ archived files and say how many; `--archived` includes them. A Folder's
 archive counts only from its owners and admins, so it is refused for anyone
 else. `archive-project` is the older name, projects only.
 
+`file archive <kind:pubkey:d> --resolution "…"` (MCP `file_archive`) archives
+any file by its address the way its own app's Archive does (AGE-21): the
+manifest's action setting `archived`, in the file's own Folder, the resolution
+as its note — how a Leaf page or a Peek topic is archived, which `ship archive`
+does not reach. `--unarchive` brings it back; one hidden only with a file above
+it is said so, with nothing published.
+
 **A description saved from Ship's editor is a block document** (§13.3), and
 comments can be anchored to its blocks (§13.6). `show` prints it as text, one
 chunk per block, with `descriptionFormat: "estiva-blocks-1"`; edit that text and
@@ -255,7 +262,8 @@ no app: `create --type` takes the noun the app's manifest gives the type
 (`document`), and any type an app declares a Folder action for can be started.
 Leaf draws the title and the summary above the text, so do not open the text
 with the title again as a heading. Claude Desktop and the plugin reach them as
-`file_show`, `file_create`, `file_describe` and `file_comment` (e0e3e907).
+`file_show`, `file_create`, `file_describe` and `file_comment` (e0e3e907),
+and `file archive` as `file_archive` (AGE-21).
 
 - **`show`** takes the file's link as well as its address — a Leaf
   `/document/<slug>-<d>` link, or any app's, read as `links` reads one: the

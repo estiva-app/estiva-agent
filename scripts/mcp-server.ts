@@ -127,6 +127,7 @@ const TOOL_COMMANDS: Record<string, { app: AgentApp; command: string }> = {
   file_create: { app: fileApp, command: 'create' },
   file_describe: { app: fileApp, command: 'describe' },
   file_comment: { app: fileApp, command: 'comment' },
+  file_archive: { app: fileApp, command: 'archive' },
 }
 
 /** A required string argument, or the empty string the command will refuse. */
@@ -787,6 +788,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'file_archive',
+      description:
+        "Archive any file by its address — a Leaf page or a Peek topic included — the way its own app's Archive does, with a resolution summary, or bring it back with `unarchive`. Reversible: nothing is deleted, and what sits under it is hidden with it. For an issue, a project or a team, `ship_archive` does the same by name. " +
+        WRITE_NOTE,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          address: { type: 'string', description: "The file's address, `kind:pubkey:d`." },
+          resolution: { type: 'string', description: 'Optional. What happened to it, in a sentence or two — shown first when somebody opens it. Not with `unarchive`.' },
+          unarchive: { type: 'boolean', description: 'Optional. Bring an archived file back instead.' },
+        },
+        required: ['address'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'estiva_ping',
       description:
         'Check the Estiva connection and report which hop is broken, without reading any workspace data. ' +
@@ -877,6 +894,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         )
       case 'file_comment':
         return await dispatch(command('comment', fileApp), args(flagsFrom(input, ['body', 'reply', 'mention']), [str(input.address)]))
+      case 'file_archive':
+        return await dispatch(
+          command('archive', fileApp),
+          args({ ...flagsFrom(input, ['resolution']), ...(input.unarchive === true ? { unarchive: true as const } : {}) }, [str(input.address)]),
+        )
 
       case 'estiva_ping':
         return text({ at: new Date().toISOString(), ...(await connectionStatus(shipApp, { client: callingClient() })) })
