@@ -19348,7 +19348,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.34.0",
+  version: "0.35.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -23736,7 +23736,7 @@ async function archiveOfFile(context2, address, cache) {
   const file = await resolveForeignObject(addrToNaddr(address), relayQuery(context2), async () => ({}), void 0, cache, { archivedWith: true });
   return file?.archived;
 }
-async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, contentFormat, files = []) {
+async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, contentFormat, files = [], note) {
   const query = relayQuery(context2);
   const pointer = pointerOf(file.address);
   const resolved = await resolveManifest(pointer, query);
@@ -23757,6 +23757,7 @@ async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, co
     value,
     replyTo,
     contentFormat,
+    ...note ? { note } : {},
     linkTags: actionId === "comment" ? await commentLinkTags(context2, value, { file: file.address, parent: replyTo?.id }) : void 0,
     pubkey: context2.signer.pubkey,
     createdAtMs: Date.now()
@@ -27201,6 +27202,7 @@ var KIND_FOLDER = 39e3;
 var appliesTo2 = (action, kind) => (Array.isArray(action.appliesTo) ? action.appliesTo : [action.appliesTo]).includes(String(kind));
 var describeAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.field === "description" && appliesTo2(action, kind))?.id;
 var commentAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.kind === KIND.COMMENT && appliesTo2(action, kind))?.id;
+var archiveAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.field === "archived" && appliesTo2(action, kind))?.id;
 function addressArg(args2, command2) {
   const address = args2.positional[0];
   if (!address || !ADDRESS3.test(address)) {
@@ -27551,6 +27553,50 @@ var fileApp = {
           ...summaryWarning(summary) ? { note: summaryWarning(summary) } : {}
         };
       }
+    },
+    {
+      /*
+        Any file, archived the way its own app's Archive does it (AGE-21): the
+        manifest's action setting `archived`, `true` or empty, in the file's own
+        Folder, the resolution as the change's content (FOL-46) — Leaf's
+        `archiveDocument` and Peek's topic menu write the same event. Nothing
+        is written to what is beneath it; every reader hides that with it.
+      */
+      name: "archive",
+      signs: [KIND_CHANGE],
+      summary: "archive any file by its address \u2014 a Leaf page or a Peek topic included \u2014 with a resolution, or bring it back",
+      usage: "archive <kind:pubkey:d> [--resolution <text>] [--unarchive]",
+      async run(context2, args2) {
+        const address = addressArg(args2, "archive");
+        const archived = !args2.flags.unarchive;
+        const resolution = args2.flags.resolution;
+        if (resolution === true) throw new BadRequest("--resolution takes the text to show, in quotes.");
+        if (!archived && resolution !== void 0) throw new BadRequest("--resolution goes with an archive; bringing a file back takes none.");
+        const cache = createProjectionCache();
+        const file = await readFile2(context2, address, cache);
+        const title = file.slots.title?.value ?? address;
+        const archive = await archiveOfFile(context2, address, cache);
+        const own = Boolean(archive && !archive.with);
+        const unchanged = { file: title, address };
+        if (archived && own) return { unchanged, note: "That file is already archived. Pass --unarchive to bring it back." };
+        if (!archived && !own) {
+          return {
+            unchanged,
+            note: archive?.with ? `That file is not archived itself; it is hidden with ${archive.with}, and is listed again only when that is unarchived. Nothing was published.` : "That file is not archived, so there is nothing to bring back."
+          };
+        }
+        const value = archived ? "true" : "";
+        const note = archived && typeof resolution === "string" ? resolution : void 0;
+        const result = await actOnFile(context2, { address, title }, archiveAction, value, KIND_CHANGE, void 0, changeShape(address, "archived", value), void 0, [], note);
+        published(result, `${archived ? "archiving" : "unarchiving"} ${title}`);
+        return {
+          changed: { file: title, address, url: file.openUrl },
+          archived,
+          ...note ? { resolution: note } : {},
+          eventId: result.eventId,
+          note: archived ? "Hidden from its app's lists, with what sits under it. A link still opens it, with the resolution first. Reverse with --unarchive; nothing is deleted." : "Back in the lists, with what was hidden with it."
+        };
+      }
     }
   ]
 };
@@ -27598,7 +27644,8 @@ var TOOL_COMMANDS = {
   file_summarize: { app: fileApp, command: "summarize" },
   file_create: { app: fileApp, command: "create" },
   file_describe: { app: fileApp, command: "describe" },
-  file_comment: { app: fileApp, command: "comment" }
+  file_comment: { app: fileApp, command: "comment" },
+  file_archive: { app: fileApp, command: "archive" }
 };
 var str = (value) => typeof value === "string" ? value : "";
 var args = (flags, positional = []) => ({
@@ -28146,6 +28193,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       }
     },
     {
+      name: "file_archive",
+      description: "Archive any file by its address \u2014 a Leaf page or a Peek topic included \u2014 the way its own app's Archive does, with a resolution summary, or bring it back with `unarchive`. Reversible: nothing is deleted, and what sits under it is hidden with it. For an issue, a project or a team, `ship_archive` does the same by name. " + WRITE_NOTE,
+      inputSchema: {
+        type: "object",
+        properties: {
+          address: { type: "string", description: "The file's address, `kind:pubkey:d`." },
+          resolution: { type: "string", description: "Optional. What happened to it, in a sentence or two \u2014 shown first when somebody opens it. Not with `unarchive`." },
+          unarchive: { type: "boolean", description: "Optional. Bring an archived file back instead." }
+        },
+        required: ["address"],
+        additionalProperties: false
+      }
+    },
+    {
       name: "estiva_ping",
       description: 'Check the Estiva connection and report which hop is broken, without reading any workspace data. Walks credentials, the identity-service token, and one relay read, and returns `{ ok, failed, hops, runtime, summary }`. `runtime` says where this server is actually running \u2014 platform, whether it is inside WSL, which client opened the session, and **which revision is answering** (`runtime.revision`: commit, branch, and whether the tree is dirty) \u2014 and the credentials hop names where the credential came from. Check `runtime.revision` and `runtime.source` when a listing looks short or a fix seems absent. The server normally runs from a worktree pinned to a commit (`source: "pinned"`); a `source` of `"checkout"` means nothing was pinned and it fell back to a shared working tree that is routinely parked on somebody else\'s branch, which is how a session ends up answering from code days old while every other signal looks correct. That matters when one application runs this server twice: a Desktop extension on the host and a Code session inside WSL are separate installs with separate configuration, so "it works in one place and not the other" is answered by asking both and comparing, not by assuming they share anything. Use it when a read fails, and when a person asks why this is not working: "the connection is down" and "there is nothing to report" look identical in an empty answer, and the causes \u2014 an unconfigured credential, a replaced secret, an identity never admitted to the relay \u2014 have completely different fixes. Several of those fixes are administrative actions in Estiva ID that nobody can carry out from inside this conversation; report the state and say who has to act.',
       inputSchema: { type: "object", properties: {}, additionalProperties: false }
@@ -28201,6 +28262,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         );
       case "file_comment":
         return await dispatch(command("comment", fileApp), args(flagsFrom(input, ["body", "reply", "mention"]), [str(input.address)]));
+      case "file_archive":
+        return await dispatch(
+          command("archive", fileApp),
+          args({ ...flagsFrom(input, ["resolution"]), ...input.unarchive === true ? { unarchive: true } : {} }, [str(input.address)])
+        );
       case "estiva_ping":
         return text({ at: (/* @__PURE__ */ new Date()).toISOString(), ...await connectionStatus(shipApp, { client: callingClient() }) });
       case "ship_list_issues":

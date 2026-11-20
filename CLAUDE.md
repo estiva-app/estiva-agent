@@ -148,6 +148,13 @@ archived files and say how many; `--archived` includes them. A Folder's
 archive counts only from its owners and admins, so it is refused for anyone
 else. `archive-project` is the older name, projects only.
 
+`file archive <kind:pubkey:d> --resolution "…"` (MCP `file_archive`) archives
+any file by its address the way its own app's Archive does (AGE-21): the
+manifest's action setting `archived`, in the file's own Folder, the resolution
+as its note — how a Leaf page or a Peek topic is archived, which `ship archive`
+does not reach. `--unarchive` brings it back; one hidden only with a file above
+it is said so, with nothing published.
+
 **A description saved from Ship's editor is a block document** (§13.3), and
 comments can be anchored to its blocks (§13.6). `show` prints it as text, one
 chunk per block, with `descriptionFormat: "estiva-blocks-1"`; edit that text and

@@ -74,6 +74,10 @@ const describeAction = (manifest: Manifest, kind: number) =>
 const commentAction = (manifest: Manifest, kind: number) =>
   manifest.actions?.find((action) => action.emits?.kind === KIND.COMMENT && appliesTo(action, kind))?.id
 
+/** The action that archives this kind, or brings it back: the one setting `archived` (FOL-46). */
+const archiveAction = (manifest: Manifest, kind: number) =>
+  manifest.actions?.find((action) => action.emits?.field === 'archived' && appliesTo(action, kind))?.id
+
 function addressArg(args: { positional: string[] }, command: string): string {
   const address = args.positional[0]
   if (!address || !ADDRESS.test(address)) {
@@ -510,6 +514,59 @@ export const fileApp: AgentApp = {
           changed: { file: title, address, from: file?.slots.subtitle?.value ?? '', to: summary },
           eventId: result.eventId,
           ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
+        }
+      },
+    },
+    {
+      /*
+        Any file, archived the way its own app's Archive does it (AGE-21): the
+        manifest's action setting `archived`, `true` or empty, in the file's own
+        Folder, the resolution as the change's content (FOL-46) — Leaf's
+        `archiveDocument` and Peek's topic menu write the same event. Nothing
+        is written to what is beneath it; every reader hides that with it.
+      */
+      name: 'archive',
+      signs: [KIND_CHANGE],
+      summary: 'archive any file by its address — a Leaf page or a Peek topic included — with a resolution, or bring it back',
+      usage: 'archive <kind:pubkey:d> [--resolution <text>] [--unarchive]',
+      async run(context, args) {
+        const address = addressArg(args, 'archive')
+        const archived = !args.flags.unarchive
+        const resolution = args.flags.resolution
+        if (resolution === true) throw new BadRequest('--resolution takes the text to show, in quotes.')
+        if (!archived && resolution !== undefined) throw new BadRequest('--resolution goes with an archive; bringing a file back takes none.')
+
+        const cache = createProjectionCache()
+        const file = await readFile(context, address, cache)
+        const title = file.slots.title?.value ?? address
+        const archive = await archiveOfFile(context, address, cache)
+        const own = Boolean(archive && !archive.with)
+        const unchanged = { file: title, address }
+
+        // Said rather than silently done, as `ship archive` says it: the listings hide the result.
+        if (archived && own) return { unchanged, note: 'That file is already archived. Pass --unarchive to bring it back.' }
+        if (!archived && !own) {
+          return {
+            unchanged,
+            note: archive?.with
+              ? `That file is not archived itself; it is hidden with ${archive.with}, and is listed again only when that is unarchived. Nothing was published.`
+              : 'That file is not archived, so there is nothing to bring back.',
+          }
+        }
+
+        const value = archived ? 'true' : ''
+        const note = archived && typeof resolution === 'string' ? resolution : undefined
+        const result = await actOnFile(context, { address, title }, archiveAction, value, KIND_CHANGE, undefined, changeShape(address, 'archived', value), undefined, [], note)
+        published(result, `${archived ? 'archiving' : 'unarchiving'} ${title}`)
+
+        return {
+          changed: { file: title, address, url: file.openUrl },
+          archived,
+          ...(note ? { resolution: note } : {}),
+          eventId: result.eventId,
+          note: archived
+            ? "Hidden from its app's lists, with what sits under it. A link still opens it, with the resolution first. Reverse with --unarchive; nothing is deleted."
+            : 'Back in the lists, with what was hidden with it.',
         }
       },
     },

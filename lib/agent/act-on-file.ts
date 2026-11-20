@@ -126,6 +126,8 @@ export async function actOnFile(
   contentFormat?: string,
   /** Files already on the relay, named in `imeta` — a comment's attachments, as every comment box sends them. */
   files: readonly Imeta[] = [],
+  /** What the person said about a change, as its content — an archive's resolution (FOL-46). */
+  note?: string,
 ): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
   const query = relayQuery(context)
   const pointer = pointerOf(file.address)
@@ -149,6 +151,7 @@ export async function actOnFile(
     value,
     replyTo,
     contentFormat,
+    ...(note ? { note } : {}),
     linkTags: actionId === 'comment' ? await commentLinkTags(context, value, { file: file.address, parent: replyTo?.id }) : undefined,
     pubkey: context.signer.pubkey,
     createdAtMs: Date.now(),
