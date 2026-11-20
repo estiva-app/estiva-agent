@@ -18316,6 +18316,10 @@ function textOf(block) {
   return block.content.map(textOf).join("\n");
 }
 var keyOf = (block) => `${block.type}\0${textOf(block)}`;
+function exactKeyOf(block) {
+  const runs = (content) => !Array.isArray(content) ? null : isInlineRun4(content) ? content.map((n) => [n.text, (n.marks ?? []).map((m) => JSON.stringify(m)).sort()]) : content.map((child) => [child.type, child.attrs ?? null, runs(child.content)]);
+  return `${block.type}\0${JSON.stringify([block.attrs ?? null, runs(block.content)])}`;
+}
 var TASK = /^\[( |x|X)\] /;
 var ALERT = /^\[!([A-Za-z]+)\]$/;
 var ESCAPED_TASK = /^\\*\[( |x|X)\] /;
@@ -18385,31 +18389,58 @@ function blockFromSegment2(seg, description) {
 function markerTextToBlockDocument(text2, previous, options = {}) {
   const description = options.description === true;
   const fresh = parseBodySegments(text2, { indentedItems: true }).map((seg) => blockFromSegment2(seg, description));
-  const old = previous?.content ?? [];
   const takenIds = /* @__PURE__ */ new Set();
+  const mint = () => {
+    let id = newBlockId();
+    while (takenIds.has(id))
+      id = newBlockId();
+    takenIds.add(id);
+    return id;
+  };
+  const fill = (blocks, old) => {
+    const matched = lendIds(blocks, old, takenIds);
+    return blocks.map((block, i) => {
+      const was = matched[i];
+      const children = Array.isArray(block.content) && !isInlineRun4(block.content) ? block.content : void 0;
+      const oldChildren = was && Array.isArray(was.content) && !isInlineRun4(was.content) ? was.content : [];
+      return {
+        ...block,
+        id: was?.id ?? (block.id || mint()),
+        ...children ? { content: fill(children, oldChildren) } : {}
+      };
+    });
+  };
+  return { type: "doc", content: fill(fresh, previous?.content ?? []) };
+}
+function lendIds(fresh, old, takenIds) {
   const usedOld = /* @__PURE__ */ new Set();
-  const byKey = /* @__PURE__ */ new Map();
-  old.forEach((block, i) => {
-    if (!block.id)
-      return;
-    const list = byKey.get(keyOf(block)) ?? [];
-    list.push(i);
-    byKey.set(keyOf(block), list);
-  });
-  const ids = fresh.map((block) => {
-    const candidates = byKey.get(keyOf(block));
-    while (candidates && candidates.length) {
-      const i = candidates.shift();
-      if (usedOld.has(i))
-        continue;
-      usedOld.add(i);
-      takenIds.add(old[i].id);
-      return old[i].id;
-    }
-    return void 0;
-  });
+  const matched = fresh.map(() => void 0);
+  for (const key of [exactKeyOf, keyOf]) {
+    const byKey = /* @__PURE__ */ new Map();
+    old.forEach((block, i) => {
+      if (!block.id || usedOld.has(i))
+        return;
+      const list = byKey.get(key(block)) ?? [];
+      list.push(i);
+      byKey.set(key(block), list);
+    });
+    fresh.forEach((block, f) => {
+      if (matched[f])
+        return;
+      const candidates = byKey.get(key(block));
+      while (candidates && candidates.length) {
+        const i = candidates.shift();
+        if (usedOld.has(i) || takenIds.has(old[i].id))
+          continue;
+        usedOld.add(i);
+        takenIds.add(old[i].id);
+        matched[f] = old[i];
+        return;
+      }
+    });
+  }
   fresh.forEach((block, i) => {
-    if (ids[i] !== void 0)
+    if (matched[i] !== void 0)
       return;
     const candidate = old[i];
     if (!candidate || usedOld.has(i) || candidate.type !== block.type || !candidate.id)
@@ -18418,24 +18449,9 @@ function markerTextToBlockDocument(text2, previous, options = {}) {
       return;
     usedOld.add(i);
     takenIds.add(candidate.id);
-    ids[i] = candidate.id;
+    matched[i] = candidate;
   });
-  const mint = () => {
-    let id = newBlockId();
-    while (takenIds.has(id))
-      id = newBlockId();
-    takenIds.add(id);
-    return id;
-  };
-  const fill = (block, id) => {
-    const children = Array.isArray(block.content) && !isInlineRun4(block.content) ? block.content.map((child) => fill(child)) : void 0;
-    return {
-      ...block,
-      id: id ?? (block.id || mint()),
-      ...children ? { content: children } : {}
-    };
-  };
-  return { type: "doc", content: fresh.map((block, i) => fill(block, ids[i] || void 0)) };
+  return matched;
 }
 var itemText = (item, description) => isInlineRun4(item.content) ? inlineNodesToMarkers(item.content, { links: description }) : "";
 function blockDocumentToMarkerText(doc3, options = {}) {

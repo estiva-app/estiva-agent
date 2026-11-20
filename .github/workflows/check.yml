@@ -34,6 +34,18 @@ jobs:
       - name: Test
         run: npm test
 
+      # `descriptions.property.test.ts` ran above on the pull request's fixed
+      # seed, so a red pull request means that change broke a rule. On a merge
+      # to main it runs again on a fresh seed, printed: a failure here is a bug
+      # that was already in the code. File it with the seed; never re-run until
+      # it passes.
+      - name: Description rules on made-up documents, fresh seed
+        if: github.event_name == 'push'
+        run: |
+          seed=$((RANDOM * 32768 + RANDOM))
+          echo "fast-check seed $seed. Replay: FC_SEED=$seed FC_RUNS=2000 npx tsx scripts/descriptions.property.test.ts"
+          FC_SEED=$seed FC_RUNS=2000 npx tsx scripts/descriptions.property.test.ts
+
       # `npm test` rebuilds the bundle the plugin ships. If that leaves the tree
       # dirty, what is committed is a version behind its source — and a plugin
       # runs no install step, so it would be installed that way. This is the one
