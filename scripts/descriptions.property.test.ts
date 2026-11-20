@@ -67,8 +67,9 @@ function checkEdit(before: BlockDocument, at: number, value: string) {
     if (shapeWithIds(after.content[i]) !== shapeWithIds(block)) fail(`block ${i} (${block.type}) changed although only block ${at} was edited:\n${shapeWithIds(after.content[i])}`)
   })
   const edited = after.content[at]
-  // A paragraph `1.` with a word added is a numbered list: the text now says so, and a new block is right.
-  if (edited.type !== before.content[at].type) return
+  const asked = `${chunkOf(before.content[at])} edited`
+  if (chunkOf(edited) !== asked) fail(`the edited ${before.content[at].type} does not read as sent:\n${chunkOf(edited)}\n— sent —\n${asked}`)
+  if (edited.type !== before.content[at].type) fail(`the edited ${before.content[at].type} became a ${edited.type}`)
   if (edited.id !== before.content[at].id) fail(`the edited ${edited.type} lost its id`)
   const items = (b: Block) => ((b.content ?? []) as Block[]).map((item) => item.id)
   if (edited.type === 'bulletList' || edited.type === 'orderedList') {
