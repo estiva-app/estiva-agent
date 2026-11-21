@@ -16679,6 +16679,25 @@ function fileIdFormOf(inOrder, address) {
   const type = BASE_TYPE_OF_KIND[Number(address.slice(0, address.indexOf(":")))];
   return id !== void 0 && type !== void 0 && inOrder.includes(type) ? { id, type } : void 0;
 }
+function changeTypeOf(address, named) {
+  const kind = Number(address.slice(0, address.indexOf(":")));
+  const base = BASE_TYPE_OF_KIND[kind];
+  if (base !== void 0) {
+    if (named !== void 0 && named !== base)
+      throw new Error(`a kind ${kind} is ${base}, not ${JSON.stringify(named)}`);
+    return base;
+  }
+  if (!FILE_KINDS.includes(kind))
+    return void 0;
+  if (named === void 0 || named === "" || Object.values(BASE_TYPE_OF_KIND).includes(named)) {
+    throw new Error(`a change to a kind ${kind} file says its type, the k of its first record: got ${JSON.stringify(named)}`);
+  }
+  return named;
+}
+function changeTypeTags(address, named) {
+  const type = changeTypeOf(address, named);
+  return type !== void 0 ? [["K", type]] : [];
+}
 
 // node_modules/@estiva-app/protocol/dist/embeds.js
 var EMBED_TAG = "embed";
@@ -17415,6 +17434,8 @@ async function retryWhileBusy(send, delaysMs = BUSY_RETRY_DELAYS_MS) {
   }
   return send();
 }
+var MERGE_WINDOW_LOST_MS = 1e3;
+var mergeable = (filter) => !("#h" in filter) && matcherOf(filter) !== null;
 function byFolder(filters) {
   const slot = /* @__PURE__ */ new Map();
   for (const [index, filter] of filters.entries()) {
@@ -17529,6 +17550,8 @@ var MAX_POSITION_SPLIT = 25e4;
 function runsByPosition(filters, events, pageSize) {
   if (filters.some((filter) => "#h" in filter))
     return null;
+  if (filters.some((filter) => Array.isArray(filter.kinds) && filter.kinds.some((kind) => typeof kind === "number" && kind >= 39e3 && kind <= 39003)))
+    return null;
   const matchers = filters.map(matcherOf);
   if (matchers.some((matcher) => matcher === null))
     return null;
@@ -17588,6 +17611,11 @@ function runsByPosition(filters, events, pageSize) {
   }
   return runs.every((run) => run.length <= pageSize) ? runs : null;
 }
+function withinLimits(filters, runs) {
+  if (!runs)
+    return null;
+  return runs.every((run, i) => typeof filters[i].limit !== "number" || run.length <= filters[i].limit) ? runs : null;
+}
 function splitRuns(count, events, which) {
   const runs = Array.from({ length: count }, () => []);
   for (const event of events) {
@@ -17623,9 +17651,16 @@ var Relay = class {
     this.transport = opts.fetch;
     this.busyRetryDelaysMs = opts.busyRetryDelaysMs ?? BUSY_RETRY_DELAYS_MS;
     this.onRefused = opts.onRefused;
+    this.mergeReadsMs = opts.mergeReadsMs ?? 0;
   }
   busyRetryDelaysMs;
   onRefused;
+  mergeReadsMs;
+  /** Plain reads asked and not yet sent ({@link Relay.merged}). */
+  waiting = [];
+  flushTimer;
+  /** When the open window's timer should fire ({@link Relay.merged}). */
+  flushAt = 0;
   /** {@link Relay.send} through {@link retryWhileBusy}. */
   post(path, payload) {
     return retryWhileBusy(() => this.send(path, payload), this.busyRetryDelaysMs);
@@ -17674,7 +17709,91 @@ var Relay = class {
    * {@link RelayBusyError}.
    */
   async query(filters) {
+    if (this.mergeReadsMs > 0 && filters.length > 0 && filters.every(mergeable))
+      return this.merged(filters);
     return (await this.queryWithMatches(filters)).events;
+  }
+  /**
+   * Plain reads asked within {@link RelayOptions.mergeReadsMs} of each other,
+   * sent as one request (SHI-61).
+   *
+   * The relay meters requests, not filters: 300 a minute per person across
+   * every app, and one Ship or Leaf open sent 74–110, most of them small reads
+   * fired side by side, so opening a few tabs in a minute was refused. A batch
+   * answers each filter exactly as it would alone, in filter order
+   * (`queryAll`'s batching rests on the same fact), so a batch whose answer
+   * can be cut back per filter *for certain* ({@link discriminate}) gives every
+   * caller what it would have got alone. One that cannot be is never guessed:
+   * its reads go out one by one, as before. An identical read still waiting
+   * shares its request; one already sent does not.
+   *
+   * No new wire shape: only what the relay accepts today, several filters in
+   * one `POST /query` (Miky, 20 Nov: until copies on the device catch up with
+   * NIP-77, an app reads less this way, not through a request of our own).
+   */
+  merged(filters) {
+    const key = JSON.stringify(filters);
+    const own = (events) => [...events];
+    if (this.flushTimer !== void 0 && Math.abs(Date.now() - this.flushAt) > MERGE_WINDOW_LOST_MS) {
+      clearTimeout(this.flushTimer);
+      this.flushMerged();
+    }
+    const shared = this.waiting.find((read) => read.key === key);
+    if (shared)
+      return shared.answer.then(own);
+    let resolve3;
+    let reject;
+    const answer = new Promise((res, rej) => {
+      resolve3 = res;
+      reject = rej;
+    });
+    this.waiting.push({ key, filters: JSON.parse(key), resolve: resolve3, reject, answer });
+    if (this.flushTimer === void 0) {
+      this.flushAt = Date.now() + this.mergeReadsMs;
+      this.flushTimer = setTimeout(() => this.flushMerged(), this.mergeReadsMs);
+    }
+    return answer.then(own);
+  }
+  flushMerged() {
+    this.flushTimer = void 0;
+    const reads2 = this.waiting;
+    this.waiting = [];
+    const batches = [];
+    for (const read of reads2) {
+      const batch = batches.find((open) => open.reduce((n, other) => n + other.filters.length, 0) + read.filters.length <= MAX_FILTERS_PER_QUERY && discriminate([...open.flatMap((other) => other.filters), ...read.filters]) !== null);
+      if (batch)
+        batch.push(read);
+      else
+        batches.push([read]);
+    }
+    for (const batch of batches)
+      void this.sendMerged(batch);
+  }
+  async sendMerged(batch) {
+    const alone = () => Promise.all(batch.map(async (read) => this.queryWithMatches(read.filters).then((answer) => read.resolve(answer.events), read.reject)));
+    const filters = batch.flatMap((read) => read.filters);
+    let events;
+    try {
+      events = (await this.queryWithMatches(filters)).events;
+    } catch (error2) {
+      const refusedAsRead = error2 instanceof Error && error2.message.startsWith("query failed:") && !error2.message.includes("rate-limited");
+      if (batch.length > 1 && refusedAsRead)
+        await alone();
+      else
+        for (const read of batch)
+          read.reject(error2);
+      return;
+    }
+    const runs = batch.length > 1 ? splitRuns(filters.length, events, discriminate(filters)) ?? withinLimits(filters, runsByPosition(filters, events, Infinity)) : [events];
+    if (!runs) {
+      await alone();
+      return;
+    }
+    let at = 0;
+    for (const read of batch) {
+      read.resolve(batch.length > 1 ? runs.slice(at, at + read.filters.length).flat() : events);
+      at += read.filters.length;
+    }
   }
   /**
    * {@link Relay.query}, keeping what a `search` found besides its events
@@ -19364,7 +19483,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.35.0",
+  version: "0.36.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -20025,6 +20144,8 @@ function buildMembershipChange(pubkey, createdAtMs, args2) {
       ["a", args2.file],
       // The file the change is about, by its id (§6.2, §11.8): the same file, so additive for every reader.
       ...fileIdOf(args2.file) !== void 0 ? [["O", fileIdOf(args2.file)]] : [],
+      // Its file's type (§6.2); none on a team's own chat, which is not a file.
+      ...changeTypeTags(args2.file, args2.type),
       ["field", memberField(args2.person)],
       ["value", args2.member ? "true" : "false"],
       ["h", args2.folder],
@@ -20086,7 +20207,7 @@ function newlyNamedPeople(saved, editedFrom) {
   return [...peopleNamedInText(saved)].filter((person) => !before.has(person));
 }
 function mentionAddsFor(writer, createdAtMs, args2) {
-  return newlyNamedPeople(args2.saved, args2.editedFrom).filter((person) => person !== writer).slice(0, MAX_MENTIONED_PEOPLE).map((person) => buildMembershipChange(writer, createdAtMs, { file: args2.file, folder: args2.folder, person, member: true }));
+  return newlyNamedPeople(args2.saved, args2.editedFrom).filter((person) => person !== writer).slice(0, MAX_MENTIONED_PEOPLE).map((person) => buildMembershipChange(writer, createdAtMs, { file: args2.file, folder: args2.folder, person, member: true, ...args2.type !== void 0 ? { type: args2.type } : {} }));
 }
 
 // node_modules/@estiva-app/conversation/dist/archivedLine.js
@@ -20786,7 +20907,7 @@ var BARE_FILE_MANIFEST = {
     {
       id: "delete",
       label: "Delete",
-      description: "Ask the relay to delete this file. The relay decides \u2014 only its author, or the owner of an agent that wrote it, may \u2014 and its comments stay as separate events.",
+      description: "Delete this file. Where the relay keeps topics in order it is marked deleted, by anyone in its team, stays on its lists and can be restored; elsewhere the relay is asked to delete it and decides \u2014 only its author, or the owner of an agent that wrote it, may. Its comments stay as separate events.",
       effect: "destructive",
       appliesTo: [String(KIND_BARE_FILE)],
       /*
@@ -21181,7 +21302,8 @@ function archiveRuleOf(manifest) {
 }
 var PLACEHOLDER_ARCHIVE_NOTE = "archived";
 function archiveOf(changes, address, rule, root, folderAdmins) {
-  const [kind, , identifier] = address.split(":");
+  const [kind, , ...rest] = address.split(":");
+  const identifier = rest.join(":");
   if (Number(kind) === KIND_CHANNEL) {
     if (!folderAdmins?.size)
       return void 0;
@@ -21390,6 +21512,7 @@ function buildObject(args2) {
   };
 }
 var DELETED_FIELD = "deleted";
+var KIND_FILE_CHANGE = 1851;
 function actionsOfFile(manifest, projection, root, folded) {
   const held = {};
   for (const spec of Object.values(withDefaultSubtitle(projection.slots, root.kind)).flat()) {
@@ -22170,10 +22293,16 @@ function personKeyProblem(label, value) {
 }
 function buildActionEvent(args2) {
   const declared = args2.manifest.actions?.find((a) => a.id === args2.actionId);
+  if (declared && marksDeleted(declared, args2))
+    return buildOneActionEvent(args2);
   if (declared?.emits.listed === true && (declared.emits.kind === KIND_DELETION2 || isCreationAction(declared))) {
     return `"${declared.label}" is followed by a team command, so it is built with buildActionEvents.`;
   }
   return buildOneActionEvent(args2);
+}
+function marksDeleted(declared, args2) {
+  const type = BASE_TYPE_OF_KIND[args2.kind];
+  return declared.emits.kind === KIND_DELETION2 && type !== void 0 && (args2.inOrder ?? []).includes(type);
 }
 function isCreationAction(declared) {
   return declared.input?.type === "object" && !!declared.input.properties;
@@ -22183,7 +22312,7 @@ function buildActionEvents(args2) {
   if (typeof first === "string")
     return first;
   const declared = args2.manifest.actions.find((a) => a.id === args2.actionId);
-  if (declared.emits.listed !== true)
+  if (declared.emits.listed !== true || marksDeleted(declared, args2))
     return [first];
   if (declared.emits.kind === KIND_DELETION2) {
     if (!args2.listedIn)
@@ -22216,6 +22345,22 @@ function buildOneActionEvent(args2) {
   const appliesTo3 = Array.isArray(declared.appliesTo) ? declared.appliesTo : [declared.appliesTo];
   if (!appliesTo3.includes(String(kind))) {
     return `"${declared.label}" does not apply to a kind ${kind}.`;
+  }
+  if (marksDeleted(declared, args2)) {
+    if (replyTo)
+      return `"${declared.label}" is not a comment, so it cannot reply to one.`;
+    if (args2.prev === void 0)
+      return `"${declared.label}" follows the file's last delete or restore, or its first record: pass its prev.`;
+    if (!records)
+      return "That app does not say how its records are written.";
+    if (records.changeKind !== KIND_FILE_CHANGE)
+      return `"${declared.label}" is written as a kind ${KIND_FILE_CHANGE} change, which that app does not say it writes.`;
+    const asChange = { ...declared, emits: { kind: KIND_FILE_CHANGE, field: DELETED_FIELD }, input: { type: "string" } };
+    return buildOneActionEvent({
+      ...args2,
+      value: "true",
+      manifest: { ...manifest, actions: (manifest.actions ?? []).map((a) => a === declared ? asChange : a) }
+    });
   }
   const isCreation = isCreationAction(declared);
   if (replyTo && (isCreation || declared.emits.kind === KIND_DELETION2 || declared.emits.field)) {
@@ -22271,9 +22416,18 @@ function buildOneActionEvent(args2) {
   const [formatTag2, ...files] = prose;
   const fileId = records.targetTag === "a" ? identifierOf(address) : void 0;
   const byId2 = fileIdFormOf(args2.inOrder ?? [], address);
+  let typeTags = [];
+  if (declared.emits.field && records.targetTag === "a") {
+    try {
+      typeTags = changeTypeTags(address, args2.type);
+    } catch {
+      return `"${declared.label}" was not saved: this file's type is not known.`;
+    }
+  }
   const tags = declared.emits.field ? [
     [records.targetTag, address],
     ...fileId !== void 0 ? [["O", fileId]] : [],
+    ...typeTags,
     [records.fieldTag, declared.emits.field],
     [records.valueTag, value],
     ["h", folder],
@@ -23128,8 +23282,9 @@ function filesOf(events, options = {}) {
       continue;
     const address = addressOfRoot(event);
     const held = roots.get(address);
-    if (!held || event.created_at > held.created_at)
+    if (!held || event.created_at > held.created_at || event.created_at === held.created_at && event.id < held.id) {
       roots.set(address, event);
+    }
   }
   const files = /* @__PURE__ */ new Map();
   for (const [address, root] of roots)
@@ -23143,10 +23298,13 @@ function filesOf(events, options = {}) {
     const O = tagValue3(event, "O");
     if (O !== void 0 && O !== tagValue3(file.root, "d"))
       continue;
-    if (tagValue3(event, "h") !== (folderOf(file.root) ?? void 0))
+    const folders = targetFolders(file.root);
+    if (!inTargetFolder(event, folders))
       continue;
     for (const set of fieldsSetBy(event)) {
       if (set.field === TEXT_FIELD && !options.withText)
+        continue;
+      if (!folders && (set.field === SUMMARY_FIELD || set.field === DELETED_FIELD2))
         continue;
       const held = file.fields[set.field];
       if (held && !newer(event, held.event))
@@ -23280,6 +23438,7 @@ async function writeChange(args2) {
   }
   return { ok: false, refused: `still refused after ${tries} tries: ${last}` };
 }
+var DELETED_FIELD2 = "deleted";
 var BASE_KINDS = new Set(Object.keys(BASE_TYPE_OF_KIND).map(Number));
 
 // node_modules/@estiva-app/interop/dist/objectUrl.js
@@ -27270,7 +27429,8 @@ async function fileArg(context2, args2, command2) {
 }
 function changeShape(address, field, value, extra = {}) {
   return (tags, folder) => {
-    const expected = { a: address, O: address.split(":").slice(2).join(":"), field, value, h: folder, ...extra };
+    const type = changeTypeOf(address);
+    const expected = { a: address, O: address.split(":").slice(2).join(":"), ...type ? { K: type } : {}, field, value, h: folder, ...extra };
     const names = tags.map((tag) => tag[0]);
     for (const [name, wanted] of Object.entries(expected)) {
       const found = tags.filter((tag) => tag[0] === name);
