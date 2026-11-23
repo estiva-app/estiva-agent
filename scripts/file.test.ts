@@ -295,6 +295,14 @@ console.log('\n— Changing one section —')
   check('a version naming anything but a save of the text is refused with nothing published', published.length === 0 && /is not a saved version/.test(refused), refused || `${published.length} published`)
 }
 {
+  // A save of another file's text in the same team is never this file's base.
+  const { context, published, events } = fixture()
+  const other = event(1851, [['a', `30842:${SELF}:another-page`], ['field', 'description'], ['value', TEXT], ['h', FOLDER]], '', QA2)
+  events.push(other)
+  const refused = await refusal(run('describe', context, [created!.address], { version: other.id, description: TEXT }))
+  check('a version naming another file’s save in the same team is refused with nothing published', published.length === 0 && /is not a saved version/.test(refused), refused || `${published.length} published`)
+}
+{
   const { context, published, comment } = fixture()
   const before = await run('show', context, [created!.address], {})
   const out = await run('describe', context, [created!.address], { version: before.version, description: TEXT.replace('Why we are doing this.\n\n', '') })
