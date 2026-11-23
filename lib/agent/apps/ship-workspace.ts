@@ -200,7 +200,7 @@ export interface Change {
 export interface Workspace {
   projects: Project[]
   issues: Issue[]
-  /** Every change to a Ship object, oldest first in SPEC §6.3's order. */
+  /** Every file's history, as the shared read's `historyOf` counts it: oldest first in SPEC §6.3's order. */
   activity: Change[]
   vocab: { project: Vocabulary; issue: Vocabulary }
   /** The manifest each object was read through, by its author — what a write acts with. */
