@@ -22,6 +22,7 @@ import {
   createProjectionCache,
   filesOf,
   folderOf,
+  historyOf,
   listFiles,
   openFile,
   projectEvents,
@@ -37,7 +38,7 @@ import {
   type ResolvedManifest,
   type Stage,
 } from '@estiva-app/interop'
-import { byOrder, decorationsOf, KIND_CHANGE, trustedTs, type EditFold } from '@estiva-app/conversation'
+import { decorationsOf, KIND_CHANGE, trustedTs, type EditFold } from '@estiva-app/conversation'
 import { relayFileReadsOf, type ContentFormat, type RelayFileReads, type SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../cli'
 import { loadQuery, relayQuery } from '../act-on-file'
@@ -199,7 +200,7 @@ export interface Change {
 export interface Workspace {
   projects: Project[]
   issues: Issue[]
-  /** Every change to a Ship object, oldest first in SPEC §6.3's order. */
+  /** Every file's history, as the shared read's `historyOf` counts it: oldest first in SPEC §6.3's order. */
   activity: Change[]
   vocab: { project: Vocabulary; issue: Vocabulary }
   /** The manifest each object was read through, by its author — what a write acts with. */
@@ -469,8 +470,7 @@ function foldWorkspace(
 ): Workspace {
   const fileOf = new Map(byFields?.files.map((file) => [file.address, file]))
   const manifestOf = manifests.of
-  // Every change to a Ship object, including one whose record is gone — a
-  // deleted project's history is still history, and `activity` lists it.
+  // The changes to Ship's files: the change kind holds every app's.
   const shipKind = (target: string | undefined) =>
     target !== undefined && (target.startsWith(`${KIND.PROJECT}:`) || target.startsWith(`${KIND.ISSUE}:`))
   const changes = read.filter((event) => shipKind(tagValue(event, 'a')))
@@ -548,22 +548,30 @@ function foldWorkspace(
   }
   cascadeArchives({ projects, issues })
 
-  const activity = [...changes].sort(byOrder).flatMap((event): Change[] => {
-    const field = tagValue(event, 'field')
-    const value = tagValue(event, 'value')
-    if (!field || value === undefined) return []
-    const ts = Number.parseInt(tagValue(event, 'ts') ?? '', 10)
-    return [{
-      id: event.id,
-      author: event.pubkey,
-      createdAt: event.created_at,
+  /*
+    The history is the shared read's `historyOf`, the one behind Ship's
+    History panel, never rebuilt here (MOV-5): one line per field a change
+    set, oldest first by SPEC §6.3, a change read twice listed once. A change
+    to a file whose record is not held, one signed in another team or aimed
+    at another file, and a summary or delete on a file naming no team are not
+    in it (Miky, 21 Nov, on MOV-2).
+
+    why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-file-keeps-every-change-for-good.md
+  */
+  const activity = historyOf([...roots, ...changes]).map((line): Change => {
+    const ts = Number.parseInt(tagValue(line.event, 'ts') ?? '', 10)
+    return {
+      id: line.id,
+      author: line.pubkey,
+      createdAt: line.event.created_at,
       ts: Number.isFinite(ts) ? ts : undefined,
-      target: tagValue(event, 'a')!,
-      field,
-      value,
-      note: event.content,
-      format: contentFormatOf(event),
-    }]
+      target: line.address,
+      field: line.field,
+      value: line.value,
+      note: line.note,
+      // The text's format, as the change names it; any other field's value is plain.
+      format: line.format === undefined ? 'marker' : contentFormatOf(line.event),
+    }
   })
 
   /*

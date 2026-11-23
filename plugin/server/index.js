@@ -19483,7 +19483,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.37.0",
+  version: "0.38.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -20704,7 +20704,13 @@ function resolveActions(manifest, kind, folded) {
   return out;
 }
 var KIND_CHANNEL_METADATA = 39e3;
-var tagValue2 = (e, name) => e.tags.find((t) => t[0] === name)?.[1];
+function tagValue2(e, name) {
+  const tags = e.tags;
+  for (let i = 0; i < tags.length; i++)
+    if (tags[i][0] === name)
+      return tags[i][1];
+  return void 0;
+}
 function folderOf(root) {
   if (root.kind === KIND_CHANNEL_METADATA) {
     return tagValue2(root, "h") ?? tagValue2(root, "buzz-channel") ?? tagValue2(root, "d") ?? null;
@@ -21228,43 +21234,205 @@ var STATUS_SLOT = "status";
 function targetFolders(root) {
   if (!root)
     return void 0;
-  const folders = new Set(PLACEMENTS.flatMap((name) => root.tags.filter((t) => t[0] === name && t[1]).map((t) => t[1])));
+  let folders;
+  const tags = root.tags;
+  for (const name of PLACEMENTS) {
+    for (let i = 0; i < tags.length; i++)
+      if (tags[i][0] === name && tags[i][1])
+        (folders ??= /* @__PURE__ */ new Set()).add(tags[i][1]);
+  }
   if (root.kind === KIND_CHANNEL_METADATA) {
     const own = tagValue2(root, "d");
     if (own)
-      folders.add(own);
+      (folders ??= /* @__PURE__ */ new Set()).add(own);
   }
-  return folders.size ? folders : void 0;
+  return folders;
 }
 function inTargetFolder(change, folders) {
   if (!folders)
     return true;
-  const own = change.tags.find((t) => t[0] === "h" && t[1])?.[1];
-  return own !== void 0 && folders.has(own);
+  const tags = change.tags;
+  for (let i = 0; i < tags.length; i++)
+    if (tags[i][0] === "h" && tags[i][1])
+      return folders.has(tags[i][1]);
+  return false;
 }
 function foldChanges(changes, rule, root) {
+  return foldSaid(changes.map((change) => sayOf(change, rule.targetTag, rule.fieldTag, rule.valueTag)), root);
+}
+function msOf(ts, createdAt) {
+  if (ts === void 0 || !/^\d+$/.test(ts))
+    return createdAt * 1e3;
+  const ms = Number(ts);
+  return Number.isSafeInteger(ms) && Math.floor(ms / 1e3) === createdAt ? ms : createdAt * 1e3;
+}
+function formatOf(declared) {
+  if (declared === void 0 || declared === "")
+    return "marker";
+  return declared === BLOCK_DOCUMENT_FORMAT ? "blocks" : "unknown";
+}
+function sayOf(event, targetTag, fieldTag, valueTag) {
+  const tags = event.tags;
+  let d;
+  let target;
+  let h;
+  let O;
+  let field;
+  let value;
+  let hasD = false;
+  let hasTarget = false;
+  let hasO = false;
+  let hasField = false;
+  let hasValue = false;
+  let sets = false;
+  let ts;
+  let format;
+  let hasTs = false;
+  let hasFormat = false;
+  let staged = false;
+  for (let i = 0; i < tags.length; i++) {
+    const t = tags[i];
+    const name = t[0];
+    if (typeof name !== "string")
+      continue;
+    switch (name.length) {
+      case 1:
+        if (name === "h") {
+          if (h === void 0 && t[1])
+            h = t[1];
+        } else if (name === "d") {
+          if (!hasD) {
+            hasD = true;
+            d = t[1];
+          }
+        } else if (name === "O") {
+          if (!hasO) {
+            hasO = true;
+            O = t[1];
+          }
+        }
+        break;
+      case 2:
+        if (name === "ts" && !hasTs) {
+          hasTs = true;
+          ts = t[1];
+        }
+        break;
+      case 3:
+        if (name === "set" && t[1] && typeof t[2] === "string")
+          sets = true;
+        break;
+      case 5:
+        if (name === "stage")
+          staged = true;
+        break;
+      case 14:
+        if (name === CONTENT_FORMAT_TAG && !hasFormat) {
+          hasFormat = true;
+          format = t[1];
+        }
+        break;
+    }
+    if (name === targetTag && !hasTarget) {
+      hasTarget = true;
+      target = t[1];
+    }
+    if (name === fieldTag && !hasField) {
+      hasField = true;
+      field = t[1];
+    }
+    if (name === valueTag && !hasValue) {
+      hasValue = true;
+      value = t[1];
+    }
+  }
+  return { event, d, target, h, O, field, value, sets, ts, format, staged };
+}
+function foldSaid(said, root, also) {
   const fields = {};
   const folders = targetFolders(root);
   const id = root && tagValue2(root, "d");
-  for (const change of [...changes].filter((c) => inTargetFolder(c, folders)).sort(byOrder)) {
-    const O = tagValue2(change, "O");
+  const archive = also?.archive;
+  const lines = also?.lines;
+  const winners = /* @__PURE__ */ new Map();
+  const set = (one, ms, field, value, nth) => {
+    const change = one.event;
+    const held = winners.get(field);
+    if (!held) {
+      winners.set(field, { change, one, value, ms, firstMs: ms, firstId: change.id, firstNth: nth });
+      return;
+    }
+    if (ms < held.firstMs || ms === held.firstMs && change.id < held.firstId) {
+      held.firstMs = ms;
+      held.firstId = change.id;
+      held.firstNth = nth;
+    }
+    if (held.ms > ms || held.ms === ms && held.change.id > change.id)
+      return;
+    held.change = change;
+    held.one = one;
+    held.value = value;
+    held.ms = ms;
+  };
+  const stageOn = (one, field, value) => one.staged && value !== "" ? stageTagOf(one.event, field) : void 0;
+  const line = (one, ms, field, value) => {
+    if (!folders && (field === SUMMARY_FIELD || field === DELETED_FIELD))
+      return;
+    lines.push({ event: one.event, field, value, ms, format: formatOf(one.format), stage: stageOn(one, field, value), folder: one.h, about: one.O });
+  };
+  for (const one of said) {
+    const change = one.event;
+    if (also && change.kind !== also.kind)
+      continue;
+    const { h, O, field, value } = one;
+    if (folders && (h === void 0 || !folders.has(h)))
+      continue;
     if (O !== void 0 && id !== void 0 && O !== id)
       continue;
-    for (const { field, value } of settingsOf(change, rule)) {
-      if (field === SUMMARY_FIELD && !folders)
-        continue;
-      if (field === DELETED_FIELD && !folders)
-        continue;
-      const stage = value === "" ? void 0 : stageTagOf(change, field);
-      fields[field] = {
-        value,
-        by: change.pubkey,
-        at: change.created_at,
-        format: contentFormatOf(change),
-        id: change.id,
-        ...stage ? { stage } : {}
-      };
+    let archived;
+    let ms;
+    if (one.sets) {
+      ms = msOf(one.ts, change.created_at);
+      const tags = change.tags;
+      let nth = 0;
+      for (let i = 0; i < tags.length; i++) {
+        const t = tags[i];
+        if (t[0] !== "set" || !t[1] || typeof t[2] !== "string")
+          continue;
+        set(one, ms, t[1], t[2], nth++);
+        if (lines)
+          line(one, ms, t[1], t[2]);
+        if (archived === void 0 && t[1] === ARCHIVED_FIELD)
+          archived = t[2];
+      }
+    } else if (field && value !== void 0) {
+      ms = msOf(one.ts, change.created_at);
+      set(one, ms, field, value, 0);
+      if (lines)
+        line(one, ms, field, value);
+      if (field === ARCHIVED_FIELD)
+        archived = value;
+    } else
+      continue;
+    if (!archive || archived === void 0)
+      continue;
+    if (!archive.change || archive.ms < ms || archive.ms === ms && archive.change.id < change.id) {
+      archive.change = change;
+      archive.value = archived;
+      archive.ms = ms;
     }
+  }
+  const inOrder = [...winners].sort(([, a], [, b]) => a.firstMs - b.firstMs || (a.firstId < b.firstId ? -1 : a.firstId > b.firstId ? 1 : a.firstNth - b.firstNth));
+  for (const [field, { change, one, value }] of inOrder) {
+    if (field === SUMMARY_FIELD && !folders)
+      continue;
+    if (field === DELETED_FIELD && !folders)
+      continue;
+    const stage = stageOn(one, field, value);
+    const held = { value, by: change.pubkey, at: change.created_at, format: formatOf(one.format), id: change.id };
+    if (stage)
+      held.stage = stage;
+    fields[field] = held;
   }
   return fields;
 }
@@ -21278,9 +21446,12 @@ function stageTagFor(field, value, options) {
   return stage ? ["stage", field, stage] : void 0;
 }
 function settingsOf(change, rule) {
-  const sets = change.tags.filter((t) => t[0] === "set" && t[1] && typeof t[2] === "string");
-  if (sets.length)
-    return sets.map((t) => ({ field: t[1], value: t[2] }));
+  let sets;
+  for (const t of change.tags)
+    if (t[0] === "set" && t[1] && typeof t[2] === "string")
+      (sets ??= []).push({ field: t[1], value: t[2] });
+  if (sets)
+    return sets;
   const field = tagValue2(change, rule.fieldTag);
   const value = tagValue2(change, rule.valueTag);
   return field && value !== void 0 ? [{ field, value }] : [];
@@ -21326,6 +21497,9 @@ function archiveOf(changes, address, rule, root, folderAdmins) {
     if (!last || byOrder(last, change) < 0)
       [last, archived] = [change, set.value];
   }
+  return archiveFrom(last, archived);
+}
+function archiveFrom(last, archived) {
   if (!last || archived !== "true")
     return void 0;
   const note = last.content.trim();
@@ -21363,8 +21537,12 @@ function firstTag(root, tag) {
 function rawSlotValue(spec, root, folded, isBody) {
   if (spec.fold) {
     const change = folded[spec.fold];
-    if (change)
-      return { value: change.value, format: isBody ? change.format ?? "marker" : void 0, ...change.stage ? { stage: change.stage } : {} };
+    if (change) {
+      const held = { value: change.value, format: isBody ? change.format ?? "marker" : void 0 };
+      if (change.stage)
+        held.stage = change.stage;
+      return held;
+    }
     const seedTag = firstTag(root, spec.tag);
     const rootStage = stageTagOf(root, spec.fold);
     if (seedTag !== void 0)
@@ -21410,19 +21588,14 @@ function resolveSlot(spec, root, folded, manifest, name) {
   }
   const field = spec.fold ?? (Array.isArray(spec.tag) ? spec.tag[0] : spec.tag);
   const stage = name === STATUS_SLOT ? stageOf(root.kind, field, spec, manifest, raw, value, source.stage) : void 0;
-  return {
-    label: spec.label,
-    value,
-    colour,
-    isPubkey: spec.as === "pubkey",
-    field,
-    ...stage ? { stage } : {},
-    // Present only on a slot that can carry a body. Absent is the honest shape
-    // for a title read from a tag — and it keeps the key out of every existing
-    // consumer's deep comparisons, which is not the reason but is a real cost
-    // avoided: `format: undefined` is an own property to `deepStrictEqual`.
-    ...source.format ? { format: source.format } : {}
-  };
+  const slot = { label: spec.label, value, colour, isPubkey: spec.as === "pubkey", field };
+  if (spec.map)
+    slot.stored = raw;
+  if (stage)
+    slot.stage = stage;
+  if (source.format)
+    slot.format = source.format;
+  return slot;
 }
 var SUMMARY_TRUNCATE = 280;
 var SUMMARY_SUBTITLE = { tag: SUMMARY_FIELD, fold: SUMMARY_FIELD, truncate: SUMMARY_TRUNCATE };
@@ -21445,10 +21618,10 @@ function withDefaultSubtitle(slots, kind) {
   const truncate2 = declared.truncate === void 0 || builtIn.truncate === void 0 ? declared.truncate ?? builtIn.truncate : Math.min(declared.truncate, builtIn.truncate);
   return { ...slots, [SUBTITLE_SLOT]: { ...builtIn, label: declared.label, truncate: truncate2 } };
 }
-function resolveSlots(projection, root, folded, manifest) {
+function resolveSlots(projection, root, folded, manifest, declared = Object.entries(withDefaultSubtitle(projection.slots, root.kind))) {
   const slots = {};
   const meta2 = [];
-  for (const [name, spec] of Object.entries(withDefaultSubtitle(projection.slots, root.kind))) {
+  for (const [name, spec] of declared) {
     if (Array.isArray(spec)) {
       for (const one of spec) {
         const value = resolveSlot(one, root, folded, manifest);
@@ -21475,41 +21648,75 @@ function changedByOf(root, folded) {
 }
 function buildObject(args2) {
   const { root, pointer, manifest, projection, folded } = args2;
-  const naddr = encodeNaddr(pointer);
-  const { slots, meta: meta2 } = resolveSlots(projection, root, folded, manifest);
-  const objectAddress = pointerToAddress(pointer);
-  const prevs = Object.fromEntries(Object.entries(folded).flatMap(([field, f]) => f.id !== void 0 ? [[field, f.id]] : []));
+  const shape = args2.shape ?? kindShapeOf(manifest, projection, pointer.kind);
+  const bare = !!args2.only?.bare;
+  const naddr = bare ? void 0 : encodeNaddr(pointer);
+  const { slots, meta: meta2 } = resolveSlots(projection, root, folded, manifest, shape.slots);
+  const objectAddress = args2.address ?? pointerToAddress(pointer);
+  let prevs;
+  const fields = args2.only?.fields ? {} : void 0;
+  let changedAt3 = root.created_at;
+  let newestAt = root.created_at;
+  let changedBy = root.pubkey;
+  for (const field in folded) {
+    const f = folded[field];
+    if (f.id !== void 0)
+      (prevs ??= {})[field] = f.id;
+    if (fields && f.id && f.by !== void 0 && f.at !== void 0)
+      fields[field] = f;
+    const at = f.at ?? 0;
+    if (at > changedAt3)
+      changedAt3 = at;
+    if (f.by && at > newestAt) {
+      newestAt = at;
+      changedBy = f.by;
+    }
+  }
   const deleted = folded[DELETED_FIELD];
-  return {
+  const object3 = {
     // An addressable object's `ref` is its address: stable across the author
     // replacing the event, which the event id is not.
     ref: objectAddress,
     address: objectAddress,
-    naddr,
     eventId: root.id,
     kind: pointer.kind,
     widget: projection.widget,
     appName: manifest.name,
-    ...nounOf(projection),
     slots,
     meta: meta2,
     comments: args2.comments ?? [],
-    listsChildren: listsChildrenOf(projection, manifest),
-    parentRef: parentRefOf(manifest, pointer.kind, root, folded),
-    ...parentFieldsOf(manifest, pointer.kind),
+    listsChildren: shape.listsChildren,
+    parentRef: parentRefOf(manifest, pointer.kind, root, folded, shape.parent),
     folder: writeFolderOf(root),
     scopedTo: tagValue2(root, "h"),
-    // Substituted here rather than in the component: `<bech32>` is a NIP-89
-    // detail, and the widget's job is to draw a link, not to know the spec.
-    openUrl: args2.webTemplate?.replace("<bech32>", naddr),
-    actions: actionsOfFile(manifest, projection, root, folded),
+    actions: bare ? [] : actionsOfFile(manifest, projection, root, folded),
     viaRecommendation: args2.viaRecommendation,
-    ...args2.archived ? { archived: args2.archived } : {},
-    changedAt: changedAtOf(root, folded),
-    changedBy: changedByOf(root, folded),
-    ...Object.keys(prevs).length ? { prevs } : {},
-    ...deleted?.value === "true" && deleted.by ? { deleted: { by: deleted.by, at: deleted.at ?? root.created_at } } : {}
+    changedAt: changedAt3,
+    changedBy
   };
+  if (naddr !== void 0) {
+    object3.naddr = naddr;
+    object3.openUrl = args2.webTemplate?.replace("<bech32>", naddr);
+  }
+  if (shape.noun.noun !== void 0)
+    object3.noun = shape.noun.noun;
+  if (shape.parentFields.parentField !== void 0)
+    object3.parentField = shape.parentFields.parentField;
+  if (shape.parentFields.parentKind !== void 0)
+    object3.parentKind = shape.parentFields.parentKind;
+  if (args2.archived)
+    object3.archived = args2.archived;
+  if (prevs)
+    object3.prevs = prevs;
+  if (deleted?.value === "true" && deleted.by)
+    object3.deleted = { by: deleted.by, at: deleted.at ?? root.created_at };
+  if (fields) {
+    object3.record = root;
+    object3.fields = fields;
+  }
+  if (args2.changes)
+    object3.changes = args2.changes;
+  return object3;
 }
 var DELETED_FIELD = "deleted";
 var KIND_FILE_CHANGE = 1851;
@@ -21554,10 +21761,14 @@ async function resolveForeignObject(naddr, query, lookupPeople, depth = 0, cache
 function withBorrowed(object3, borrowed) {
   return borrowed.length ? { ...object3, actions: [...object3.actions, ...borrowed] } : object3;
 }
-function projectEvents(events, manifestFor) {
+function projectEvents(events, manifestFor, options = {}) {
   const roots = /* @__PURE__ */ new Map();
+  const about = [];
   for (const event of events) {
-    const identifier = tagValue2(event, "d");
+    const one = sayOf(event, COMMON_RULE.targetTag, COMMON_RULE.fieldTag, COMMON_RULE.valueTag);
+    if (one.target !== void 0)
+      about.push(one);
+    const identifier = one.d;
     if (identifier === void 0)
       continue;
     const pointer = { kind: event.kind, pubkey: event.pubkey, identifier, relays: [] };
@@ -21569,6 +21780,11 @@ function projectEvents(events, manifestFor) {
     if (!held || event.created_at > held.created_at || event.created_at === held.created_at && event.id < held.id) {
       roots.set(address, { root: event, pointer, resolved });
     }
+  }
+  for (const one of about) {
+    const file = roots.get(one.target);
+    if (file)
+      (file.said ??= []).push(one);
   }
   const grouped = /* @__PURE__ */ new Map();
   const byTarget = (targetTag) => {
@@ -21589,21 +21805,75 @@ function projectEvents(events, manifestFor) {
     grouped.set(targetTag, byAddress);
     return byAddress;
   };
-  return [...roots].map(([address, { root, pointer, resolved }]) => {
+  const shapes = /* @__PURE__ */ new Map();
+  const shapeOf = (manifest, kind) => {
+    let byKind2 = shapes.get(manifest);
+    if (!byKind2)
+      shapes.set(manifest, byKind2 = /* @__PURE__ */ new Map());
+    let shape = byKind2.get(kind);
+    if (!shape)
+      byKind2.set(kind, shape = kindShapeOf(manifest, manifest.projections[String(kind)], kind));
+    return shape;
+  };
+  return [...roots].map(([address, { root, pointer, resolved, said }]) => {
     const { manifest } = resolved;
+    const records = root.kind === KIND_CHANNEL ? void 0 : manifest.records;
     const archiveRule = archiveRuleOf(manifest);
-    return buildObject({
+    const changes = records ? NO_EVENTS : byTarget(foldRuleOf(manifest).targetTag).get(address) ?? NO_EVENTS;
+    const archiveChanges = records ? NO_EVENTS : byTarget(archiveRule.targetTag).get(address) ?? NO_EVENTS;
+    const mine = !records ? NO_SAID : records.targetTag === COMMON_RULE.targetTag && records.fieldTag === COMMON_RULE.fieldTag && records.valueTag === COMMON_RULE.valueTag ? said ?? NO_SAID : (byTarget(records.targetTag).get(address) ?? NO_EVENTS).map((event) => sayOf(event, records.targetTag, records.fieldTag, records.valueTag));
+    const held = options.remember ? builtFrom.get(root) : void 0;
+    if (held && held.manifest === manifest && held.viaRecommendation === resolved.viaRecommendation && held.webTemplate === resolved.webTemplate && !held.bare === !options.bare && !held.fields === !options.fields && !held.lines === !options.changes && sameSaid(held.said, mine) && sameEvents(held.changes, changes) && sameEvents(held.archiveChanges, archiveChanges)) {
+      return held.object;
+    }
+    const archive = { ms: 0 };
+    const lines = options.changes ? [] : void 0;
+    const object3 = buildObject({
       root,
       pointer,
       manifest,
       projection: manifest.projections[String(root.kind)],
-      folded: foldOf(byTarget(foldRuleOf(manifest).targetTag).get(address) ?? [], address, manifest, root),
+      folded: records ? foldSaid(mine, root, { kind: records.changeKind, archive, lines }) : foldOf(changes, address, manifest, root),
       viaRecommendation: resolved.viaRecommendation,
       webTemplate: resolved.webTemplate,
-      archived: archiveOf(byTarget(archiveRule.targetTag).get(address) ?? [], address, archiveRule, root)
+      archived: records ? archiveFrom(archive.change, archive.value) : archiveOf(archiveChanges, address, archiveRule, root),
+      only: options,
+      shape: shapeOf(manifest, root.kind),
+      address,
+      changes: lines
     });
+    if (!options.remember)
+      return object3;
+    Object.freeze(object3);
+    builtFrom.set(root, {
+      manifest,
+      viaRecommendation: resolved.viaRecommendation,
+      webTemplate: resolved.webTemplate,
+      bare: options.bare,
+      fields: options.fields,
+      lines: options.changes,
+      // The events alone: what the walk read of each is not kept past this read.
+      said: mine.map((one) => one.event),
+      changes,
+      archiveChanges,
+      object: object3
+    });
+    return object3;
   });
 }
+var COMMON_RULE = { targetTag: "a", fieldTag: "field", valueTag: "value" };
+var NO_EVENTS = [];
+var NO_SAID = [];
+var sameEvents = (a, b) => a === b || a.length === b.length && a.every((event, i) => event === b[i]);
+var sameSaid = (a, b) => {
+  if (a.length !== b.length)
+    return false;
+  for (let i = 0; i < a.length; i++)
+    if (a[i] !== b[i].event)
+      return false;
+  return true;
+};
+var builtFrom = /* @__PURE__ */ new WeakMap();
 function listReadFilters(pointers) {
   const groups = /* @__PURE__ */ new Map();
   for (const { kind, pubkey, identifier } of pointers) {
@@ -21885,30 +22155,50 @@ function declaredChildSpec(projection) {
 function drawsKind(manifest, kind) {
   return !!manifest.projections?.[String(kind)];
 }
-function parentRefOf(manifest, kind, root, folded = {}) {
-  const movedBy = movedByOf(manifest, kind);
+function parentRefOf(manifest, kind, root, folded = {}, shape = parentShapeOf(manifest, kind)) {
+  const { movedBy, own } = shape;
   if (movedBy) {
     const moved = folded[movedBy.field];
-    if (moved) {
-      const prefix = movedBy.parentKind === void 0 ? /^\d+:[0-9a-f]{64}:/ : new RegExp(`^${movedBy.parentKind}:[0-9a-f]{64}:`);
-      return prefix.test(moved.value) ? moved.value : void 0;
-    }
+    if (moved)
+      return shape.moved.test(moved.value) ? moved.value : void 0;
   }
-  const own = ownParentTagOf(manifest, kind);
   if (own) {
-    return root.tags.find((t) => t[0] === own && t[1] && /^\d+:[0-9a-f]{64}:/.test(t[1]))?.[1];
+    return root.tags.find((t) => t[0] === own && t[1] && ANY_ADDRESS.test(t[1]))?.[1];
   }
+  for (const { via, prefix } of shape.lists) {
+    const found = root.tags.find((t) => t[0] === via && t[1] && t[1].startsWith(prefix))?.[1];
+    if (found)
+      return found;
+  }
+  return void 0;
+}
+var ANY_ADDRESS = /^\d+:[0-9a-f]{64}:/;
+function parentShapeOf(manifest, kind) {
+  const movedBy = movedByOf(manifest, kind);
+  const lists = [];
   for (const [parentKind, projection] of Object.entries(manifest.projections ?? {})) {
     const children = declaredChildSpec(projection);
     if (!children || children.kind !== kind)
       continue;
     if (children.match === "identifier")
       continue;
-    const found = root.tags.filter((t) => t[0] === children.via && t[1]).map((t) => t[1]).find((value) => value.startsWith(`${parentKind}:`));
-    if (found)
-      return found;
+    lists.push({ via: children.via, prefix: `${parentKind}:` });
   }
-  return void 0;
+  return {
+    movedBy,
+    ...movedBy ? { moved: movedBy.parentKind === void 0 ? ANY_ADDRESS : new RegExp(`^${movedBy.parentKind}:[0-9a-f]{64}:`) } : {},
+    own: ownParentTagOf(manifest, kind),
+    lists
+  };
+}
+function kindShapeOf(manifest, projection, kind) {
+  return {
+    slots: Object.entries(withDefaultSubtitle(projection.slots, kind)),
+    parent: parentShapeOf(manifest, kind),
+    parentFields: parentFieldsOf(manifest, kind),
+    listsChildren: listsChildrenOf(projection, manifest),
+    noun: nounOf(projection)
+  };
 }
 function movedByOf(manifest, kind) {
   for (const [parentKind, projection] of Object.entries(manifest.projections ?? {})) {
@@ -23275,7 +23565,7 @@ function fieldsSetBy(event) {
   return field === void 0 ? [] : [withFormat(field, tagValue3(event, "value") ?? "")];
 }
 var addressOfRoot = (root) => `${root.kind}:${root.pubkey}:${tagValue3(root, "d") ?? ""}`;
-function filesOf(events, options = {}) {
+function rootsOf(events) {
   const roots = /* @__PURE__ */ new Map();
   for (const event of events) {
     if (event.kind === KIND_CHANGE2 || tagValue3(event, "d") === void 0)
@@ -23286,8 +23576,45 @@ function filesOf(events, options = {}) {
       roots.set(address, event);
     }
   }
+  return roots;
+}
+function countedSets(event, root) {
+  const O = tagValue3(event, "O");
+  if (O !== void 0 && O !== tagValue3(root, "d"))
+    return [];
+  const folders = targetFolders(root);
+  if (!inTargetFolder(event, folders))
+    return [];
+  return fieldsSetBy(event).filter((set) => folders || set.field !== SUMMARY_FIELD && set.field !== DELETED_FIELD2).map((set) => {
+    const stage = set.value === "" ? void 0 : stageTagOf(event, set.field);
+    return stage ? { ...set, stage } : set;
+  });
+}
+function historyOf(events) {
+  const roots = rootsOf(events);
+  const counted = /* @__PURE__ */ new Map();
+  for (const event of events) {
+    if (event.kind !== KIND_CHANGE2 || counted.has(event.id))
+      continue;
+    if (roots.has(tagValue3(event, "a") ?? ""))
+      counted.set(event.id, event);
+  }
+  return [...counted.values()].sort((a, b) => a.id === b.id ? 0 : newer(a, b) ? 1 : -1).flatMap((event) => {
+    const address = tagValue3(event, "a");
+    return countedSets(event, roots.get(address)).map((set) => ({
+      address,
+      id: event.id,
+      pubkey: event.pubkey,
+      at: changedAt(event),
+      ...set,
+      note: event.content,
+      event
+    }));
+  });
+}
+function filesOf(events, options = {}) {
   const files = /* @__PURE__ */ new Map();
-  for (const [address, root] of roots)
+  for (const [address, root] of rootsOf(events))
     files.set(address, { root, address, fields: {}, events: [root] });
   for (const event of events) {
     if (event.kind !== KIND_CHANGE2)
@@ -23295,16 +23622,8 @@ function filesOf(events, options = {}) {
     const file = files.get(tagValue3(event, "a") ?? "");
     if (!file)
       continue;
-    const O = tagValue3(event, "O");
-    if (O !== void 0 && O !== tagValue3(file.root, "d"))
-      continue;
-    const folders = targetFolders(file.root);
-    if (!inTargetFolder(event, folders))
-      continue;
-    for (const set of fieldsSetBy(event)) {
+    for (const set of countedSets(event, file.root)) {
       if (set.field === TEXT_FIELD && !options.withText)
-        continue;
-      if (!folders && (set.field === SUMMARY_FIELD || set.field === DELETED_FIELD2))
         continue;
       const held = file.fields[set.field];
       if (held && !newer(event, held.event))
@@ -24113,22 +24432,20 @@ function foldWorkspace(roots, read, manifests, cache, byFields) {
     }
   }
   cascadeArchives({ projects, issues });
-  const activity = [...changes].sort(byOrder).flatMap((event) => {
-    const field = tagValue4(event, "field");
-    const value = tagValue4(event, "value");
-    if (!field || value === void 0) return [];
-    const ts = Number.parseInt(tagValue4(event, "ts") ?? "", 10);
-    return [{
-      id: event.id,
-      author: event.pubkey,
-      createdAt: event.created_at,
+  const activity = historyOf([...roots, ...changes]).map((line) => {
+    const ts = Number.parseInt(tagValue4(line.event, "ts") ?? "", 10);
+    return {
+      id: line.id,
+      author: line.pubkey,
+      createdAt: line.event.created_at,
       ts: Number.isFinite(ts) ? ts : void 0,
-      target: tagValue4(event, "a"),
-      field,
-      value,
-      note: event.content,
-      format: contentFormatOf(event)
-    }];
+      target: line.address,
+      field: line.field,
+      value: line.value,
+      note: line.note,
+      // The text's format, as the change names it; any other field's value is plain.
+      format: line.format === void 0 ? "marker" : contentFormatOf(line.event)
+    };
   });
   const statusAt = /* @__PURE__ */ new Map();
   const current = new Map(issues.map((issue2) => [issue2.addr, issue2.status]));

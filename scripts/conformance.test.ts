@@ -72,7 +72,11 @@ interface Recorded {
 
 const fixture = JSON.parse(readFileSync(join(here, '..', 'conformance', 'fold-fixture.json'), 'utf8')) as {
   events: SignedEvent[]
-  expected: { projects: Recorded[]; issues: Recorded[] }
+  expected: {
+    projects: Recorded[]
+    issues: Recorded[]
+    activity: { id: string; author: string; target: string; field: string; value: string; note?: string; format?: string; ts?: number }[]
+  }
 }
 const manifest = JSON.parse(readFileSync(join(here, '..', 'conformance', 'ship-manifest.json'), 'utf8')) as { event: SignedEvent }
 
@@ -157,7 +161,29 @@ compare(
   new Map(workspace.issues.map((issue) => [issue.addr, { ...issue }])),
   ['author', 'createdAt', 'title', 'description', 'status', 'stage', 'ref', 'assignee', 'projectAddr', 'folder'],
 )
-check('the change stream is every recorded change', workspace.activity.length === 466, String(workspace.activity.length))
+/*
+  The history, as Ship's activity list recorded it (MOV-5): the same changes,
+  in each file's order, with the same values. A change to a file whose record
+  is not held is in neither (Miky, 21 Nov, on MOV-2), so this holds 437 of the
+  fixture's 466 changes where the agent's own rebuild listed all 466.
+*/
+const lineOf = (change: { id: string; author: string; field: string; value: string; note?: string; format?: string; ts?: number }) =>
+  JSON.stringify([change.id, change.author, change.field, change.value, change.note ?? '', change.format ?? 'marker', change.ts ?? null])
+const byFile = (changes: { target: string }[]) => {
+  const files = new Map<string, string[]>()
+  for (const change of changes) files.set(change.target, [...(files.get(change.target) ?? []), lineOf(change as never)])
+  return files
+}
+const recordedHistory = byFile(fixture.expected.activity)
+const readHistory = byFile(workspace.activity)
+const historyDiffers = [...new Set([...recordedHistory.keys(), ...readHistory.keys()])].filter(
+  (target) => JSON.stringify(recordedHistory.get(target) ?? []) !== JSON.stringify(readHistory.get(target) ?? []),
+)
+check(
+  "every file's history is the one Ship's activity list recorded",
+  historyDiffers.length === 0 && workspace.activity.length === fixture.expected.activity.length,
+  `${workspace.activity.length} read, ${fixture.expected.activity.length} recorded; differ on ${historyDiffers.length} files ${historyDiffers.slice(0, 3).map((t) => t.slice(-36, -28)).join(' ')}`,
+)
 check(
   "the stranger's own project is read with the manifest they recommend",
   workspace.manifestFor(`30850:${STRANGER}:their-project`)?.manifest.records?.changeKind === 9851,
