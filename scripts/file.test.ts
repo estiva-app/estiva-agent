@@ -256,7 +256,10 @@ console.log('\n— Changing one section —')
   events.push(event(1851, [['a', created!.address], ['field', 'description'], ['value', latest.value], ['content-format', 'estiva-blocks-1'], ['h', FOLDER]], '', QA2, 1_900_000_100))
   const theirs = events.at(-1)!
   // The agent ticks a box Katerina did not touch, on the text it read before her save.
-  const out = await run('describe', context, [created!.address], { version: before.version, description: TEXT.replace('- [ ] Who opens the page?', '- [x] Who opens the page?') })
+  // A refusal is an answer too, read by the checks below (the code before ALL-6 refused here).
+  const out = await run('describe', context, [created!.address], { version: before.version, description: TEXT.replace('- [ ] Who opens the page?', '- [x] Who opens the page?') }).catch(
+    (error: Error) => ({ refused: error.message }) as Record<string, any>,
+  )
   check(
     'a change made on a text somebody saved since is merged onto theirs: one change, after their save',
     published.length === 1 && tag(published[0], 'prev') === theirs.id,

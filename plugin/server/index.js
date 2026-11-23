@@ -27485,7 +27485,8 @@ async function textAtVersion2(context2, address, title, version2) {
   const [event] = await relayQuery(context2)([{ ids: [version2] }]);
   const handle = handleOf(address);
   const first = (name) => event?.tags.find((tag) => tag[0] === name)?.[1];
-  const isRoot = event?.kind === handle.kind && event.pubkey === handle.pubkey && first("d") === handle.d;
+  const [root] = event?.kind === handle.kind ? await relayQuery(context2)([{ kinds: [handle.kind], authors: [handle.pubkey], "#d": [handle.d], limit: 1 }]) : [];
+  const isRoot = !!root && event?.id === root.id;
   const inLine = event?.kind === KIND_CHANGE && first("a") === address && (first("O") === void 0 || first("O") === handle.d) && first("h") === await folderOfFile(context2, address) && fieldsSetBy(event).some((set) => set.field === TEXT_FIELD);
   const text2 = event?.id === version2 && (isRoot || inLine) ? isRoot ? textOf3(event) ?? { value: "" } : textOf3(event) : void 0;
   if (!text2) throw new BadRequest(`--version ${version2} is not a saved version of the text of ${title}. Pass the \`version\` \`file show\` printed for it. Nothing was published.`);

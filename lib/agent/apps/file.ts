@@ -210,7 +210,9 @@ async function textAtVersion(context: AgentContext, address: string, title: stri
   const [event] = await relayQuery(context)([{ ids: [version] }])
   const handle = handleOf(address)
   const first = (name: string) => event?.tags.find((tag) => tag[0] === name)?.[1]
-  const isRoot = event?.kind === handle.kind && event.pubkey === handle.pubkey && first('d') === handle.d
+  // The first record as it stands, never an older copy of it the relay still answers by id.
+  const [root] = event?.kind === handle.kind ? await relayQuery(context)([{ kinds: [handle.kind], authors: [handle.pubkey], '#d': [handle.d], limit: 1 }]) : []
+  const isRoot = !!root && event?.id === root.id
   const inLine =
     event?.kind === KIND_CHANGE &&
     first('a') === address &&
