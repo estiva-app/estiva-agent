@@ -27,8 +27,9 @@ import {
   type ProjectionCache,
   type QueryFn,
   type ResolvedManifest,
+  type WriteChangeResult,
 } from '@estiva-app/interop'
-import { addrToNaddr, imetaTag, KIND, RELAY_BUSY_MESSAGE, type Imeta } from '@estiva-app/protocol'
+import { addrToNaddr, imetaTag, KIND, RELAY_BUSY_MESSAGE, type Imeta, type MergeText } from '@estiva-app/protocol'
 import { BadRequest, type AgentContext } from './cli'
 import { commentLinkTags } from './links'
 import { fileReadsFor } from './apps/ship-workspace'
@@ -125,8 +126,8 @@ export async function actOnFile(
   signs: number,
   /** The comment answered; its `place` (block and quote tags) is copied onto the reply (§13.6). */
   replyTo?: { id: string; kind: number; author: string; place?: readonly string[][] },
-  /** Refuses a built event whose tags are not the ones the caller means to sign, naming why. */
-  shape?: (tags: string[][], folder: string) => string | undefined,
+  /** Refuses a built event whose tags are not the ones the caller means to sign, naming why; `written` is the value it was built with. */
+  shape?: (tags: string[][], folder: string, written: string) => string | undefined,
   /** The value's content model when it is not marker text; only one the action declares is accepted. */
   contentFormat?: string,
   /** Files already on the relay, named in `imeta` — a comment's attachments, as every comment box sends them. */
@@ -135,7 +136,12 @@ export async function actOnFile(
   note?: string,
   /** The field this change sets, to write it after the change it follows (§6.2); omitted, it is published as built. */
   ordered?: string,
-): Promise<{ ok: boolean; reason?: string; eventId?: string }> {
+  /**
+   * With `ordered`: the change it follows, as the caller read it, instead of the field's current change read now; and
+   * for a text, the version the caller's words were made on, merged onto what was saved since (§13.3, ALL-6).
+   */
+  after?: { prev: string; base?: MergeText },
+): Promise<{ ok: boolean; reason?: string; eventId?: string; written?: WriteChangeResult }> {
   const query = relayQuery(context)
   const pointer = pointerOf(file.address)
   const resolved = await resolveManifest(pointer, query)
@@ -171,7 +177,7 @@ export async function actOnFile(
     if (built.kind !== signs) {
       throw new BadRequest(`The manifest read for ${file.title} declares "${actionId}" as a kind:${built.kind}, which this command does not write (it writes ${signs}). Nothing was published.`)
     }
-    const wrong = shape?.(built.tags.filter((tag) => tag[0] !== 'prev'), folder)
+    const wrong = shape?.(built.tags.filter((tag) => tag[0] !== 'prev'), folder, input.value)
     if (wrong) throw new BadRequest(`The manifest read for ${file.title} builds "${actionId}" ${wrong}. Nothing was published.`)
     return built
   }
@@ -185,22 +191,25 @@ export async function actOnFile(
     */
     const handle = { kind: pointer.kind, pubkey: pointer.pubkey, d: pointer.identifier }
     // The relay's list read where its NIP-11 offers one; elsewhere the file's changes, folded as every reader folds them.
-    const listed = (await fileReadsFor(context)).list ? (await prevsAfterSwitch(query, handle, [ordered]).catch(() => undefined))?.[ordered] : undefined
+    const listed = after ? undefined : (await fileReadsFor(context)).list ? (await prevsAfterSwitch(query, handle, [ordered]).catch(() => undefined))?.[ordered] : undefined
     const prev =
+      after?.prev ??
       listed ??
-      filesOf([root, ...(await query([{ kinds: [signs], '#a': [file.address] }]))]).find((one) => one.address === file.address)?.fields[ordered]?.id ??
+      filesOf([root, ...(await query([{ kinds: [signs], '#a': [file.address] }]))], { withText: true }).find((one) => one.address === file.address)?.fields[ordered]?.id ??
       root.id
     const written = await writeChange({
       field: ordered,
       value,
       prev,
+      ...(contentFormat ? { format: contentFormat } : {}),
+      ...(after?.base ? { base: after.base } : {}),
       build,
       sign: (event) => context.signer.sign(event),
       publish: (event) => context.relay.publish(event),
       query,
       current: async (field) => (await openFile(query, handle, { text: false }).catch(() => undefined))?.fields[field]?.event,
     })
-    return written.ok ? { ok: true, eventId: written.id } : { ok: false, reason: 'refused' in written ? written.refused : 'a change crossed it' }
+    return written.ok ? { ok: true, eventId: written.id, written } : { ok: false, reason: 'refused' in written ? written.refused : 'a change crossed it', written }
   }
 
   const built = build({ value, createdAtMs: Date.now() })

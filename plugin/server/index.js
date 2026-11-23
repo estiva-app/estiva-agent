@@ -19483,7 +19483,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.36.0",
+  version: "0.37.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -24245,7 +24245,7 @@ async function archiveOfFile(context2, address, cache) {
   const file = await resolveForeignObject(addrToNaddr(address), relayQuery(context2), async () => ({}), void 0, cache, { archivedWith: true });
   return file?.archived;
 }
-async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, contentFormat, files = [], note, ordered) {
+async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, contentFormat, files = [], note, ordered, after) {
   const query = relayQuery(context2);
   const pointer = pointerOf2(file.address);
   const resolved = await resolveManifest(pointer, query);
@@ -24278,25 +24278,27 @@ async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, co
     if (built2.kind !== signs) {
       throw new BadRequest(`The manifest read for ${file.title} declares "${actionId}" as a kind:${built2.kind}, which this command does not write (it writes ${signs}). Nothing was published.`);
     }
-    const wrong = shape?.(built2.tags.filter((tag) => tag[0] !== "prev"), folder);
+    const wrong = shape?.(built2.tags.filter((tag) => tag[0] !== "prev"), folder, input.value);
     if (wrong) throw new BadRequest(`The manifest read for ${file.title} builds "${actionId}" ${wrong}. Nothing was published.`);
     return built2;
   };
   if (ordered) {
     const handle = { kind: pointer.kind, pubkey: pointer.pubkey, d: pointer.identifier };
-    const listed = (await fileReadsFor(context2)).list ? (await prevsAfterSwitch(query, handle, [ordered]).catch(() => void 0))?.[ordered] : void 0;
-    const prev = listed ?? filesOf([root, ...await query([{ kinds: [signs], "#a": [file.address] }])]).find((one) => one.address === file.address)?.fields[ordered]?.id ?? root.id;
+    const listed = after ? void 0 : (await fileReadsFor(context2)).list ? (await prevsAfterSwitch(query, handle, [ordered]).catch(() => void 0))?.[ordered] : void 0;
+    const prev = after?.prev ?? listed ?? filesOf([root, ...await query([{ kinds: [signs], "#a": [file.address] }])], { withText: true }).find((one) => one.address === file.address)?.fields[ordered]?.id ?? root.id;
     const written = await writeChange({
       field: ordered,
       value,
       prev,
+      ...contentFormat ? { format: contentFormat } : {},
+      ...after?.base ? { base: after.base } : {},
       build,
       sign: (event) => context2.signer.sign(event),
       publish: (event) => context2.relay.publish(event),
       query,
       current: async (field) => (await openFile(query, handle, { text: false }).catch(() => void 0))?.fields[field]?.event
     });
-    return written.ok ? { ok: true, eventId: written.id } : { ok: false, reason: "refused" in written ? written.refused : "a change crossed it" };
+    return written.ok ? { ok: true, eventId: written.id, written } : { ok: false, reason: "refused" in written ? written.refused : "a change crossed it", written };
   }
   const built = build({ value, createdAtMs: Date.now() });
   const signed = await context2.signer.sign(files.length ? { ...built, tags: [...built.tags, ...files.map(imetaTag)] } : built);
@@ -25009,6 +25011,37 @@ function summaryRoute(manifest, createAction, kind) {
   return summaryAction(manifest, kind) ? "change" : void 0;
 }
 
+// lib/agent/text-merge.ts
+async function changeBy(context2, change) {
+  const directory = await profilesOf(relayQuery(context2), [change.pubkey]);
+  return { by: directory.get(change.pubkey)?.name ?? `${change.pubkey.slice(0, 8)}\u2026`, at: new Date(changedAt(change)).toISOString() };
+}
+async function mergedLine(context2, result) {
+  if (!result.ok || !result.mergedOnto) return void 0;
+  const { by, at } = await changeBy(context2, result.mergedOnto);
+  return "unchanged" in result ? `Nothing to save: ${by}'s change at ${at} already has everything yours did.` : `Merged: the text had been changed by ${by} at ${at}, after the version you read. Their change is kept as it is, with yours where it touched nothing of theirs.`;
+}
+var askedBlock = (text2) => text2 === void 0 ? "(deleted)" : JSON.stringify(text2);
+async function textAsks(context2, title, asks, theirs, alsoNotSaved, noun = "project") {
+  const { by, at } = await changeBy(context2, theirs);
+  const blocks = asks.map(
+    (ask) => [
+      `- ${ask.block === null ? "The text" : `Block ${ask.block}`}: ${ask.why === "changed-by-both" ? "changed by both of you" : "edited by one of you and deleted by the other"}.`,
+      `  theirs: ${askedBlock(ask.theirs)}`,
+      `  yours:  ${askedBlock(ask.mine)}`
+    ].join("\n")
+  );
+  return new BadRequest(
+    [
+      `Nothing was saved${alsoNotSaved.length ? `, ${alsoNotSaved.join(", ")} included` : ""}: the text of \u201C${title}\u201D is now as ${by} left it at ${at}, and your change and theirs meet in ${asks.length === 1 ? "one place" : `${asks.length} places`}.`,
+      ...blocks,
+      `Keep ${by}'s words: read the ${noun} again, rewrite your change on top of the text as it is now, and save it with the new version. Ask the person you are working with before dropping any of their words.`,
+      // A block they deleted holds no words of theirs to keep: whether it stays deleted is the person's call.
+      ...asks.some((ask) => ask.theirs === void 0) ? [`${by} deleted a block you changed: ask the person you are working with whether it stays deleted or comes back with your change.`] : []
+    ].join("\n")
+  );
+}
+
 // lib/agent/apps/ship.ts
 import { randomUUID } from "node:crypto";
 var NOT_HOME = "it is in no team yet, so it can go only to the team it was started in, or to the Company team";
@@ -25547,35 +25580,6 @@ async function writeField(context2, workspace, target, field, value, note, prev,
     query,
     current: async (name) => (await openFile(query, { kind: Number(kind), pubkey, d: rest.join(":") }, { text: name === TEXT_FIELD && (await fileReadsFor(context2)).text }))?.fields[name]?.event
   });
-}
-async function changeBy(context2, change) {
-  const directory = await directoryFor(context2, [change.pubkey]);
-  return { by: who(directory, change.pubkey) ?? change.pubkey, at: new Date(changedAt(change)).toISOString() };
-}
-async function mergedLine(context2, result) {
-  if (!result.ok || !result.mergedOnto) return void 0;
-  const { by, at } = await changeBy(context2, result.mergedOnto);
-  return "unchanged" in result ? `Nothing to save: ${by}'s change at ${at} already has everything yours did.` : `Merged: the text had been changed by ${by} at ${at}, after the version you read. Their change is kept as it is, with yours where it touched nothing of theirs.`;
-}
-var askedBlock = (text2) => text2 === void 0 ? "(deleted)" : JSON.stringify(text2);
-async function textAsks(context2, title, asks, theirs, alsoNotSaved, noun = "project") {
-  const { by, at } = await changeBy(context2, theirs);
-  const blocks = asks.map(
-    (ask) => [
-      `- ${ask.block === null ? "The text" : `Block ${ask.block}`}: ${ask.why === "changed-by-both" ? "changed by both of you" : "edited by one of you and deleted by the other"}.`,
-      `  theirs: ${askedBlock(ask.theirs)}`,
-      `  yours:  ${askedBlock(ask.mine)}`
-    ].join("\n")
-  );
-  return new BadRequest(
-    [
-      `Nothing was saved${alsoNotSaved.length ? `, ${alsoNotSaved.join(", ")} included` : ""}: the text of \u201C${title}\u201D is now as ${by} left it at ${at}, and your change and theirs meet in ${asks.length === 1 ? "one place" : `${asks.length} places`}.`,
-      ...blocks,
-      `Keep ${by}'s words: read the ${noun} again, rewrite your change on top of the text as it is now, and save it with the new version. Ask the person you are working with before dropping any of their words.`,
-      // A block they deleted holds no words of theirs to keep: whether it stays deleted is the person's call.
-      ...asks.some((ask) => ask.theirs === void 0) ? [`${by} deleted a block you changed: ask the person you are working with whether it stays deleted or comes back with your change.`] : []
-    ].join("\n")
-  );
 }
 async function filesByWords(context2, reference, kinds = [KIND2.PROJECT, KIND2.ISSUE]) {
   const words = reference.trim();
@@ -26979,17 +26983,20 @@ Pass an address to say which.`
 };
 
 // lib/agent/apps/peek.ts
+async function topicReads(context2) {
+  return (await fileReadsFor(context2)).list ? { listRead: true } : {};
+}
 var noPeople2 = async () => ({});
 var TOPIC_TREE_KINDS = [KIND_BARE_FILE, KIND_CHANNEL_METADATA];
 async function loadTopics(context2, cache, folderRef, includeArchived = false, query = loadQuery(context2)) {
-  const all = await listFolders(query, { recordChannels: false });
+  const [all, reads2] = await Promise.all([listFolders(query, { recordChannels: false }), topicReads(context2)]);
   let level = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all);
   const byId2 = new Map(all.map((folder) => [folder.id, folder]));
   const visited = new Set(level.map((folder) => folder.id));
   const topics = /* @__PURE__ */ new Map();
   while (level.length) {
     const contents = await Promise.all(
-      level.map((folder) => resolveFolderContents(folder.id, query, noPeople2, cache, { kinds: TOPIC_TREE_KINDS, includeArchived }))
+      level.map((folder) => resolveFolderContents(folder.id, query, noPeople2, cache, { kinds: TOPIC_TREE_KINDS, includeArchived, ...reads2 }))
     );
     const next = [];
     for (const [i, content] of contents.entries()) {
@@ -27058,8 +27065,9 @@ async function oneTopic(context2, query, cache, reference, early) {
     if (folders2.length === 1) listing.set(address, folders2[0]);
   }
   const folders = [...new Set(listing.values())];
+  const reads2 = await topicReads(context2);
   const contents = await Promise.all(
-    folders.map((folder) => resolveFolderContents(folder.id, query, noPeople2, cache, { kinds: TOPIC_TREE_KINDS }))
+    folders.map((folder) => resolveFolderContents(folder.id, query, noPeople2, cache, { kinds: TOPIC_TREE_KINDS, ...reads2 }))
   );
   const topics = [];
   for (const [address, folder] of listing) {
@@ -27386,7 +27394,7 @@ var peekApp = {
         if (text2 === void 0) throw new BadRequest("edit-topic needs --summary. An empty one clears it.");
         const summary = summaryText(text2);
         const topic = findTopic(await loadTopics(context2, createProjectionCache()), reference);
-        const result = await onTopic(context2, topic, summaryAction, summary, KIND_CHANGE);
+        const result = await onTopic(context2, topic, summaryAction, summary, KIND_CHANGE, void 0, void 0, void 0, [], void 0, "summary");
         published(result, `the summary of ${topic.title}`);
         return {
           changed: { topic: topic.title, from: topic.summary ?? "", to: summary, url: topic.url },
@@ -27427,8 +27435,9 @@ async function fileArg(context2, args2, command2) {
   if (found.length > 1) throw new BadRequest(`${link} names more than one file, so it names none: ${found.join(", ")}.`);
   throw new BadRequest(`${link} is not a link to a file this key can read: no app's manifest declares it, or nothing readable holds its id. Pass the file's address, kind:pubkey:d, instead.`);
 }
-function changeShape(address, field, value, extra = {}) {
-  return (tags, folder) => {
+function changeShape(address, field, meant, extra = {}) {
+  return (tags, folder, written) => {
+    const value = written ?? meant;
     const type = changeTypeOf(address);
     const expected = { a: address, O: address.split(":").slice(2).join(":"), ...type ? { K: type } : {}, field, value, h: folder, ...extra };
     const names = tags.map((tag) => tag[0]);
@@ -27454,6 +27463,33 @@ function textOf4(file) {
 }
 var versionOf = (text2) => createHash("sha256").update(`${text2.format ?? ""}
 ${text2.value}`).digest("hex").slice(0, 12);
+var SAVE_ID = /^[0-9a-f]{64}$/;
+var handleOf = (address) => {
+  const pointer = pointerOf2(address);
+  return { kind: pointer.kind, pubkey: pointer.pubkey, d: pointer.identifier };
+};
+async function textHead(context2, address) {
+  const query = relayQuery(context2);
+  const handle = handleOf(address);
+  if ((await fileReadsFor(context2)).text) {
+    const opened = await openFile(query, handle, { text: true });
+    return opened && (opened.fields[TEXT_FIELD]?.id ?? opened.root.id);
+  }
+  const [root] = await query([{ kinds: [handle.kind], authors: [handle.pubkey], "#d": [handle.d], limit: 1 }]);
+  if (!root) return void 0;
+  const folded = filesOf([root, ...await query([{ kinds: [KIND_CHANGE], "#a": [address] }])], { withText: true }).find((one) => one.address === address);
+  return folded?.fields[TEXT_FIELD]?.id ?? root.id;
+}
+async function textAtVersion2(context2, address, title, version2) {
+  const [event] = await relayQuery(context2)([{ ids: [version2] }]);
+  const handle = handleOf(address);
+  const first = (name) => event?.tags.find((tag) => tag[0] === name)?.[1];
+  const isRoot = event?.kind === handle.kind && event.pubkey === handle.pubkey && first("d") === handle.d;
+  const inLine = event?.kind === KIND_CHANGE && first("a") === address && first("h") === await folderOfFile(context2, address) && fieldsSetBy(event).some((set) => set.field === TEXT_FIELD);
+  const text2 = event?.id === version2 && (isRoot || inLine) ? isRoot ? textOf3(event) ?? { value: "" } : textOf3(event) : void 0;
+  if (!text2) throw new BadRequest(`--version ${version2} is not a saved version of the text of ${title}. Pass the \`version\` \`file show\` printed for it. Nothing was published.`);
+  return { value: text2.value, format: text2.format === BLOCK_DOCUMENT_FORMAT ? "blocks" : "marker", base: text2 };
+}
 function blockLine(block) {
   const words = inlineTextOf(block).replace(/\s+/g, " ").trim();
   const line = words || `[${block.type}]`;
@@ -27606,11 +27642,28 @@ var fileApp = {
           }
         }
         const named = { address, title };
+        const first = { prev: signed.id };
         if (route === "change") {
-          published(await actOnFile(context2, named, summaryAction, summary, KIND_CHANGE, void 0, changeShape(address, "summary", summary)), `the summary of "${title}" \u2014 the file itself was created, ${address}, without one`);
+          published(
+            await actOnFile(context2, named, summaryAction, summary, KIND_CHANGE, void 0, changeShape(address, "summary", summary), void 0, [], void 0, "summary", first),
+            `the summary of "${title}" \u2014 the file itself was created, ${address}, without one`
+          );
         }
         if (body) {
-          const result = await actOnFile(context2, named, describeAction, body.value, KIND_CHANGE, void 0, changeShape(address, "description", body.value, formatTag(body.contentFormat)), body.contentFormat);
+          const result = await actOnFile(
+            context2,
+            named,
+            describeAction,
+            body.value,
+            KIND_CHANGE,
+            void 0,
+            changeShape(address, "description", body.value, formatTag(body.contentFormat)),
+            body.contentFormat,
+            [],
+            void 0,
+            TEXT_FIELD,
+            first
+          );
           published(result, `the text of "${title}" \u2014 the file itself was created, ${address}, without it`);
         }
         const mentioned = await publishMentionAdds(context2, adds, `The text of "${title}" (${address})`);
@@ -27631,7 +27684,7 @@ var fileApp = {
       async run(context2, args2) {
         const address = await fileArg(context2, args2, "show");
         const cache = createProjectionCache();
-        const [file, folderId] = await Promise.all([readFile2(context2, address, cache), folderOfFile(context2, address)]);
+        const [file, folderId, head] = await Promise.all([readFile2(context2, address, cache), folderOfFile(context2, address), textHead(context2, address)]);
         const text2 = textOf4(file);
         const [channel] = folderId ? await relayQuery(context2)([{ kinds: [KIND_FOLDER], "#d": [folderId], limit: 1 }]) : [];
         const folder = channel ? { name: channel.tags.find((tag) => tag[0] === "name")?.[1] } : void 0;
@@ -27645,11 +27698,12 @@ var fileApp = {
           url: file.openUrl,
           /*
             The text as `describe` takes it back: one chunk per block, a blank
-            line apart. `version` is what was read; pass it to `describe` so a
-            change saved in between is refused rather than overwritten.
+            line apart. `version` is the save that text is (§6.2); pass it to
+            `describe`, so a change saved in between is merged with yours, never
+            overwritten.
           */
           format: formatName(text2.format),
-          version: versionOf(text2),
+          version: head ?? versionOf(text2),
           text: descriptionText(text2.value, text2.format),
           // How each link in it draws — chip, row, card or a link on words — which the text cannot say (WBD-9).
           links: await printedLinks(context2, text2.value, text2.format),
@@ -27672,24 +27726,46 @@ var fileApp = {
         const cache = createProjectionCache();
         const file = await readFile2(context2, address, cache);
         const title = file.slots.title?.value ?? address;
-        const before = textOf4(file);
-        if (versionOf(before) !== version2) {
+        const head = await textHead(context2, address);
+        if (!head) throw new BadRequest(`The text of ${title} could not be read again just now. Nothing was published.`);
+        let before = textOf4(file);
+        let base;
+        if (SAVE_ID.test(version2)) {
+          if (version2 !== head) ({ base, ...before } = await textAtVersion2(context2, address, title, version2));
+        } else if (versionOf(before) !== version2) {
           throw new BadRequest(
-            `The text of ${title} changed since you read it (version ${version2}, now ${versionOf(before)}): somebody saved an edit in between. Read it again with \`file show\` and make your change on what it says now. Nothing was published.`
+            `The text of ${title} changed since you read it (version ${version2}, now ${head}): somebody saved an edit in between. Read it again with \`file show\` and make your change on what it says now. Nothing was published.`
           );
         }
         const next = await describePlacing(context2, before.value, before.format, text2);
         const folder = await folderOfFile(context2, address);
         if (!folder) throw new BadRequest(`${title} has no team on the relay, so there is nowhere to write. Nothing was published.`);
         const adds = mentionAdds(context2.signer.pubkey, { file: address, folder, saved: fileText(next.value, next.contentFormat), editedFrom: fileText(before.value, before.format), asked });
-        const result = await actOnFile(context2, { address, title }, describeAction, next.value, KIND_CHANGE, void 0, changeShape(address, "description", next.value, formatTag(next.contentFormat)), next.contentFormat);
+        const result = await actOnFile(
+          context2,
+          { address, title },
+          describeAction,
+          next.value,
+          KIND_CHANGE,
+          void 0,
+          changeShape(address, "description", next.value, formatTag(next.contentFormat)),
+          next.contentFormat,
+          [],
+          void 0,
+          TEXT_FIELD,
+          { prev: head, ...base ? { base } : {} }
+        );
+        if (!result.ok && result.written && "asks" in result.written) throw await textAsks(context2, title, result.written.asks, result.written.theirs, [], "file");
         published(result, `the text of ${title}`);
+        const merged = result.written ? await mergedLine(context2, result.written) : void 0;
         const mentioned = await publishMentionAdds(context2, adds, `The text of ${title}`);
         const detached = next.blocks?.removed.length ? detachedBy((await readConversation(context2, { address }, cache)).conversations, before, next.value) : [];
         return {
-          changed: { file: title, address, url: file.openUrl, version: versionOf({ value: next.value, format: next.contentFormat ? "blocks" : before.format }) },
+          // The save this one made is the version the next `describe` takes.
+          changed: { file: title, address, url: file.openUrl, version: result.eventId },
           ...next.blocks ? { blocks: next.blocks } : {},
           eventId: result.eventId,
+          ...merged ? { merged } : {},
           ...mentioned,
           ...detached.length ? {
             detached: detached.map((thread) => ({ id: thread.root.id, opening: thread.root.body.slice(0, 80) })),
@@ -27755,7 +27831,7 @@ var fileApp = {
         const summary = summaryText(text2);
         const file = await resolveForeignObject(addrToNaddr(address), relayQuery(context2), async () => ({}));
         const title = file?.slots.title?.value ?? address;
-        const result = await actOnFile(context2, { address, title }, summaryAction, summary, KIND_CHANGE, void 0, changeShape(address, "summary", summary));
+        const result = await actOnFile(context2, { address, title }, summaryAction, summary, KIND_CHANGE, void 0, changeShape(address, "summary", summary), void 0, [], void 0, "summary");
         published(result, `the summary of ${title}`);
         return {
           changed: { file: title, address, from: file?.slots.subtitle?.value ?? "", to: summary },
@@ -28377,7 +28453,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "file_describe",
-      description: "Replace a file's text by its address. Pass the whole text as `file_show` printed it, with your change, and that read's `version`: if somebody saved since, nothing is published \u2014 read again. Unchanged chunks keep their blocks and the comments on them. " + WRITE_NOTE,
+      description: "Replace a file's text by its address. Pass the whole text as `file_show` printed it, with your change, and that read's `version`: if somebody saved since, your change is merged onto theirs and the answer says whose words it kept; when you both changed one block nothing is published and the answer names them \u2014 read again and keep their words. Unchanged chunks keep their blocks and the comments on them. " + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {

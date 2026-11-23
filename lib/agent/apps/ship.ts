@@ -23,6 +23,7 @@ import { askedToMention, fileText, mentionAdds, mentionedKeys, NO_MENTIONS, publ
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
 import { SUMMARY_LENGTH, summaryRoute, summaryText, summaryWarning } from '../summary'
+import { mergedLine, textAsks } from '../text-merge'
 import {
   KIND,
   cascadeArchives,
@@ -46,7 +47,7 @@ import {
   type Workspace,
 } from './ship-workspace'
 import { randomUUID } from 'node:crypto'
-import { BLOCK_DOCUMENT_FORMAT, KIND as PROTOCOL_KIND, RELAY_BUSY_MESSAGE, imetaTag, type Imeta, type MergeAsk, type MergeText, type SignedEvent } from '@estiva-app/protocol'
+import { BLOCK_DOCUMENT_FORMAT, KIND as PROTOCOL_KIND, RELAY_BUSY_MESSAGE, imetaTag, type Imeta, type MergeText, type SignedEvent } from '@estiva-app/protocol'
 import { KIND_CHANGE, KIND_COMMENT, KIND_DELETION, KIND_EDIT } from '@estiva-app/conversation'
 import {
   BODY_SLOT,
@@ -55,7 +56,6 @@ import {
   TEXT_FIELD,
   buildActionEvent,
   buildActionEvents,
-  changedAt as fieldChangedAt,
   createProjectionCache,
   fieldsSetBy,
   openFile,
@@ -1201,50 +1201,6 @@ async function writeField(
       (await openFile(query, { kind: Number(kind), pubkey, d: rest.join(':') }, { text: name === TEXT_FIELD && (await fileReadsFor(context)).text }))?.fields[name]
         ?.event,
   })
-}
-
-/** A person's change as an answer names it: who, and when. */
-async function changeBy(context: AgentContext, change: SignedEvent) {
-  const directory = await directoryFor(context, [change.pubkey])
-  return { by: who(directory, change.pubkey) ?? change.pubkey, at: new Date(fieldChangedAt(change)).toISOString() }
-}
-
-/** What a text save merged onto somebody's newer change says: whose words it kept. */
-async function mergedLine(context: AgentContext, result: WriteChangeResult) {
-  if (!result.ok || !result.mergedOnto) return undefined
-  const { by, at } = await changeBy(context, result.mergedOnto)
-  return 'unchanged' in result
-    ? `Nothing to save: ${by}'s change at ${at} already has everything yours did.`
-    : `Merged: the text had been changed by ${by} at ${at}, after the version you read. Their change is kept as it is, with yours where it touched nothing of theirs.`
-}
-
-const askedBlock = (text: string | undefined) => (text === undefined ? '(deleted)' : JSON.stringify(text))
-
-/**
- * Why a text save wrote nothing (Miky, 2026-11-02): somebody changed the same
- * block since the version read, or edited a block one side deleted. Names who
- * and when, shows both versions of each block, and says to keep their words.
- */
-async function textAsks(context: AgentContext, title: string, asks: readonly MergeAsk[], theirs: SignedEvent, alsoNotSaved: readonly string[], noun = 'project'): Promise<BadRequest> {
-  const { by, at } = await changeBy(context, theirs)
-  const blocks = asks.map((ask) =>
-    [
-      `- ${ask.block === null ? 'The text' : `Block ${ask.block}`}: ${ask.why === 'changed-by-both' ? 'changed by both of you' : 'edited by one of you and deleted by the other'}.`,
-      `  theirs: ${askedBlock(ask.theirs)}`,
-      `  yours:  ${askedBlock(ask.mine)}`,
-    ].join('\n'),
-  )
-  return new BadRequest(
-    [
-      `Nothing was saved${alsoNotSaved.length ? `, ${alsoNotSaved.join(', ')} included` : ''}: the text of “${title}” is now as ${by} left it at ${at}, and your change and theirs meet in ${asks.length === 1 ? 'one place' : `${asks.length} places`}.`,
-      ...blocks,
-      `Keep ${by}'s words: read the ${noun} again, rewrite your change on top of the text as it is now, and save it with the new version. Ask the person you are working with before dropping any of their words.`,
-      // A block they deleted holds no words of theirs to keep: whether it stays deleted is the person's call.
-      ...(asks.some((ask) => ask.theirs === undefined)
-        ? [`${by} deleted a block you changed: ask the person you are working with whether it stays deleted or comes back with your change.`]
-        : []),
-    ].join('\n'),
-  )
 }
 
 /**
