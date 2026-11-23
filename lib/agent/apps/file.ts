@@ -21,8 +21,13 @@ import { createHash, randomUUID } from 'node:crypto'
 import {
   buildActionEvents,
   createProjectionCache,
+  fieldsSetBy,
+  filesOf,
   KIND_CHANNEL_METADATA,
   listFolderRecords,
+  openFile,
+  TEXT_FIELD,
+  textOf as textOfEvent,
   resolveActingManifest,
   resolveForeignObject,
   resolveManifest,
@@ -33,6 +38,7 @@ import {
 } from '@estiva-app/interop'
 import {
   addrToNaddr,
+  BLOCK_DOCUMENT_FORMAT,
   CONTENT_FORMAT_TAG,
   attachmentsInDocument,
   changeTypeOf,
@@ -42,6 +48,7 @@ import {
   resolveCommentAnchor,
   type Block,
   type ContentFormat,
+  type MergeText,
 } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
 import { actOnFile, archiveOfFile, folderOfFile, pointerOf, published, refuseIfArchived, relayQuery } from '../act-on-file'
@@ -54,6 +61,8 @@ import { askedToMention, fileText, mentionAdds, mentionedKeys, NO_MENTIONS, publ
 import { profilesOf } from '../profiles'
 import { resolveOne } from '../resolve'
 import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../summary'
+import { mergedLine, textAsks } from '../text-merge'
+import { fileReadsFor } from './ship-workspace'
 
 /** `kind:pubkey:d`, the one handle every app's file has. A title would be one app's lookup. */
 const ADDRESS = /^\d+:[0-9a-f]{64}:[^\s]+$/
@@ -116,8 +125,10 @@ async function fileArg(context: AgentContext, args: { positional: string[] }, co
  * publish one; pinning the tags means such a manifest can make this refuse, never make the agent sign
  * something else.
  */
-function changeShape(address: string, field: string, value: string, extra: Record<string, string> = {}) {
-  return (tags: string[][], folder: string): string | undefined => {
+function changeShape(address: string, field: string, meant: string, extra: Record<string, string> = {}) {
+  /** `written` is the value the change was built with: the words meant, or a text's merge onto a newer save (§13.3). */
+  return (tags: string[][], folder: string, written?: string): string | undefined => {
+    const value = written ?? meant
     // `O` is the file's id beside its address (SPEC §6.2), which interop writes on every change.
     // `K` is the type of the file it changes (§6.2), which interop writes after `O` on a change to a file.
     const type = changeTypeOf(address)
@@ -158,6 +169,60 @@ function textOf(file: ForeignObject): { value: string; format: ContentFormat | u
  */
 const versionOf = (text: { value: string; format: ContentFormat | undefined }) =>
   createHash('sha256').update(`${text.format ?? ''}\n${text.value}`).digest('hex').slice(0, 12)
+
+/** A `--version` naming a save of the text by its id, as `show` prints it since ALL-6; the 12-character fingerprint is the older one. */
+const SAVE_ID = /^[0-9a-f]{64}$/
+
+const handleOf = (address: string) => {
+  const pointer = pointerOf(address)
+  return { kind: pointer.kind, pubkey: pointer.pubkey, d: pointer.identifier }
+}
+
+/**
+ * The save the file's text stands at — its current text change, or its first
+ * record when the text never changed (§6.1, §6.2): what `show` prints as its
+ * `version`, and the change `describe` names as the one it follows. One open of
+ * the file where the relay reads files by their fields; elsewhere its changes,
+ * folded as every reader folds them. Undefined when nothing is readable there.
+ *
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/every-file-type-is-kept-in-order-and-a-delete-only-marks-the-file.md
+ */
+async function textHead(context: AgentContext, address: string): Promise<string | undefined> {
+  const query = relayQuery(context)
+  const handle = handleOf(address)
+  if ((await fileReadsFor(context)).text) {
+    const opened = await openFile(query, handle, { text: true })
+    return opened && (opened.fields[TEXT_FIELD]?.id ?? opened.root.id)
+  }
+  const [root] = await query([{ kinds: [handle.kind], authors: [handle.pubkey], '#d': [handle.d], limit: 1 }])
+  if (!root) return undefined
+  const folded = filesOf([root, ...(await query([{ kinds: [KIND_CHANGE], '#a': [address] }]))], { withText: true }).find((one) => one.address === address)
+  return folded?.fields[TEXT_FIELD]?.id ?? root.id
+}
+
+/**
+ * The text a `--version` names, checked to be one of this file's saves: a
+ * change of its text in its own line (its first `a` the file, its `h` the
+ * file's team), or its first record, whose text is the seed. Anything else is
+ * refused before it could become a merge's base.
+ */
+async function textAtVersion(context: AgentContext, address: string, title: string, version: string) {
+  const [event] = await relayQuery(context)([{ ids: [version] }])
+  const handle = handleOf(address)
+  const first = (name: string) => event?.tags.find((tag) => tag[0] === name)?.[1]
+  // The first record as it stands, never an older copy of it the relay still answers by id.
+  const [root] = event?.kind === handle.kind ? await relayQuery(context)([{ kinds: [handle.kind], authors: [handle.pubkey], '#d': [handle.d], limit: 1 }]) : []
+  const isRoot = !!root && event?.id === root.id
+  const inLine =
+    event?.kind === KIND_CHANGE &&
+    first('a') === address &&
+    (first('O') === undefined || first('O') === handle.d) &&
+    first('h') === (await folderOfFile(context, address)) &&
+    fieldsSetBy(event).some((set) => set.field === TEXT_FIELD)
+  const text = event?.id === version && (isRoot || inLine) ? (isRoot ? (textOfEvent(event) ?? { value: '' }) : textOfEvent(event)) : undefined
+  if (!text) throw new BadRequest(`--version ${version} is not a saved version of the text of ${title}. Pass the \`version\` \`file show\` printed for it. Nothing was published.`)
+  return { value: text.value, format: (text.format === BLOCK_DOCUMENT_FORMAT ? 'blocks' : 'marker') as ContentFormat, base: text as MergeText }
+}
 
 /** A block as one line of words, for saying where a comment is. */
 function blockLine(block: Block): string {
@@ -344,11 +409,29 @@ export const fileApp: AgentApp = {
           }
         }
         const named = { address, title }
+        // A new file's first changes each follow its first record (§6.1, §6.2), as a relay keeping its type in order requires.
+        const first = { prev: signed.id }
         if (route === 'change') {
-          published(await actOnFile(context, named, summaryAction, summary, KIND_CHANGE, undefined, changeShape(address, 'summary', summary)), `the summary of "${title}" — the file itself was created, ${address}, without one`)
+          published(
+            await actOnFile(context, named, summaryAction, summary, KIND_CHANGE, undefined, changeShape(address, 'summary', summary), undefined, [], undefined, 'summary', first),
+            `the summary of "${title}" — the file itself was created, ${address}, without one`,
+          )
         }
         if (body) {
-          const result = await actOnFile(context, named, describeAction, body.value, KIND_CHANGE, undefined, changeShape(address, 'description', body.value, formatTag(body.contentFormat)), body.contentFormat)
+          const result = await actOnFile(
+            context,
+            named,
+            describeAction,
+            body.value,
+            KIND_CHANGE,
+            undefined,
+            changeShape(address, 'description', body.value, formatTag(body.contentFormat)),
+            body.contentFormat,
+            [],
+            undefined,
+            TEXT_FIELD,
+            first,
+          )
           published(result, `the text of "${title}" — the file itself was created, ${address}, without it`)
         }
         const mentioned = await publishMentionAdds(context, adds, `The text of "${title}" (${address})`)
@@ -370,7 +453,7 @@ export const fileApp: AgentApp = {
       async run(context, args) {
         const address = await fileArg(context, args, 'show')
         const cache = createProjectionCache()
-        const [file, folderId] = await Promise.all([readFile(context, address, cache), folderOfFile(context, address)])
+        const [file, folderId, head] = await Promise.all([readFile(context, address, cache), folderOfFile(context, address), textHead(context, address)])
         const text = textOf(file)
         // The Folder's own record names it (§3.2); `listFolders` would read every Folder's listing for one name.
         const [channel] = folderId ? await relayQuery(context)([{ kinds: [KIND_FOLDER], '#d': [folderId], limit: 1 }]) : []
@@ -385,11 +468,12 @@ export const fileApp: AgentApp = {
           url: file.openUrl,
           /*
             The text as `describe` takes it back: one chunk per block, a blank
-            line apart. `version` is what was read; pass it to `describe` so a
-            change saved in between is refused rather than overwritten.
+            line apart. `version` is the save that text is (§6.2); pass it to
+            `describe`, so a change saved in between is merged with yours, never
+            overwritten.
           */
           format: formatName(text.format),
-          version: versionOf(text),
+          version: head ?? versionOf(text),
           text: descriptionText(text.value, text.format),
           // How each link in it draws — chip, row, card or a link on words — which the text cannot say (WBD-9).
           links: await printedLinks(context, text.value, text.format),
@@ -414,10 +498,22 @@ export const fileApp: AgentApp = {
         const cache = createProjectionCache()
         const file = await readFile(context, address, cache)
         const title = file.slots.title?.value ?? address
-        const before = textOf(file)
-        if (versionOf(before) !== version) {
+        /*
+          The save the text stands at now is the change this one follows (§6.2).
+          A version naming an older save is the base: the change is made on the
+          text read then and merged onto what was saved since, keeping their
+          words (§13.3), or stopped with who saved it when both changed one
+          block. The older fingerprint version only refuses a changed text.
+        */
+        const head = await textHead(context, address)
+        if (!head) throw new BadRequest(`The text of ${title} could not be read again just now. Nothing was published.`)
+        let before = textOf(file)
+        let base: MergeText | undefined
+        if (SAVE_ID.test(version)) {
+          if (version !== head) ({ base, ...before } = await textAtVersion(context, address, title, version))
+        } else if (versionOf(before) !== version) {
           throw new BadRequest(
-            `The text of ${title} changed since you read it (version ${version}, now ${versionOf(before)}): somebody saved an edit in between. ` +
+            `The text of ${title} changed since you read it (version ${version}, now ${head}): somebody saved an edit in between. ` +
               'Read it again with `file show` and make your change on what it says now. Nothing was published.',
           )
         }
@@ -426,8 +522,23 @@ export const fileApp: AgentApp = {
         const folder = await folderOfFile(context, address)
         if (!folder) throw new BadRequest(`${title} has no team on the relay, so there is nowhere to write. Nothing was published.`)
         const adds = mentionAdds(context.signer.pubkey, { file: address, folder, saved: fileText(next.value, next.contentFormat), editedFrom: fileText(before.value, before.format), asked })
-        const result = await actOnFile(context, { address, title }, describeAction, next.value, KIND_CHANGE, undefined, changeShape(address, 'description', next.value, formatTag(next.contentFormat)), next.contentFormat)
+        const result = await actOnFile(
+          context,
+          { address, title },
+          describeAction,
+          next.value,
+          KIND_CHANGE,
+          undefined,
+          changeShape(address, 'description', next.value, formatTag(next.contentFormat)),
+          next.contentFormat,
+          [],
+          undefined,
+          TEXT_FIELD,
+          { prev: head, ...(base ? { base } : {}) },
+        )
+        if (!result.ok && result.written && 'asks' in result.written) throw await textAsks(context, title, result.written.asks, result.written.theirs, [], 'file')
         published(result, `the text of ${title}`)
+        const merged = result.written ? await mergedLine(context, result.written) : undefined
         const mentioned = await publishMentionAdds(context, adds, `The text of ${title}`)
 
         // Which comments now sit on blocks that are gone, so whoever wrote them can be told (§13.6).
@@ -435,9 +546,11 @@ export const fileApp: AgentApp = {
           ? detachedBy((await readConversation(context, { address }, cache)).conversations, before, next.value)
           : []
         return {
-          changed: { file: title, address, url: file.openUrl, version: versionOf({ value: next.value, format: next.contentFormat ? 'blocks' : before.format }) },
+          // The save this one made is the version the next `describe` takes.
+          changed: { file: title, address, url: file.openUrl, version: result.eventId },
           ...(next.blocks ? { blocks: next.blocks } : {}),
           eventId: result.eventId,
+          ...(merged ? { merged } : {}),
           ...mentioned,
           ...(detached.length
             ? {
@@ -518,7 +631,8 @@ export const fileApp: AgentApp = {
         const file = await resolveForeignObject(addrToNaddr(address), relayQuery(context), async () => ({}))
         const title = file?.slots.title?.value ?? address
 
-        const result = await actOnFile(context, { address, title }, summaryAction, summary, KIND_CHANGE, undefined, changeShape(address, 'summary', summary))
+        // After the summary's current change (§6.2): a summary set again keeps the later, as people's do.
+        const result = await actOnFile(context, { address, title }, summaryAction, summary, KIND_CHANGE, undefined, changeShape(address, 'summary', summary), undefined, [], undefined, 'summary')
         published(result, `the summary of ${title}`)
 
         return {

@@ -81,8 +81,18 @@ const EVENTS = [
  * (SPEC §5.2): every typed word starts a word of a title change's value.
  * `fullSearch` answers every search with a full page. `asked` records every filter.
  */
-function relay({ fullSearch = false } = {}) {
+function relay({ fullSearch = false, listRead = false } = {}) {
   const events = [...EVENTS]
+  /** The list read (§6.13): each matching first record, and the newest change of each of its fields. */
+  const listed = (filter: Record<string, unknown>) =>
+    events
+      .filter((e) => e.kind !== 1851 && matches(e, filter))
+      .flatMap((root) => {
+        const address = `${root.kind}:${root.pubkey}:${values(root, 'd')[0]}`
+        const newest = new Map<string, SignedEvent>()
+        for (const e of events.filter((e) => e.kind === 1851 && values(e, 'a')[0] === address).sort((a, b) => a.created_at - b.created_at)) newest.set(values(e, 'field')[0], e)
+        return [root, ...newest.values()]
+      })
   const asked: Record<string, unknown>[] = []
   const values = (e: SignedEvent, name: string) => e.tags.filter((t) => t[0] === name).map((t) => t[1])
   const matches = (e: SignedEvent, filter: Record<string, unknown>) =>
@@ -97,7 +107,11 @@ function relay({ fullSearch = false } = {}) {
     asked.push(...filters)
     const out = new Map<string, SignedEvent>()
     for (const filter of filters) {
-      const { search, ...rest } = filter as { search?: string; limit?: number }
+      const { search, fields, ...rest } = filter as { search?: string; limit?: number; fields?: string }
+      if (fields !== undefined) {
+        for (const e of listRead ? listed(rest) : []) out.set(e.id, e)
+        continue
+      }
       if (search !== undefined && fullSearch) {
         for (let i = 0; i < (rest.limit ?? 32); i++) {
           const filler = event(1851, [['a', `30840:${SELF}:filler-${i}`], ['field', 'title'], ['value', search]])
@@ -112,7 +126,11 @@ function relay({ fullSearch = false } = {}) {
   }
   const context = {
     relayUrl: 'https://estiva.example',
-    relay: { queryAll: async (f: Record<string, unknown>[]) => answer(f), query: async (f: Record<string, unknown>[]) => answer(f) },
+    relay: {
+      queryAll: async (f: Record<string, unknown>[]) => answer(f),
+      query: async (f: Record<string, unknown>[]) => answer(f),
+      info: async () => (listRead ? { file_list: { newest: true, text: true } } : {}),
+    },
   } as unknown as AgentContext
   return { context, asked }
 }
@@ -162,6 +180,19 @@ for (const [what, reference] of cases) {
 {
   const answer = JSON.parse(await topicCommand(relay().context, 'Shared notes'))
   check('a topic two Folders list is shown in the one the tree reaches first', answer.folder === 'Estiva HQ', answer.folder)
+}
+{
+  // Where the relay offers the list read (ALL-6): each topic by its current fields, none by its every change.
+  const { context, asked } = relay({ listRead: true })
+  const listing = (await peekApp.commands.find((command) => command.name === 'topics')!.run(context, { positional: [], flags: {} } as never)) as {
+    topics: { title: string }[]
+  }
+  const everyChange = asked.filter(
+    (filter) => (filter.kinds as number[] | undefined)?.includes(1851) && !filter.fields && !filter.search && ((filter['#a'] as string[] | undefined) ?? []).some((a) => a.startsWith('30840:')),
+  )
+  check('peek topics asks for no topic’s every change where the relay offers the list read', everyChange.length === 0, JSON.stringify(everyChange).slice(0, 300))
+  const titles = listing.topics.map((one) => one.title)
+  check('…and lists each topic by its current title, the archived one left out', titles.includes('Roadmap review') && !titles.includes('Old name') && !titles.includes('Shelved idea'), JSON.stringify(titles))
 }
 
 console.log(failures ? `\n${failures} failed.` : '\nAll peek topic checks passed.')

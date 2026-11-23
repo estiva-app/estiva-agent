@@ -756,7 +756,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: 'file_describe',
       description:
-        "Replace a file's text by its address. Pass the whole text as `file_show` printed it, with your change, and that read's `version`: if somebody saved since, nothing is published — read again. Unchanged chunks keep their blocks and the comments on them. " +
+        "Replace a file's text by its address. Pass the whole text as `file_show` printed it, with your change, and that read's `version`: if somebody saved since, your change is merged onto theirs and the answer says whose words it kept; when you both changed one block nothing is published and the answer names them — read again and keep their words. Unchanged chunks keep their blocks and the comments on them. " +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',

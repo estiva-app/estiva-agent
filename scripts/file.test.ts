@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { addrToNaddr, blockRunTag, calloutTone, encodeNevent, encodeNpub, listItemChecked, parseBlockDocument, type Block, type SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
 import { fileApp } from '../lib/agent/apps/file'
-import { describe as describeText } from '../lib/agent/descriptions'
+import { descriptionText, describe as describeText } from '../lib/agent/descriptions'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -112,6 +112,7 @@ let created: { address: string; events: SignedEvent[] } | undefined
     JSON.stringify(root?.tags),
   )
   const address = `30842:${SELF}:${tag(root, 'd')}`
+  check('…its text a change that follows its first record (§6.1, §6.2)', tag(text, 'prev') === root?.id, `${tag(text, 'prev')} vs ${root?.id}`)
   check('…then lists it in the Folder', listing?.kind === 1852 && tag(listing, 'h') === FOLDER && tags(listing, 'a').includes(address), JSON.stringify(listing?.tags))
   const value = tag(text, 'value') ?? ''
   let types: string[] = []
@@ -169,7 +170,8 @@ const fixture = () => {
       thread.messages?.[0]?.by === 'QA-2',
     JSON.stringify(out.comments),
   )
-  check('…and a version to pass back to describe', /^[0-9a-f]{12}$/.test(out.version ?? ''), String(out.version))
+  const saved = created!.events.find((e) => e.kind === 1851 && tag(e, 'field') === 'description')
+  check('…and a version to pass back to describe: the save the text is, by its id', out.version === saved?.id, `${out.version} vs ${saved?.id}`)
   check('…and the words the comment quotes', thread?.quote === 'doing this', JSON.stringify(thread))
 }
 {
@@ -239,6 +241,7 @@ console.log('\n— Changing one section —')
     published.length === 1 && change?.kind === 1851 && tag(change, 'field') === 'description' && tag(change, 'content-format') === 'estiva-blocks-1' && tag(change, 'h') === FOLDER,
     JSON.stringify(change?.tags.map((t) => t[0])),
   )
+  check('…naming the save it follows: the version show printed', tag(change, 'prev') === before.version, `${tag(change, 'prev')} vs ${before.version}`)
   check('the block the comment is on keeps its id and text', after.content.some((block) => block.id === why.id), JSON.stringify(out.blocks))
   const reread = await run('show', context, [created!.address], {})
   check('…so show still finds the comment on that block', reread.comments?.[0]?.on === 'blocks' && reread.comments?.[0]?.blocks?.[0]?.id === why.id, JSON.stringify(reread.comments?.[0]))
@@ -251,10 +254,53 @@ console.log('\n— Changing one section —')
   // Somebody saves an edit in Leaf after the agent read the text.
   const latest = describeText(tag(events.filter((e) => e.kind === 1851).at(-1), 'value')!, 'blocks', `${TEXT}\n\nKaterina's line.`)
   events.push(event(1851, [['a', created!.address], ['field', 'description'], ['value', latest.value], ['content-format', 'estiva-blocks-1'], ['h', FOLDER]], '', QA2, 1_900_000_100))
-  const refused = await refusal(run('describe', context, [created!.address], { version: before.version, description: `${TEXT}\n\nThe agent's line.` }))
-  check('a change saved after the agent read the text is refused, naming it, with nothing published', published.length === 0 && /changed since you read it/.test(refused), refused || `${published.length} published`)
+  const theirs = events.at(-1)!
+  // The agent ticks a box Katerina did not touch, on the text it read before her save.
+  // A refusal is an answer too, read by the checks below (the code before ALL-6 refused here).
+  const out = await run('describe', context, [created!.address], { version: before.version, description: TEXT.replace('- [ ] Who opens the page?', '- [x] Who opens the page?') }).catch(
+    (error: Error) => ({ refused: error.message }) as Record<string, any>,
+  )
+  check(
+    'a change made on a text somebody saved since is merged onto theirs: one change, after their save',
+    published.length === 1 && tag(published[0], 'prev') === theirs.id,
+    `${published.length} published, prev ${tag(published[0], 'prev')} vs ${theirs.id}`,
+  )
+  const sent = descriptionText(tag(published[0], 'value') ?? '', 'blocks')
+  check('…its text keeping the other person’s line and the agent’s tick', sent.endsWith("Katerina's line.") && sent.includes('- [x] Who opens the page?'), sent)
+  check('…and the answer says whose change it was merged onto', /Merged: .*QA-2/.test(out.merged ?? ''), String(out.merged))
+}
+{
+  const { context, published, events } = fixture()
+  const before = await run('show', context, [created!.address], {})
+  // Somebody rewrites the line under the title after the agent read the text, and the agent rewrites the same line.
+  const latest = describeText(tag(events.filter((e) => e.kind === 1851).at(-1), 'value')!, 'blocks', TEXT.replace('Why we are doing this.', 'Why Katerina is doing this.'))
+  events.push(event(1851, [['a', created!.address], ['field', 'description'], ['value', latest.value], ['content-format', 'estiva-blocks-1'], ['h', FOLDER]], '', QA2, 1_900_000_100))
+  const refused = await refusal(run('describe', context, [created!.address], { version: before.version, description: TEXT.replace('Why we are doing this.', 'Why the agent is doing this.') }))
+  check('both changing one block saves nothing, and the refusal names who saved and shows both', published.length === 0 && /as QA-2 left it/.test(refused) && /Why Katerina is doing this/.test(refused), refused || `${published.length} published`)
   const reread = await run('show', context, [created!.address], {})
-  check('…and the other person’s edit stays', reread.text.endsWith("Katerina's line."), reread.text.slice(-40))
+  check('…and the other person’s words stay', reread.text.includes('Why Katerina is doing this.'), reread.text.slice(0, 120))
+}
+{
+  // A version printed before ALL-6, the text's fingerprint, still only refuses a changed text.
+  const { context, published, events } = fixture()
+  const latest = describeText(tag(events.filter((e) => e.kind === 1851).at(-1), 'value')!, 'blocks', `${TEXT}\n\nKaterina's line.`)
+  events.push(event(1851, [['a', created!.address], ['field', 'description'], ['value', latest.value], ['content-format', 'estiva-blocks-1'], ['h', FOLDER]], '', QA2, 1_900_000_100))
+  const refused = await refusal(run('describe', context, [created!.address], { version: '0123456789ab', description: `${TEXT}\n\nThe agent's line.` }))
+  check('an older fingerprint version of a changed text is refused with nothing published', published.length === 0 && /changed since you read it/.test(refused), refused || `${published.length} published`)
+}
+{
+  // A version that is no save of this file's text is never a merge's base.
+  const { context, published, comment } = fixture()
+  const refused = await refusal(run('describe', context, [created!.address], { version: comment.id, description: TEXT }))
+  check('a version naming anything but a save of the text is refused with nothing published', published.length === 0 && /is not a saved version/.test(refused), refused || `${published.length} published`)
+}
+{
+  // A save of another file's text in the same team is never this file's base.
+  const { context, published, events } = fixture()
+  const other = event(1851, [['a', `30842:${SELF}:another-page`], ['field', 'description'], ['value', TEXT], ['h', FOLDER]], '', QA2)
+  events.push(other)
+  const refused = await refusal(run('describe', context, [created!.address], { version: other.id, description: TEXT }))
+  check('a version naming another file’s save in the same team is refused with nothing published', published.length === 0 && /is not a saved version/.test(refused), refused || `${published.length} published`)
 }
 {
   const { context, published, comment } = fixture()

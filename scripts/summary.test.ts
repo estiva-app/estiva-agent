@@ -58,7 +58,7 @@ function relay(events: SignedEvent[]) {
     relay: { queryAll, publish: async (e: SignedEvent) => (published.push(e), { ok: true, eventId: e.id }) },
     signer: { pubkey: SELF, sign: async (e: SignedEvent) => ({ ...e, id: createHash('sha256').update(JSON.stringify(e)).digest('hex'), sig: '' }) },
   } as unknown as AgentContext
-  return { context, published }
+  return { context, published, events }
 }
 
 const run = (app: typeof shipApp, name: string, context: AgentContext, positional: string[], flags: Record<string, string>) =>
@@ -273,7 +273,7 @@ for (const claimed of [false, true]) {
   )
 }
 {
-  const { context, published } = peek()
+  const { context, published, events } = peek()
   await run(peekApp, 'edit-topic', context, ['Launch'], { summary: 'The launch, renamed.' })
   const change = published[0]
   check(
@@ -281,6 +281,8 @@ for (const claimed of [false, true]) {
     change?.kind === 1851 && tag(change, 'field') === 'summary' && tag(change, 'value') === 'The launch, renamed.' && tag(change, 'h') === FOLDER && tag(change, 'a') === `30840:${SELF}:t1`,
     JSON.stringify(change?.tags),
   )
+  const root = events.find((e) => e.kind === 30840 && tag(e, 'd') === 't1')
+  check('…following the topic’s first record, its summary never changed (§6.2)', !!root && tag(change, 'prev') === root.id, `${tag(change, 'prev')} vs ${root?.id}`)
 }
 
 // Any file by its address (SUM-8): a document of an app this repository has no
@@ -319,6 +321,13 @@ console.log('\n— Any file, by its address —')
   check('and says which file it changed and what its summary was', changed?.file === 'Plan' && changed?.from === 'The old line.', JSON.stringify(out))
 }
 {
+  // The summary set once already: the new change follows that one, so a relay keeping the type in order takes it.
+  const earlier = event(1851, [['a', DOC], ['field', 'summary'], ['value', 'An earlier line.'], ['h', FOLDER]])
+  const { context, published } = leaf(true, 1851, [earlier])
+  await run(fileApp as never, 'summarize', context, [DOC], { summary: 'A line.' })
+  check('file summarize names the summary’s current change as the one it follows', tag(published[0], 'prev') === earlier.id, `${tag(published[0], 'prev')} vs ${earlier.id}`)
+}
+{
   const { context, published } = leaf(false)
   const refused = await refusal(run(fileApp as never, 'summarize', context, [DOC], { summary: 'A line.' }))
   check('a file whose manifest declares no summary action is refused with nothing published', published.length === 0 && /declares no action/.test(refused), refused || `${published.length} published`)
@@ -332,7 +341,8 @@ console.log('\n— Any file, by its address —')
   // A manifest is anybody's event: one declaring the summary as a deletion must not get one signed.
   const { context, published } = leaf(true, 5)
   const refused = await refusal(run(fileApp as never, 'summarize', context, [DOC], { summary: 'A line.' }))
-  check('a manifest declaring the summary as another kind is refused with nothing published', published.length === 0 && /does not write/.test(refused), refused || JSON.stringify(published))
+  // Refused by the kind check, or before it by the runtime, which builds no other kind after a change it follows.
+  check('a manifest declaring the summary as another kind is refused with nothing published', published.length === 0 && /does not write|is not a change/.test(refused), refused || JSON.stringify(published))
 }
 {
   // Any member can publish the newest claim on a kind: one naming the target in its own tag must not get it signed.
