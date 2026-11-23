@@ -24296,7 +24296,8 @@ async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, co
       sign: (event) => context2.signer.sign(event),
       publish: (event) => context2.relay.publish(event),
       query,
-      current: async (field) => (await openFile(query, handle, { text: false }).catch(() => void 0))?.fields[field]?.event
+      // The text's current change is in the answer only when the file is opened with its text.
+      current: async (field) => (await openFile(query, handle, { text: field === "description" }).catch(() => void 0))?.fields[field]?.event
     });
     return written.ok ? { ok: true, eventId: written.id, written } : { ok: false, reason: "refused" in written ? written.refused : "a change crossed it", written };
   }
@@ -27485,7 +27486,7 @@ async function textAtVersion2(context2, address, title, version2) {
   const handle = handleOf(address);
   const first = (name) => event?.tags.find((tag) => tag[0] === name)?.[1];
   const isRoot = event?.kind === handle.kind && event.pubkey === handle.pubkey && first("d") === handle.d;
-  const inLine = event?.kind === KIND_CHANGE && first("a") === address && first("h") === await folderOfFile(context2, address) && fieldsSetBy(event).some((set) => set.field === TEXT_FIELD);
+  const inLine = event?.kind === KIND_CHANGE && first("a") === address && (first("O") === void 0 || first("O") === handle.d) && first("h") === await folderOfFile(context2, address) && fieldsSetBy(event).some((set) => set.field === TEXT_FIELD);
   const text2 = event?.id === version2 && (isRoot || inLine) ? isRoot ? textOf3(event) ?? { value: "" } : textOf3(event) : void 0;
   if (!text2) throw new BadRequest(`--version ${version2} is not a saved version of the text of ${title}. Pass the \`version\` \`file show\` printed for it. Nothing was published.`);
   return { value: text2.value, format: text2.format === BLOCK_DOCUMENT_FORMAT ? "blocks" : "marker", base: text2 };

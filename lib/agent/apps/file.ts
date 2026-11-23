@@ -214,6 +214,7 @@ async function textAtVersion(context: AgentContext, address: string, title: stri
   const inLine =
     event?.kind === KIND_CHANGE &&
     first('a') === address &&
+    (first('O') === undefined || first('O') === handle.d) &&
     first('h') === (await folderOfFile(context, address)) &&
     fieldsSetBy(event).some((set) => set.field === TEXT_FIELD)
   const text = event?.id === version && (isRoot || inLine) ? (isRoot ? (textOfEvent(event) ?? { value: '' }) : textOfEvent(event)) : undefined

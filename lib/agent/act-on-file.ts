@@ -207,7 +207,8 @@ export async function actOnFile(
       sign: (event) => context.signer.sign(event),
       publish: (event) => context.relay.publish(event),
       query,
-      current: async (field) => (await openFile(query, handle, { text: false }).catch(() => undefined))?.fields[field]?.event,
+      // The text's current change is in the answer only when the file is opened with its text.
+      current: async (field) => (await openFile(query, handle, { text: field === 'description' }).catch(() => undefined))?.fields[field]?.event,
     })
     return written.ok ? { ok: true, eventId: written.id, written } : { ok: false, reason: 'refused' in written ? written.refused : 'a change crossed it', written }
   }
