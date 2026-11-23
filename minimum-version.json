@@ -1,4 +1,4 @@
 {
-  "minimum": "0.34.0",
-  "why": "0.34.0 writes an issue after the change it follows, creates one with its text as its own change, and deletes one as a change that can be undone (ISS-7). From the issues switch the relay keeps issues in order for every team and refuses an issue change that names no change it follows, a permanent delete of an issue, and a new project or issue whose first record carries its text (ISS-8). Raise this when the workspace starts expecting something every writer must do; an agent below it refuses writes and still reads."
+  "minimum": "0.37.0",
+  "why": "0.37.0 writes a page, a summary and a topic after the change it follows, merges a page's text someone saved since or stops and names them (ALL-6), and says the type of every file it changes (ALL-9). From the pages and topics switch the relay keeps every file type in order for every team and refuses a page or topic change that names no change it follows, a permanent delete of one, and a first record that carries its text (ALL-7). Raise this when the workspace starts expecting something every writer must do; an agent below it refuses writes and still reads."
 }
