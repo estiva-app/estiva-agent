@@ -81,7 +81,7 @@ const EVENTS = [
  * (SPEC §5.2): every typed word starts a word of a title change's value.
  * `fullSearch` answers every search with a full page. `asked` records every filter.
  */
-function relay({ fullSearch = false, listRead = false } = {}) {
+function relay({ fullSearch = false } = {}) {
   const events = [...EVENTS]
   /** The list read (§6.13): each matching first record, and the newest change of each of its fields. */
   const listed = (filter: Record<string, unknown>) =>
@@ -109,7 +109,7 @@ function relay({ fullSearch = false, listRead = false } = {}) {
     for (const filter of filters) {
       const { search, fields, ...rest } = filter as { search?: string; limit?: number; fields?: string }
       if (fields !== undefined) {
-        for (const e of listRead ? listed(rest) : []) out.set(e.id, e)
+        for (const e of listed(rest)) out.set(e.id, e)
         continue
       }
       if (search !== undefined && fullSearch) {
@@ -129,7 +129,6 @@ function relay({ fullSearch = false, listRead = false } = {}) {
     relay: {
       queryAll: async (f: Record<string, unknown>[]) => answer(f),
       query: async (f: Record<string, unknown>[]) => answer(f),
-      info: async () => (listRead ? { file_list: { newest: true, text: true } } : {}),
     },
   } as unknown as AgentContext
   return { context, asked }
@@ -183,7 +182,7 @@ for (const [what, reference] of cases) {
 }
 {
   // Where the relay offers the list read (ALL-6): each topic by its current fields, none by its every change.
-  const { context, asked } = relay({ listRead: true })
+  const { context, asked } = relay()
   const listing = (await peekApp.commands.find((command) => command.name === 'topics')!.run(context, { positional: [], flags: {} } as never)) as {
     topics: { title: string }[]
   }

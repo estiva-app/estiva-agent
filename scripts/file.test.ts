@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { addrToNaddr, blockRunTag, calloutTone, encodeNevent, encodeNpub, listItemChecked, parseBlockDocument, type Block, type SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
+import { staleRefusal, withListRead } from './list-read'
 import { fileApp } from '../lib/agent/apps/file'
 import { descriptionText, describe as describeText } from '../lib/agent/descriptions'
 
@@ -47,7 +48,7 @@ function relay(events: SignedEvent[], allowedKinds?: number[]) {
     (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
     (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
     Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-  const queryAll = async (filters: Record<string, unknown>[]) => {
+  const nip01 = async (filters: Record<string, unknown>[]) => {
     const found = new Map<string, SignedEvent>()
     for (const filter of filters) {
       const hits = events.filter((e) => matches(e, filter)).sort((a, b) => b.created_at - a.created_at)
@@ -55,10 +56,11 @@ function relay(events: SignedEvent[], allowedKinds?: number[]) {
     }
     return [...found.values()]
   }
+  const queryAll = withListRead(() => events, nip01)
   const context = {
     relayUrl: 'https://estiva.example',
     allowedKinds,
-    relay: { queryAll, publish: async (e: SignedEvent) => (published.push(e), events.push(e), { ok: true, eventId: e.id }) },
+    relay: { queryAll, publish: async (e: SignedEvent) => staleRefusal(events, e) ?? (published.push(e), events.push(e), { ok: true, eventId: e.id }) },
     signer: { pubkey: SELF, sign: async (e: SignedEvent) => ({ ...e, id: createHash('sha256').update(JSON.stringify(e) + seq++).digest('hex'), sig: '' }) },
   } as unknown as AgentContext
   return { context, published, events }
@@ -113,7 +115,7 @@ let created: { address: string; events: SignedEvent[] } | undefined
   )
   const address = `30842:${SELF}:${tag(root, 'd')}`
   check('…its text a change that follows its first record (§6.1, §6.2)', tag(text, 'prev') === root?.id, `${tag(text, 'prev')} vs ${root?.id}`)
-  check('…then lists it in the Folder', listing?.kind === 1852 && tag(listing, 'h') === FOLDER && tags(listing, 'a').includes(address), JSON.stringify(listing?.tags))
+  check('…then lists it in the Folder', listing?.kind === 1852 && tag(listing, 'h') === FOLDER && tags(listing, 'o').includes(address.split(':')[2]), JSON.stringify(listing?.tags))
   const value = tag(text, 'value') ?? ''
   let types: string[] = []
   try {

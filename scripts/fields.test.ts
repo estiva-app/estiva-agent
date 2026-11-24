@@ -1,13 +1,13 @@
 /**
  * The agent reads and writes projects field by field (ALO-7).
  *
- * Over a relay that advertises the list read (SPEC §6.13): opening a project
+ * Over the list read (SPEC §6.13): opening a project
  * reads its fields and its current text and none of its older changes, and
  * prints the text's `version`; `edit-project --description` takes that version
  * back, is merged onto a change saved since and says whose, or — the same
  * block changed by both — saves nothing, no other field either, names them and
  * shows both versions; a field set again from an older copy keeps the later; a
- * delete is a `deleted` change where projects are kept in order, and a restore
+ * delete is a `deleted` change, and a restore
  * the empty one; a project is found by a word of its current text, never of an
  * old one; a project's first changes follow its record.
  *
@@ -143,10 +143,10 @@ function withFieldDelete(event: SignedEvent): SignedEvent {
   check('both status changes are kept', setup.events.filter((e) => tag(e, 'field') === 'status').length === 3)
 }
 
-// — Delete and restore, where projects are kept in order —
-for (const how of [{ inOrder: ['osnova.project'] }, { refuseKind5: 'project' }, { fieldDelete: true }] as const) {
+// — Delete and restore: always the deleted field, whether or not Ship's manifest declares it —
+for (const how of [{}, { fieldDelete: true }] as const) {
   const { context, published, addr, root } = workspace(how)
-  const label = 'inOrder' in how ? 'advertised in order' : 'refuseKind5' in how ? 'refusing kind:5' : "Ship's manifest declaring the field, relay not switched"
+  const label = 'fieldDelete' in how ? "Ship's manifest declaring the field" : "Ship's manifest declaring no delete"
   await run(context, 'delete-project', [addr], { yes: true })
   const deleted = mine(published).find((e) => tag(e, 'field') === 'deleted')
   check(`${label}: a delete is a deleted change after the record, no kind:5 stored`, tag(deleted, 'value') === 'true' && tag(deleted, 'prev') === root.id && !mine(published).some((e) => e.kind === 5))

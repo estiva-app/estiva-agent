@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
+import { withListRead } from './list-read'
 import { shipApp } from '../lib/agent/apps/ship'
 import { peekApp } from '../lib/agent/apps/peek'
 import { fileApp } from '../lib/agent/apps/file'
@@ -46,7 +47,7 @@ function relay(events: SignedEvent[]) {
     (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
     (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
     Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-  const queryAll = async (filters: Record<string, unknown>[]) => {
+  const nip01 = async (filters: Record<string, unknown>[]) => {
     const found = new Map<string, SignedEvent>()
     for (const filter of filters) {
       const hits = events.filter((e) => matches(e, filter)).sort((a, b) => b.created_at - a.created_at)
@@ -54,6 +55,7 @@ function relay(events: SignedEvent[]) {
     }
     return [...found.values()]
   }
+  const queryAll = withListRead(() => events, nip01)
   const context = {
     relay: { queryAll, publish: async (e: SignedEvent) => (published.push(e), { ok: true, eventId: e.id }) },
     signer: { pubkey: SELF, sign: async (e: SignedEvent) => ({ ...e, id: createHash('sha256').update(JSON.stringify(e)).digest('hex'), sig: '' }) },
@@ -247,12 +249,12 @@ console.log('\n— Peek —')
   let asked = 0
   const queryAll = context.relay.queryAll
   context.relay.queryAll = (async (filters: Record<string, unknown>[]) => {
-    for (const filter of filters) if ((filter.kinds as number[] | undefined)?.includes(1851) && (filter['#a'] as string[] | undefined)?.includes(TOPIC)) asked++
+    for (const filter of filters) if ('fields' in filter && (filter.kinds as number[] | undefined)?.includes(30840) && (filter['#d'] as string[] | undefined)?.includes('t1')) asked++
     return queryAll(filters as never)
   }) as typeof queryAll
   const listed = (await run(peekApp, 'topics', context, [], {})) as { topics: { title: string; summary?: string }[] }
   check('peek topics lists a topic two Folders list once, with its summary', listed.topics.map((t) => `${t.title}: ${t.summary}`).join() === 'Launch: What we call the launch.', JSON.stringify(listed.topics))
-  check('peek topics asks for a topic’s changes once when two Folders list it', asked === 1, `asked ${asked} times`)
+  check('peek topics reads a topic by its fields once when two Folders list it', asked === 1, `asked ${asked} times`)
 }
 for (const claimed of [false, true]) {
   const { context, published } = peek(claimed)
@@ -268,7 +270,7 @@ for (const claimed of [false, true]) {
   const listing = published[1]
   check(
     `…then lists it in the Folder, as Peek’s launcher does${when}`,
-    published.length === 2 && tag(listing, 'h') === FOLDER && listing!.tags.some((t) => t[0] === 'a' && t[1] === `30840:${SELF}:${tag(file, 'd')}`),
+    published.length === 2 && tag(listing, 'h') === FOLDER && listing!.tags.some((t) => t[0] === 'o' && t[1] === tag(file, 'd')),
     JSON.stringify(listing),
   )
 }
@@ -342,7 +344,7 @@ console.log('\n— Any file, by its address —')
   const { context, published } = leaf(true, 5)
   const refused = await refusal(run(fileApp as never, 'summarize', context, [DOC], { summary: 'A line.' }))
   // Refused by the kind check, or before it by the runtime, which builds no other kind after a change it follows.
-  check('a manifest declaring the summary as another kind is refused with nothing published', published.length === 0 && /does not write|is not a change/.test(refused), refused || JSON.stringify(published))
+  check('a manifest declaring the summary as another kind is refused with nothing published', published.length === 0 && /does not write|is not a change|builds "summarize" with field not/.test(refused), refused || JSON.stringify(published))
 }
 {
   // Any member can publish the newest claim on a kind: one naming the target in its own tag must not get it signed.

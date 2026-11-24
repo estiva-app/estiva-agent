@@ -284,15 +284,15 @@ function rawStatus(object: ForeignObject, vocab: Vocabulary): string {
 
 const metaValue = (object: ForeignObject, field: string) => object.meta.find((slot) => slot.field === field)?.value || undefined
 
-const NO_FILE_READS: RelayFileReads = { list: false, text: false, times: false, switched: false, inOrder: [], search: [] }
+const NO_FILE_READS: RelayFileReads = { search: [] }
 const fileReads = new WeakMap<AgentContext, { at: number; reads: Promise<RelayFileReads> }>()
-/** How long a NIP-11 answer is trusted: an MCP server lives for days, and a relay makes the switch once. */
+/** How long a NIP-11 answer is trusted: an MCP server lives for days, and a relay's searched types rarely change. */
 const FILE_READS_FOR_MS = 10 * 60_000
 
 /**
- * What the relay's NIP-11 says it reads and keeps (SPEC §6.13), asked again
- * every ten minutes per connection. A relay that cannot say reads as offering
- * nothing, which is always safe: every change is read and folded here.
+ * Which file types the relay's NIP-11 says it finds by their words (SPEC
+ * §6.13), asked again every ten minutes per connection. A relay that cannot
+ * say searches none: a search then matches titles alone.
  */
 export function fileReadsFor(context: AgentContext): Promise<RelayFileReads> {
   const held = fileReads.get(context)
@@ -311,14 +311,14 @@ export const TYPE_OF: Record<number, string> = { [KIND.PROJECT]: 'osnova.project
  * Every Ship project and issue, folded through Ship's manifest.
  * `query` is the load's, when the workspace is read beside other reads of the same load (APP-2).
  *
- * Where the relay advertises the list read (`file_list`), it is that: each
- * file's first record and its fields' current changes, never the text and no
- * deleted file — 4.7 MB for every project and issue on 2 Nov where every
- * change was 41 MB. `history` asks for every change instead, for `activity`.
+ * By the list read (§6.13): each file's first record and its fields' current
+ * changes, never the text and no deleted file — 4.7 MB for every project and
+ * issue on 2 Nov where every change was 41 MB. `history` asks for every change
+ * instead, for `activity`.
  */
 export async function loadWorkspace(context: AgentContext, query: QueryFn = loadQuery(context), { history = false } = {}): Promise<Workspace> {
   const cache = createProjectionCache()
-  if (!history && (await fileReadsFor(context)).list) {
+  if (!history) {
     const files = (await Promise.all([KIND.PROJECT, KIND.ISSUE].map((kind) => listFiles(query, { kinds: [kind] })))).flat()
     return foldFiles(files, query, cache, new Set())
   }
@@ -388,20 +388,17 @@ export function filesReader(
 
 /**
  * A reader of some Ship files by their fields (SPEC §6.13), the
- * {@link filesReader} of a relay advertising `file_list`: each named file's
- * first record and its fields' current changes, and none of its older ones.
- * The files in `text` are opened with their current text and `version`, where
- * the relay says `file_list.text`; any other's `description` is unread
+ * {@link filesReader}: each named file's first record and its fields' current
+ * changes, and none of its older ones. The files in `text` are opened with
+ * their current text and `version`; any other's `description` is unread
  * ({@link textUnread}). A deleted file is read too, by its id, with `deleted`.
  */
 export function fieldsReader(
-  context: AgentContext,
   query: QueryFn,
   cache: ProjectionCache = createProjectionCache(),
 ): (addresses: readonly string[], text?: readonly string[]) => Promise<Workspace> {
   return async (addresses, text = []) => {
-    const reads = await fileReadsFor(context)
-    const opened = new Set(reads.text ? text : [])
+    const opened = new Set(text)
     const listed = new Map<number, string[]>()
     for (const address of new Set(addresses)) {
       if (opened.has(address)) continue

@@ -129,7 +129,8 @@ const queryAll = async (filters: Record<string, unknown>[]) => {
 }
 const context = { relay: { queryAll } } as unknown as AgentContext
 
-const workspace = await loadWorkspace(context)
+// Every change, folded here — `activity`'s read — so the fold and the history are the agent's own, not a list's.
+const workspace = await loadWorkspace(context, undefined, { history: true })
 
 /** The fields `ship` prints, as Ship's fold recorded them and as the agent read them. */
 function compare(noun: string, recorded: Recorded[], read: Map<string, Record<string, unknown>>, fields: (keyof Recorded)[]) {
@@ -201,7 +202,7 @@ const refusal = await comment
   .then(() => '', (error: Error) => error.message)
 check(
   'a manifest that declares `comment` as a kind:5 gets a refusal, not a deletion',
-  published.length === 0 && /does not write/.test(refusal),
+  published.length === 0 && /does not write|pass its prev/.test(refusal),
   refusal.slice(0, 90) || `${published.length} published`,
 )
 

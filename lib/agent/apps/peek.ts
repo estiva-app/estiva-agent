@@ -58,19 +58,6 @@ import { withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, type Resolvable } from '../resolve'
 import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../summary'
-import { fileReadsFor } from './ship-workspace'
-
-/**
- * How a Folder's topics are read: where the relay offers the list read (NIP-11
- * `file_list`), each topic as its first record and its fields' current changes
- * (§6.13), never every change ever made to it — a topic's title, summary and
- * archive are all the listing draws (ALL-6).
- *
- * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-relay-advertises-the-list-read-apart-from-the-switch.md
- */
-async function topicReads(context: AgentContext): Promise<{ listRead?: true }> {
-  return (await fileReadsFor(context)).list ? { listRead: true } : {}
-}
 
 /** A listing names nobody, so it asks the relay for nobody's profile. */
 const noPeople: PeopleFn = async () => ({})
@@ -118,7 +105,7 @@ async function loadTopics(
   // One load: the listing and every Folder's contents share what they have read (APP-2).
   query = loadQuery(context),
 ): Promise<Topic[]> {
-  const [all, reads] = await Promise.all([listFolders(query, { recordChannels: false }), topicReads(context)])
+  const all = await listFolders(query, { recordChannels: false })
   let level = folderRef ? [findFolder(all, folderRef)] : topLevelFolders(all)
   const byId = new Map(all.map((folder) => [folder.id, folder]))
   const visited = new Set(level.map((folder) => folder.id))
@@ -128,7 +115,7 @@ async function loadTopics(
   // Folders ask for at once.
   while (level.length) {
     const contents = await Promise.all(
-      level.map((folder) => resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS, includeArchived, ...reads })),
+      level.map((folder) => resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS, includeArchived })),
     )
     const next: FolderSummary[] = []
     for (const [i, content] of contents.entries()) {
@@ -232,9 +219,8 @@ async function oneTopic(
   }
 
   const folders = [...new Set(listing.values())]
-  const reads = await topicReads(context)
   const contents = await Promise.all(
-    folders.map((folder) => resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS, ...reads })),
+    folders.map((folder) => resolveFolderContents(folder.id, query, noPeople, cache, { kinds: TOPIC_TREE_KINDS })),
   )
   const topics: Topic[] = []
   for (const [address, folder] of listing) {

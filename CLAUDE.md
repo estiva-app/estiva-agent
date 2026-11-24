@@ -307,9 +307,9 @@ through interop's `writeChange` — `edit-project`, `edit-issue`, `set-status`,
 - **`--description` needs `--version`**, as `show` printed it, like `file
   describe`. It must be a save of this file's text or its record, or nothing
   is published. Made on an older text, the change is merged onto what was saved
-  since (§13.3) and the answer's `merged` says whose change it kept. The merge
-  is the agent's own, so it holds on a team whose issues the relay does not
-  keep in order yet as well.
+  since (§13.3) and the answer's `merged` says whose change it kept: the change
+  names that version as its `prev`, the relay refuses it as stale, and interop's
+  `writeChange` merges it onto the current text (ALL-8).
 - **When somebody changed the same block** (or edited one you deleted),
   nothing is saved — no other field of that edit either, since the text goes
   first — and the refusal names them and when, and shows both versions. Read
@@ -317,14 +317,10 @@ through interop's `writeChange` — `edit-project`, `edit-issue`, `set-status`,
   person you are working with before dropping any (Miky, 2026-11-02).
 - **Any other field set again keeps the later**: a status written from an
   older copy is written after the newer one and stands, as people's do.
-- **A delete is a `deleted` change** (§6.5) where the relay keeps the type in
-  order (NIP-11 `files`), or refuses a `kind:5` on one (the QA fence): the
+- **A delete is a `deleted` change** (§6.5), never a `kind:5` (ALL-8): the
   file leaves every list and search, keeps its id (an issue its number and
   conversation), opens by it with who deleted it, and `delete-project <id>
-  --restore` / `delete-issue <id> --restore` brings it back whole. It is that
-  change on any relay once Ship's manifest declares the delete as the field
-  (ALO-6 for projects; issues at their switch); before that, elsewhere it is
-  still a `kind:5`.
+  --restore` / `delete-issue <id> --restore` brings it back whole.
 - **A new file's text is its first change** (§6.1, ISS-7): `create-issue` and
   `create-project` write a record with no text, then the text after it. A text
   that does not land is sent once more; still missing, the answer names the
@@ -521,13 +517,12 @@ when you need to be sure you are talking about the same object twice.
 
 `loadWorkspace` (`lib/agent/apps/ship-workspace.ts`) reads every Ship project
 and issue on every call — no cache across calls, by design — and `--project`
-filters the answer, not the read. **Where the relay advertises the list read**
-(NIP-11 `file_list`, SPEC §6.13; ALO-7) it is that read: each file's record and
-each field's current change, never the text and no deleted file — 4.8 MB in
-~5 s for `ship projects` on 2 Nov, where every change was 44 MB. A listing
-therefore prints no description, and a deleted project is in no listing. A
-relay without it is read as before: every change, folded here. `activity`
-always reads every change, since it is the change stream.
+filters the answer, not the read. It is the list read (SPEC §6.13; ALO-7,
+the only way since ALL-8): each file's record and each field's current change,
+never the text and no deleted file — 4.8 MB in ~5 s for `ship projects` on
+2 Nov, where every change was 44 MB. A listing therefore prints no
+description, and a deleted project is in no listing. `activity` reads every
+change, since it is the change stream.
 
 **`show` reads the one file** (APP-6): every root (2.7 MB), the relay's search
 for a renamed title or ref, then only the candidates' own changes — and a

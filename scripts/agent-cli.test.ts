@@ -27,6 +27,7 @@ import { edited, findMessage, publishEdit, replyToOf } from '../lib/agent/conver
 import { KIND_EDIT, foldEdits } from '@estiva-app/conversation'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { Directory } from '../lib/agent/profiles'
+import { withListRead } from './list-read'
 
 /*
   The vocabularies Ship's manifest declares (`issueStatuses`, `statuses`). Since
@@ -1299,7 +1300,7 @@ console.log('— move-project: what the relay is sent, and what the agent says (
       (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
       (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
       Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-    const queryAll = async (filters: Record<string, unknown>[]) => [...new Set(filters.flatMap((filter) => events.filter((e) => matches(e, filter))))]
+    const queryAll = withListRead(() => events, (filters) => [...new Set(filters.flatMap((filter) => events.filter((e) => matches(e, filter))))])
     const context = {
       relayUrl: 'https://estiva.example',
       relay: {

@@ -12,6 +12,7 @@
 import { createHash } from 'node:crypto'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
+import { withListRead } from './list-read'
 import { peekApp } from '../lib/agent/apps/peek'
 
 let failures = 0
@@ -39,7 +40,7 @@ function relay(events: SignedEvent[]) {
     (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
     (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
     Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-  const queryAll = async (filters: Record<string, unknown>[]) => {
+  const nip01 = async (filters: Record<string, unknown>[]) => {
     const found = new Map<string, SignedEvent>()
     for (const filter of filters) {
       const hits = events.filter((e) => matches(e, filter)).sort((a, b) => b.created_at - a.created_at)
@@ -47,6 +48,7 @@ function relay(events: SignedEvent[]) {
     }
     return [...found.values()]
   }
+  const queryAll = withListRead(() => events, nip01)
   const context = {
     relayUrl: 'https://estiva.example',
     relay: { queryAll, publish: async (e: SignedEvent) => (published.push(e), events.push(e), { ok: true, eventId: e.id }) },

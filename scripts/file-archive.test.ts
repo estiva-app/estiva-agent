@@ -10,6 +10,7 @@
 import { createHash } from 'node:crypto'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
+import { withListRead } from './list-read'
 import { fileApp } from '../lib/agent/apps/file'
 
 let failures = 0
@@ -37,7 +38,7 @@ function relay(events: SignedEvent[]) {
     (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
     (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
     Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-  const queryAll = async (filters: Record<string, unknown>[]) => {
+  const nip01 = async (filters: Record<string, unknown>[]) => {
     const found = new Map<string, SignedEvent>()
     for (const filter of filters) {
       const hits = events.filter((e) => matches(e, filter)).sort((a, b) => b.created_at - a.created_at)
@@ -45,6 +46,7 @@ function relay(events: SignedEvent[]) {
     }
     return [...found.values()]
   }
+  const queryAll = withListRead(() => events, nip01)
   const context = {
     relay: { queryAll, publish: async (e: SignedEvent) => (published.push(e), { ok: true, eventId: e.id }) },
     signer: { pubkey: SELF, sign: async (e: SignedEvent) => ({ ...e, id: createHash('sha256').update(JSON.stringify(e)).digest('hex'), sig: '' }) },
@@ -129,7 +131,7 @@ const refusal = (promise: Promise<unknown>) => promise.then(() => '', (error: Er
   // A manifest is anybody's event: one declaring the archive as a deletion must not get one signed.
   const { context, published } = leaf({ archiveKind: 5 })
   const refused = await refusal(run(context, [DOC], { resolution: 'x' }))
-  check('a manifest declaring the archive as another kind is refused with nothing published', published.length === 0 && /does not (write|take)/.test(refused), refused || JSON.stringify(published))
+  check('a manifest declaring the archive as another kind is refused with nothing published', published.length === 0 && /does not (write|take)|builds "archive" with field not/.test(refused), refused || JSON.stringify(published))
 }
 {
   const { context, published } = leaf()
