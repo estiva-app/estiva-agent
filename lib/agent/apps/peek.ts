@@ -47,7 +47,7 @@ import {
   type PeopleFn,
   type QueryFn,
   type ForeignObject,
-  type ProjectionCache,
+  type ProjectionCache
 } from '@estiva-app/interop'
 import { KIND } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
@@ -58,6 +58,7 @@ import { withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, type Resolvable } from '../resolve'
 import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../summary'
+import { listsFile } from '../act-on-file'
 
 /** A listing names nobody, so it asks the relay for nobody's profile. */
 const noPeople: PeopleFn = async () => ({})
@@ -213,7 +214,7 @@ async function oneTopic(
   }
   const listing = new Map<string, FolderSummary>()
   for (const address of candidates) {
-    const folders = all.filter((folder) => folder.addresses?.includes(address) && reaches(folder))
+    const folders = all.filter((folder) => listsFile(folder, address) && reaches(folder))
     if (folders.length > 1) return undefined
     if (folders.length === 1) listing.set(address, folders[0])
   }

@@ -209,3 +209,10 @@ export async function actOnFile(
   const result = await context.relay.publish(signed)
   return { ...result, eventId: result.eventId ?? signed.id }
 }
+
+/**
+ * Whether a team lists the file at `address`, by its address or by its id
+ * (`o`, SPEC §3.3): interop's `listsFile`, which its index does not export.
+ */
+export const listsFile = (folder: { addresses?: readonly string[]; ids?: readonly string[] }, address: string): boolean =>
+  !!folder.addresses?.includes(address) || !!folder.ids?.includes(address.split(':').slice(2).join(':'))

@@ -36,12 +36,13 @@ import {
   type ProjectionCache,
   type QueryFn,
   type ResolvedManifest,
-  type Stage,
+  type Stage
 } from '@estiva-app/interop'
 import { decorationsOf, KIND_CHANGE, trustedTs, type EditFold } from '@estiva-app/conversation'
 import { relayFileReadsOf, type ContentFormat, type RelayFileReads, type SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../cli'
 import { loadQuery, relayQuery } from '../act-on-file'
+import { listsFile } from '../act-on-file'
 
 /** The kinds Ship's objects are — what `ship` lists. Everything else is the manifest's. */
 export const KIND = { PROJECT: 30850, ISSUE: 30851 } as const
@@ -164,7 +165,7 @@ export function cascadeArchives(workspace: Pick<Workspace, 'projects' | 'issues'
   for (const project of workspace.projects) {
     let archive = project.ownArchive
     if (!archive) {
-      const listing = folders.filter((folder) => folder.addresses?.includes(project.addr))
+      const listing = folders.filter((folder) => listsFile(folder, project.addr))
       const placed = listing.length ? listing : folders.filter((folder) => folder.id === project.contentFolder)
       // A record channel is archived "with" its own record; that is the project's own archive, already read.
       const archivedFolder =

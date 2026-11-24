@@ -1325,6 +1325,17 @@ console.log('— move-project: what the relay is sent, and what the agent says (
   const title = '“Shared foundation packages”'
 
   {
+    // A team lists a file of a base type by its id (`o`, SPEC §3.3), as the apps and the agent write it since ALL-8.
+    const byId = (id: string, name: string, lists: string[]) => [relayEvent(39000, [['d', id], ['name', name]]), relayEvent(30890, [['d', id], ...lists.map((a) => ['o', a.split(':').slice(2).join(':')])])]
+    const { sent } = await run([...byId(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])])
+    check(
+      'move-project from a team listing it by its id moves it out of that team, not only into the new one',
+      sent.length === 1 && tag(sent[0], 'op') === 'move' && tag(sent[0], 'from') === alpha && tag(sent[0], 'h') === beta,
+      JSON.stringify(sent.map((e) => e.tags)),
+    )
+  }
+
+  {
     const { said, sent } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: channel is archived')
     check('move-project sends one move into the target, from the team that lists it', sent.length === 1 && tag(sent[0], 'op') === 'move' && tag(sent[0], 'h') === beta && tag(sent[0], 'from') === alpha, JSON.stringify(sent.map((e) => e.tags)))
     check('an archived Folder refusing it is said in the agent’s words', said instanceof BadRequest && said.message === `${title} was not moved: one of the teams is archived.`, String(said instanceof Error ? said.message : said))

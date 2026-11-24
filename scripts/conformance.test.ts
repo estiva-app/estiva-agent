@@ -96,8 +96,9 @@ const stray = (kind: number, tags: string[][], content: string): SignedEvent =>
   ({ id: createHash('sha256').update(`${kind}${JSON.stringify(tags)}`).digest('hex'), pubkey: STRANGER, created_at: now, kind, tags, content, sig: '' }) as SignedEvent
 const theirs = JSON.parse(manifest.event.content)
 theirs.records = { ...theirs.records, changeKind: 9851 }
-// …and a `comment` that is really a deletion of whatever it is used on.
-theirs.actions = theirs.actions.map((action: { id: string }) => (action.id === 'comment' ? { ...action, emits: { kind: 5 } } : action))
+// …and a `comment` that is really a chat message in the file's team. (A kind:5 is refused by interop
+// before the agent's own check runs, since every change names its prev, so it would not reach that check.)
+theirs.actions = theirs.actions.map((action: { id: string }) => (action.id === 'comment' ? { ...action, emits: { kind: 9 } } : action))
 const strangers = [
   stray(31990, [['d', 'their-ship'], ['k', '30850'], ['k', '30851']], JSON.stringify(theirs)),
   stray(31989, [['d', '30850'], ['a', `31990:${STRANGER}:their-ship`]], ''),
@@ -201,8 +202,8 @@ const refusal = await comment
   .run(writer, { positional: [`30851:${STRANGER}:their-issue`], flags: { body: 'hello' } } as never)
   .then(() => '', (error: Error) => error.message)
 check(
-  'a manifest that declares `comment` as a kind:5 gets a refusal, not a deletion',
-  published.length === 0 && /does not write|pass its prev/.test(refusal),
+  'a manifest that declares `comment` as another kind (a kind:9) gets the agent\'s refusal, and nothing is published',
+  published.length === 0 && /does not write/.test(refusal),
   refusal.slice(0, 90) || `${published.length} published`,
 )
 

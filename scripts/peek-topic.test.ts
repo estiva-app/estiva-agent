@@ -181,7 +181,7 @@ for (const [what, reference] of cases) {
   check('a topic two Folders list is shown in the one the tree reaches first', answer.folder === 'Estiva HQ', answer.folder)
 }
 {
-  // Where the relay offers the list read (ALL-6): each topic by its current fields, none by its every change.
+  // The list read (ALL-6, the only way since ALL-8): each topic by its current fields, none by its every change.
   const { context, asked } = relay()
   const listing = (await peekApp.commands.find((command) => command.name === 'topics')!.run(context, { positional: [], flags: {} } as never)) as {
     topics: { title: string }[]

@@ -24283,6 +24283,7 @@ async function actOnFile(context2, file, pick2, value, signs, replyTo, shape, co
   const result = await context2.relay.publish(signed);
   return { ...result, eventId: result.eventId ?? signed.id };
 }
+var listsFile2 = (folder, address) => !!folder.addresses?.includes(address) || !!folder.ids?.includes(address.split(":").slice(2).join(":"));
 
 // lib/agent/attachments.ts
 import { readFile, stat } from "node:fs/promises";
@@ -25029,7 +25030,7 @@ function cascadeArchives(workspace, folders = []) {
   for (const project of workspace.projects) {
     let archive = project.ownArchive;
     if (!archive) {
-      const listing = folders.filter((folder) => folder.addresses?.includes(project.addr));
+      const listing = folders.filter((folder) => listsFile2(folder, project.addr));
       const placed = listing.length ? listing : folders.filter((folder) => folder.id === project.contentFolder);
       const archivedFolder = placed.length && placed.every((folder) => folder.archived && folder.archived.with !== project.addr) ? placed[0] : void 0;
       if (archivedFolder?.archived) archive = { ...archivedFolder.archived, with: archivedFolder.channel ?? archivedFolder.id };
@@ -25751,7 +25752,6 @@ async function act(context2, workspace, target, actionId, value, signs, extra = 
     note: extra.note,
     newId: extra.newId,
     folderHasState: extra.folderHasState,
-    listedIn: extra.listedIn,
     contentFormat: extra.contentFormat,
     // What a comment's body links, as Ship's comment box tags it (§13.1, PEEKM-7).
     linkTags: actionId === "comment" && typeof value === "string" ? await commentLinkTags(context2, value, { file: target.addr }) : void 0,
@@ -25767,8 +25767,7 @@ async function act(context2, workspace, target, actionId, value, signs, extra = 
   }
   const outcomes = [];
   for (const [i, unsigned] of built.entries()) {
-    const withReason = i === 0 && extra.reason && unsigned.kind === KIND_DELETION ? { ...unsigned, content: extra.reason } : unsigned;
-    const event = i === 0 && extra.files?.length ? { ...withReason, tags: [...withReason.tags, ...extra.files.map(imetaTag)] } : withReason;
+    const event = i === 0 && extra.files?.length ? { ...unsigned, tags: [...unsigned.tags, ...extra.files.map(imetaTag)] } : unsigned;
     const signed = await context2.signer.sign(event);
     const result = await context2.relay.publish(signed);
     outcomes.push({ ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id });
@@ -26161,7 +26160,7 @@ async function archiveFile(context2, args2, command2) {
       ...typeof resolution === "string" ? { resolution } : {}
     });
     result = await publishUnsigned(context2, change);
-    const projects = state.projects.filter((project) => folder.addresses?.includes(project.addr)).length;
+    const projects = state.projects.filter((project) => listsFile2(folder, project.addr)).length;
     hides = `the team, and what it alone lists (it lists ${projects} project(s))`;
   } else {
     const folder = target.kind === "project" ? target.file.contentFolder : target.file.folder;
@@ -26193,7 +26192,9 @@ async function archiveFile(context2, args2, command2) {
   };
 }
 async function setDeleted2(context2, state, file, deleted, reason) {
-  const target = { addr: file.addr, author: file.author, folder: homeOf(file) };
+  const folder = homeOf(file);
+  if (!folder) throw new BadRequest(`${nameOf2(file)} names no team, so there is nowhere to write its ${deleted ? "delete" : "restore"}. Nothing was published.`);
+  const target = { addr: file.addr, author: file.author, folder };
   const prev = file.heads?.[DELETED_FIELD3] ?? file.rootId;
   const result = await writeField(context2, state, target, DELETED_FIELD3, deleted ? "true" : "", reason ?? (deleted ? "Delete" : "Restore"), prev);
   if (!result.ok) throw refused(`${deleted ? "deleting" : "restoring"} ${nameOf2(file)}`, "refused" in result ? result.refused : void 0);
@@ -26995,7 +26996,7 @@ Pass an address to say which.`
         const project = await findProjectIn(context2, state.projects, reference, { writes: true });
         const teams = topLevelFolders(await readFolders(context2));
         const to = resolveTeamIn(teams, target);
-        const listing = teams.filter((team) => team.addresses?.includes(project.addr));
+        const listing = teams.filter((team) => listsFile2(team, project.addr));
         const from = listing.length > 0 ? listing : teams.filter((team) => team.id === project.contentFolder);
         const name = (team) => team.name ?? team.id;
         if (from.length === 1 && from[0].id === to.id) {
@@ -27058,27 +27059,13 @@ Pass an address to say which.`
       run: (context2, args2) => archiveFile(context2, args2, "archive-project")
     },
     /*
-          The two irreversible commands, and the only ones that ask twice.
-    
-          `--yes` is not ceremony here. Every other write in this app is a change
-          event a later change supersedes, or an archive that `--unarchive` undoes.
-          A NIP-09 deletion is a *request* the relay honours by dropping the event,
-          and republishing does not undo it: the address would be the same but the
-          signature and `created_at` are not, and REW-11 established the relay will
-          not backdate one. So a first call describes what goes and what stays and
-          publishes nothing, which is the same question Ship's confirm dialog asks
-          (SHI-3) in the shape a terminal has.
-    
-          Note what authorises these, because it is not what authorises the rest.
-          A deletion carrying an `a` tag — which is what an addressable target is —
-          leaves the relay with no channel to check, since it derives a deletion's
-          channel from an `e` tag only. So membership in the object's Folder is
-          *not* consulted, and validation reduces to author, or the owner of an
-          authoring agent. That is why deleting is possible for an object whose
-          Folder will not take an archive, which is the case these were written
-          for: an empty project pointed at a channel with no members could not be
-          archived, renamed or re-paired, and a `kind:5` was the only way out.
-        */
+      The two commands that ask twice. A delete is a `deleted` change (SPEC
+      §6.5) that --restore undoes, but it takes the file off every app's lists
+      at once, so a first call describes what goes and what stays and
+      publishes nothing: the question Ship's confirm dialog asks (SHI-3), in
+      the shape a terminal has. Like every change, it is published in the
+      file's own team and the relay checks membership there.
+    */
     {
       name: "delete-issue",
       // The `deleted` change (SPEC §6.5): every relay keeps issues in order (ALL-8).
@@ -27096,7 +27083,7 @@ Pass an address to say which.`
           return {
             wouldDelete: { ref: issue2.ref, addr: issue2.addr, title: issue2.title, folder: issue2.folder },
             survives: `It keeps its id, its number and its ${conversations} conversation(s); --restore brings it back whole.`,
-            note: "Nothing was published. A delete takes it off the agent's lists, Ship's and the relay's search; it still opens by its id. Archiving is usually what is wanted \u2014 see `archive`. Pass --yes to delete it."
+            note: "Nothing was published. A delete takes it off every app's lists and out of the relay's search; it keeps its id, number and conversation, still opens by its id, and --restore brings it back whole. Archiving is usually what is wanted \u2014 see `archive`. Pass --yes to delete it."
           };
         }
         return setDeleted2(context2, state, issue2, true, reason);
@@ -27327,7 +27314,7 @@ async function oneTopic(context2, query, cache, reference, early) {
   };
   const listing = /* @__PURE__ */ new Map();
   for (const address of candidates) {
-    const folders2 = all.filter((folder) => folder.addresses?.includes(address) && reaches(folder));
+    const folders2 = all.filter((folder) => listsFile2(folder, address) && reaches(folder));
     if (folders2.length > 1) return void 0;
     if (folders2.length === 1) listing.set(address, folders2[0]);
   }
@@ -28461,7 +28448,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_delete_issue",
-      description: "Delete one Estiva Ship issue. **`ship_archive` is almost always the right tool instead** \u2014 it hides the issue, is reversible, and records who did it. Where the relay keeps issues in order, a delete is a change: the issue leaves every list and search, keeps its id, number and conversation, shows who deleted it, and `restore: true` with its id or address brings it back whole. Elsewhere it is IRREVERSIBLE: it asks the relay to drop the event, republishing does not undo it, and the conversations about it stop being reachable from the issue. Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. " + WRITE_NOTE,
+      description: "Delete one Estiva Ship issue. **`ship_archive` is almost always the right tool instead** \u2014 it hides the issue, is reversible, and records who did it. A delete is a change: the issue leaves every app's lists and the relay's search, keeps its id, number and conversation, shows who deleted it, and `restore: true` with its id or address brings it back whole. Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. " + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -28475,7 +28462,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           reason: {
             type: "string",
-            description: "Optional. Recorded on the deletion request."
+            description: "Optional. Saved as the note on the delete, shown with who deleted it."
           },
           restore: {
             type: "boolean",
@@ -28488,7 +28475,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "ship_delete_project",
-      description: "Delete one Estiva Ship project. **`ship_archive_project` is almost always the right tool instead** \u2014 it hides the project, is reversible, and records who did it. Where the relay keeps projects in order, a delete is a change: the project leaves every list and search, keeps its id, and `restore: true` with its id or address brings it back whole. Elsewhere it is IRREVERSIBLE: it asks the relay to drop the event, and republishing does not undo it. Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. It removes the project record, not the work: its issues are separate events, are not deleted, and keep appearing in the issue listing with no project. " + WRITE_NOTE,
+      description: "Delete one Estiva Ship project. **`ship_archive_project` is almost always the right tool instead** \u2014 it hides the project, is reversible, and records who did it. A delete is a change: the project leaves every app's lists and the relay's search, keeps its id, and `restore: true` with its id or address brings it back whole. Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. It deletes the project, not the work: its issues are separate files, are not deleted, and keep appearing in the issue listing with no project. " + WRITE_NOTE,
       inputSchema: {
         type: "object",
         properties: {
@@ -28502,7 +28489,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           reason: {
             type: "string",
-            description: "Optional. Recorded on the deletion request."
+            description: "Optional. Saved as the note on the delete, shown with who deleted it."
           },
           restore: {
             type: "boolean",

@@ -82,11 +82,11 @@
     },
     {
       "name": "ship_delete_issue",
-      "description": "Delete an issue — restorable where the relay keeps issues in order, else irreversible; a dry run unless confirmed"
+      "description": "Delete an issue — restore brings it back; a dry run unless confirmed; archiving is usually wanted instead"
     },
     {
       "name": "ship_delete_project",
-      "description": "Ask the relay to drop a project record — irreversible; archiving is usually wanted instead"
+      "description": "Delete a project — restore brings it back; a dry run unless confirmed; archiving is usually wanted instead"
     },
     {
       "name": "ship_edit_project",

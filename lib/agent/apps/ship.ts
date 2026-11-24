@@ -48,7 +48,7 @@ import {
 } from './ship-workspace'
 import { randomUUID } from 'node:crypto'
 import { BLOCK_DOCUMENT_FORMAT, KIND as PROTOCOL_KIND, RELAY_BUSY_MESSAGE, imetaTag, type Imeta, type SignedEvent } from '@estiva-app/protocol'
-import { KIND_CHANGE, KIND_COMMENT, KIND_DELETION, KIND_EDIT } from '@estiva-app/conversation'
+import { KIND_CHANGE, KIND_COMMENT, KIND_EDIT } from '@estiva-app/conversation'
 import {
   BODY_SLOT,
   KIND_CHANNEL_METADATA,
@@ -77,8 +77,9 @@ import {
   type QueryFn,
   type ResolvedManifest,
   progressOfStages,
-  type Stage,
+  type Stage
 } from '@estiva-app/interop'
+import { listsFile } from '../act-on-file'
 
 const NOT_HOME = 'it is in no team yet, so it can go only to the team it was started in, or to the Company team'
 
@@ -953,9 +954,6 @@ async function act(
     note?: string
     newId?: string
     folderHasState?: boolean
-    listedIn?: { id: string; hasState: boolean }[]
-    /** NIP-09's optional reason, the deletion's own `content`. */
-    reason?: string
     /** The manifest to act with, when the target is not one of its objects (a creation on a Folder record). */
     manifest?: ResolvedManifest
     /** The value's content model, when it is not marker text — only one the action declares is accepted. */
@@ -978,7 +976,6 @@ async function act(
     note: extra.note,
     newId: extra.newId,
     folderHasState: extra.folderHasState,
-    listedIn: extra.listedIn,
     contentFormat: extra.contentFormat,
     // What a comment's body links, as Ship's comment box tags it (§13.1, PEEKM-7).
     linkTags: actionId === 'comment' && typeof value === 'string' ? await commentLinkTags(context, value, { file: target.addr }) : undefined,
@@ -994,8 +991,7 @@ async function act(
   }
   const outcomes: PublishOutcome[] = []
   for (const [i, unsigned] of built.entries()) {
-    const withReason = i === 0 && extra.reason && unsigned.kind === KIND_DELETION ? { ...unsigned, content: extra.reason } : unsigned
-    const event = i === 0 && extra.files?.length ? { ...withReason, tags: [...withReason.tags, ...extra.files.map(imetaTag)] } : withReason
+    const event = i === 0 && extra.files?.length ? { ...unsigned, tags: [...unsigned.tags, ...extra.files.map(imetaTag)] } : unsigned
     const signed = await context.signer.sign(event)
     const result = await context.relay.publish(signed)
     outcomes.push({ ok: result.ok, reason: result.reason, eventId: result.eventId ?? signed.id })
@@ -1687,7 +1683,7 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
       ...(typeof resolution === 'string' ? { resolution } : {}),
     })
     result = await publishUnsigned(context, change)
-    const projects = state.projects.filter((project) => folder.addresses?.includes(project.addr)).length
+    const projects = state.projects.filter((project) => listsFile(folder, project.addr)).length
     hides = `the team, and what it alone lists (it lists ${projects} project(s))`
   } else {
     // The record's own Folder, for the reason `edit-project` gives: a change published elsewhere is accepted and then unseen.
@@ -1734,7 +1730,10 @@ async function archiveFile(context: AgentContext, args: ParsedArgs, command: 'ar
  * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-file-is-its-fields-each-kept-in-order-by-the-relay.md
  */
 async function setDeleted(context: AgentContext, state: Workspace, file: ShipFile, deleted: boolean, reason?: string) {
-  const target = { addr: file.addr, author: file.author, folder: homeOf(file) }
+  const folder = homeOf(file)
+  // A change is published in the file's own team (`h`); one naming none has nowhere to go.
+  if (!folder) throw new BadRequest(`${nameOf(file)} names no team, so there is nowhere to write its ${deleted ? 'delete' : 'restore'}. Nothing was published.`)
+  const target = { addr: file.addr, author: file.author, folder }
   const prev = file.heads?.[DELETED_FIELD] ?? file.rootId
   const result = await writeField(context, state, target, DELETED_FIELD, deleted ? 'true' : '', reason ?? (deleted ? 'Delete' : 'Restore'), prev)
   if (!result.ok) throw refused(`${deleted ? 'deleting' : 'restoring'} ${nameOf(file)}`, 'refused' in result ? result.refused : undefined)
@@ -2905,7 +2904,7 @@ export const shipApp: AgentApp = {
         const to = resolveTeamIn(teams, target)
 
         // Where it is now, by Ship's sidebar rule (`placedIn`): the Folders whose state lists it, else its own Folder if that is one.
-        const listing = teams.filter((team) => team.addresses?.includes(project.addr))
+        const listing = teams.filter((team) => listsFile(team, project.addr))
         const from = listing.length > 0 ? listing : teams.filter((team) => team.id === project.contentFolder)
         const name = (team: FolderSummary) => team.name ?? team.id
         if (from.length === 1 && from[0].id === to.id) {
@@ -2981,26 +2980,12 @@ export const shipApp: AgentApp = {
       run: (context, args) => archiveFile(context, args, 'archive-project'),
     },
     /*
-      The two irreversible commands, and the only ones that ask twice.
-
-      `--yes` is not ceremony here. Every other write in this app is a change
-      event a later change supersedes, or an archive that `--unarchive` undoes.
-      A NIP-09 deletion is a *request* the relay honours by dropping the event,
-      and republishing does not undo it: the address would be the same but the
-      signature and `created_at` are not, and REW-11 established the relay will
-      not backdate one. So a first call describes what goes and what stays and
-      publishes nothing, which is the same question Ship's confirm dialog asks
-      (SHI-3) in the shape a terminal has.
-
-      Note what authorises these, because it is not what authorises the rest.
-      A deletion carrying an `a` tag — which is what an addressable target is —
-      leaves the relay with no channel to check, since it derives a deletion's
-      channel from an `e` tag only. So membership in the object's Folder is
-      *not* consulted, and validation reduces to author, or the owner of an
-      authoring agent. That is why deleting is possible for an object whose
-      Folder will not take an archive, which is the case these were written
-      for: an empty project pointed at a channel with no members could not be
-      archived, renamed or re-paired, and a `kind:5` was the only way out.
+      The two commands that ask twice. A delete is a `deleted` change (SPEC
+      §6.5) that --restore undoes, but it takes the file off every app's lists
+      at once, so a first call describes what goes and what stays and
+      publishes nothing: the question Ship's confirm dialog asks (SHI-3), in
+      the shape a terminal has. Like every change, it is published in the
+      file's own team and the relay checks membership there.
     */
     {
       name: 'delete-issue',
@@ -3021,7 +3006,7 @@ export const shipApp: AgentApp = {
           return {
             wouldDelete: { ref: issue.ref, addr: issue.addr, title: issue.title, folder: issue.folder },
             survives: `It keeps its id, its number and its ${conversations} conversation(s); --restore brings it back whole.`,
-            note: "Nothing was published. A delete takes it off the agent's lists, Ship's and the relay's search; it still opens by its id. Archiving is usually what is wanted — see `archive`. Pass --yes to delete it.",
+            note: "Nothing was published. A delete takes it off every app's lists and out of the relay's search; it keeps its id, number and conversation, still opens by its id, and --restore brings it back whole. Archiving is usually what is wanted — see `archive`. Pass --yes to delete it.",
           }
         }
         return setDeleted(context, state, issue, true, reason)

@@ -489,11 +489,11 @@ export const fileApp: AgentApp = {
         const file = await readFile(context, address, cache)
         const title = file.slots.title?.value ?? address
         /*
-          The save the text stands at now is the change this one follows (§6.2).
-          A version naming an older save is the base: the change is made on the
-          text read then and merged onto what was saved since, keeping their
-          words (§13.3), or stopped with who saved it when both changed one
-          block. The older fingerprint version only refuses a changed text.
+          The change follows the save the version names (§6.2). One naming an
+          older save is refused by the relay as stale, and `writeChange` merges
+          it onto what was saved since, keeping their words (§13.3), or stops
+          with who saved it when both changed one block. The older fingerprint
+          version only refuses a changed text.
         */
         const head = await textHead(context, address)
         if (!head) throw new BadRequest(`The text of ${title} could not be read again just now. Nothing was published.`)
