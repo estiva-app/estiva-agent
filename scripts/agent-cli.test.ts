@@ -27,6 +27,7 @@ import { edited, findMessage, publishEdit, replyToOf } from '../lib/agent/conver
 import { KIND_EDIT, foldEdits } from '@estiva-app/conversation'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { Directory } from '../lib/agent/profiles'
+import { withListRead } from './list-read'
 
 /*
   The vocabularies Ship's manifest declares (`issueStatuses`, `statuses`). Since
@@ -1299,7 +1300,7 @@ console.log('— move-project: what the relay is sent, and what the agent says (
       (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
       (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
       Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-    const queryAll = async (filters: Record<string, unknown>[]) => [...new Set(filters.flatMap((filter) => events.filter((e) => matches(e, filter))))]
+    const queryAll = withListRead(() => events, (filters) => [...new Set(filters.flatMap((filter) => events.filter((e) => matches(e, filter))))])
     const context = {
       relayUrl: 'https://estiva.example',
       relay: {
@@ -1322,6 +1323,17 @@ console.log('— move-project: what the relay is sent, and what the agent says (
   }
   const tag = (event: SignedEvent | undefined, name: string) => event?.tags.find((t) => t[0] === name)?.[1]
   const title = '“Shared foundation packages”'
+
+  {
+    // A team lists a file of a base type by its id (`o`, SPEC §3.3), as the apps and the agent write it since ALL-8.
+    const byId = (id: string, name: string, lists: string[]) => [relayEvent(39000, [['d', id], ['name', name]]), relayEvent(30890, [['d', id], ...lists.map((a) => ['o', a.split(':').slice(2).join(':')])])]
+    const { sent } = await run([...byId(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])])
+    check(
+      'move-project from a team listing it by its id moves it out of that team, not only into the new one',
+      sent.length === 1 && tag(sent[0], 'op') === 'move' && tag(sent[0], 'from') === alpha && tag(sent[0], 'h') === beta,
+      JSON.stringify(sent.map((e) => e.tags)),
+    )
+  }
 
   {
     const { said, sent } = await run([...team(alpha, 'Alpha', [project]), ...team(beta, 'Beta', [])], 'invalid: channel is archived')

@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
+import { withListRead } from './list-read'
 import { archivedRefusal } from '../lib/agent/act-on-file'
 import { shipApp } from '../lib/agent/apps/ship'
 import { fileApp } from '../lib/agent/apps/file'
@@ -40,7 +41,7 @@ function relay(events: SignedEvent[]) {
     (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
     (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
     Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-  const queryAll = async (filters: Record<string, unknown>[]) => {
+  const nip01 = async (filters: Record<string, unknown>[]) => {
     const found = new Map<string, SignedEvent>()
     for (const filter of filters) {
       const hits = events.filter((e) => matches(e, filter)).sort((a, b) => b.created_at - a.created_at)
@@ -48,6 +49,7 @@ function relay(events: SignedEvent[]) {
     }
     return [...found.values()]
   }
+  const queryAll = withListRead(() => events, nip01)
   let seq = 0
   const context = {
     relayUrl: 'https://estiva.example',

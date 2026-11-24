@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { encodeNevent, encodeNpub, type SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
+import { withListRead } from './list-read'
 import { shipApp } from '../lib/agent/apps/ship'
 import { publishEdit } from '../lib/agent/conversation'
 
@@ -42,7 +43,7 @@ function relay(events: SignedEvent[]) {
     (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
     (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
     Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-  const queryAll = async (filters: Record<string, unknown>[]) => {
+  const nip01 = async (filters: Record<string, unknown>[]) => {
     const found = new Map<string, SignedEvent>()
     for (const filter of filters) {
       const hits = events.filter((e) => matches(e, filter)).sort((a, b) => b.created_at - a.created_at)
@@ -50,6 +51,7 @@ function relay(events: SignedEvent[]) {
     }
     return [...found.values()]
   }
+  const queryAll = withListRead(() => events, nip01)
   let seq = 0
   const context = {
     relayUrl: 'https://estiva.example',
@@ -86,7 +88,7 @@ console.log('— A comment says what it links —')
     sent?.kind === 1111 && JSON.stringify(tags(sent, 'a')) === JSON.stringify([ISSUE, addressOf(other), addressOf(third)]),
     JSON.stringify(sent?.tags),
   )
-  check('…and the part a link to one block names, on a send', JSON.stringify(sent?.tags.filter((t) => t[0] === 'part')) === JSON.stringify([['part', addressOf(third), 'b1']]), JSON.stringify(sent?.tags))
+  check('…and the part a link to one block names, on a send', JSON.stringify(sent?.tags.filter((t) => t[0] === 'part')) === JSON.stringify([['part', tag(third, 'd'), 'b1']]), JSON.stringify(sent?.tags))
 }
 {
   const { context, published } = workspace()
@@ -147,7 +149,7 @@ console.log('— A comment says what it links —')
   const [sent] = published
   check(
     'ship comment linking a block of its own issue first, then blocks of six other issues, carries a part for each of the six, the sixth included',
-    JSON.stringify(sent?.tags.filter((t) => t[0] === 'part')) === JSON.stringify(six.map((e, i) => ['part', addressOf(e), `b${i + 1}`])),
+    JSON.stringify(sent?.tags.filter((t) => t[0] === 'part')) === JSON.stringify(six.map((e, i) => ['part', tag(e, 'd'), `b${i + 1}`])),
     JSON.stringify(sent?.tags.filter((t) => t[0] === 'part')),
   )
 }

@@ -22,7 +22,6 @@ import {
   buildActionEvents,
   createProjectionCache,
   fieldsSetBy,
-  filesOf,
   KIND_CHANNEL_METADATA,
   listFolderRecords,
   openFile,
@@ -48,7 +47,6 @@ import {
   resolveCommentAnchor,
   type Block,
   type ContentFormat,
-  type MergeText,
 } from '@estiva-app/protocol'
 import { KIND_CHANGE } from '@estiva-app/conversation'
 import { actOnFile, archiveOfFile, folderOfFile, pointerOf, published, refuseIfArchived, relayQuery } from '../act-on-file'
@@ -62,7 +60,6 @@ import { profilesOf } from '../profiles'
 import { resolveOne } from '../resolve'
 import { summaryAction, summaryRoute, summaryText, summaryWarning } from '../summary'
 import { mergedLine, textAsks } from '../text-merge'
-import { fileReadsFor } from './ship-workspace'
 
 /** `kind:pubkey:d`, the one handle every app's file has. A title would be one app's lookup. */
 const ADDRESS = /^\d+:[0-9a-f]{64}:[^\s]+$/
@@ -181,23 +178,16 @@ const handleOf = (address: string) => {
 /**
  * The save the file's text stands at — its current text change, or its first
  * record when the text never changed (§6.1, §6.2): what `show` prints as its
- * `version`, and the change `describe` names as the one it follows. One open of
- * the file where the relay reads files by their fields; elsewhere its changes,
- * folded as every reader folds them. Undefined when nothing is readable there.
+ * `version`, and the change `describe` names as the one it follows: one open of
+ * the file (§6.13). Undefined when nothing is readable there.
  *
  * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/every-file-type-is-kept-in-order-and-a-delete-only-marks-the-file.md
  */
 async function textHead(context: AgentContext, address: string): Promise<string | undefined> {
   const query = relayQuery(context)
   const handle = handleOf(address)
-  if ((await fileReadsFor(context)).text) {
-    const opened = await openFile(query, handle, { text: true })
-    return opened && (opened.fields[TEXT_FIELD]?.id ?? opened.root.id)
-  }
-  const [root] = await query([{ kinds: [handle.kind], authors: [handle.pubkey], '#d': [handle.d], limit: 1 }])
-  if (!root) return undefined
-  const folded = filesOf([root, ...(await query([{ kinds: [KIND_CHANGE], '#a': [address] }]))], { withText: true }).find((one) => one.address === address)
-  return folded?.fields[TEXT_FIELD]?.id ?? root.id
+  const opened = await openFile(query, handle, { text: true })
+  return opened && (opened.fields[TEXT_FIELD]?.id ?? opened.root.id)
 }
 
 /**
@@ -221,7 +211,7 @@ async function textAtVersion(context: AgentContext, address: string, title: stri
     fieldsSetBy(event).some((set) => set.field === TEXT_FIELD)
   const text = event?.id === version && (isRoot || inLine) ? (isRoot ? (textOfEvent(event) ?? { value: '' }) : textOfEvent(event)) : undefined
   if (!text) throw new BadRequest(`--version ${version} is not a saved version of the text of ${title}. Pass the \`version\` \`file show\` printed for it. Nothing was published.`)
-  return { value: text.value, format: (text.format === BLOCK_DOCUMENT_FORMAT ? 'blocks' : 'marker') as ContentFormat, base: text as MergeText }
+  return { value: text.value, format: (text.format === BLOCK_DOCUMENT_FORMAT ? 'blocks' : 'marker') as ContentFormat }
 }
 
 /** A block as one line of words, for saying where a comment is. */
@@ -499,18 +489,22 @@ export const fileApp: AgentApp = {
         const file = await readFile(context, address, cache)
         const title = file.slots.title?.value ?? address
         /*
-          The save the text stands at now is the change this one follows (§6.2).
-          A version naming an older save is the base: the change is made on the
-          text read then and merged onto what was saved since, keeping their
-          words (§13.3), or stopped with who saved it when both changed one
-          block. The older fingerprint version only refuses a changed text.
+          The change follows the save the version names (§6.2). One naming an
+          older save is refused by the relay as stale, and `writeChange` merges
+          it onto what was saved since, keeping their words (§13.3), or stops
+          with who saved it when both changed one block. The older fingerprint
+          version only refuses a changed text.
         */
         const head = await textHead(context, address)
         if (!head) throw new BadRequest(`The text of ${title} could not be read again just now. Nothing was published.`)
         let before = textOf(file)
-        let base: MergeText | undefined
+        // The save it was made on: an older one is refused as stale by the relay and merged onto the text as it is now.
+        let prev = head
         if (SAVE_ID.test(version)) {
-          if (version !== head) ({ base, ...before } = await textAtVersion(context, address, title, version))
+          if (version !== head) {
+            before = await textAtVersion(context, address, title, version)
+            prev = version
+          }
         } else if (versionOf(before) !== version) {
           throw new BadRequest(
             `The text of ${title} changed since you read it (version ${version}, now ${head}): somebody saved an edit in between. ` +
@@ -534,7 +528,7 @@ export const fileApp: AgentApp = {
           [],
           undefined,
           TEXT_FIELD,
-          { prev: head, ...(base ? { base } : {}) },
+          { prev },
         )
         if (!result.ok && result.written && 'asks' in result.written) throw await textAsks(context, title, result.written.asks, result.written.theirs, [], 'file')
         published(result, `the text of ${title}`)

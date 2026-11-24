@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { crc32, deflateSync } from 'node:zlib'
 import type { Block, SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
+import { withListRead } from './list-read'
 import { descriptionText } from '../lib/agent/descriptions'
 import { fileApp } from '../lib/agent/apps/file'
 import { shipApp } from '../lib/agent/apps/ship'
@@ -94,7 +95,7 @@ function relay(events: SignedEvent[]): AgentContext {
     (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
     (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
     Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-  const queryAll = async (filters: Record<string, unknown>[]) => {
+  const nip01 = async (filters: Record<string, unknown>[]) => {
     const found = new Map<string, SignedEvent>()
     for (const filter of filters) {
       const hits = events.filter((e) => matches(e, filter)).sort((a, b) => b.created_at - a.created_at)
@@ -102,9 +103,10 @@ function relay(events: SignedEvent[]): AgentContext {
     }
     return [...found.values()]
   }
+  const queryAll = withListRead(() => events, nip01)
   return {
     relayUrl: 'https://estiva.example',
-    relay: { queryAll, publish: async (e: SignedEvent) => (steps.push({ publish: e }), events.push(e), { ok: true, eventId: e.id }) },
+    relay: { queryAll, query: queryAll, publish: async (e: SignedEvent) => (steps.push({ publish: e }), events.push(e), { ok: true, eventId: e.id }) },
     signer: { pubkey: SELF, sign: async (e: SignedEvent) => ({ ...e, created_at: e.created_at + seq, id: createHash('sha256').update(JSON.stringify(e) + seq++).digest('hex'), sig: '' }) },
   } as unknown as AgentContext
 }
@@ -250,7 +252,7 @@ console.log('— Ship: a comment on an issue, and an issue’s description —')
     created_at: 1_790_000_000,
   })
   steps = []
-  await run(shipApp as typeof fileApp, 'edit-issue', ship, [issueAddress], { description: `Intro.\n\n${personLine}\n\n![Before](${SHOT})` })
+  await run(shipApp as typeof fileApp, 'edit-issue', ship, [issueAddress], { version: (await run(shipApp as typeof fileApp, 'show', ship, [issueAddress], {})).version, description: `Intro.\n\n${personLine}\n\n![Before](${SHOT})` })
   const change = lastDescription()
   const blocks = change ? blocksOf(change.tags.find((t) => t[0] === 'value')![1]) : []
   check(

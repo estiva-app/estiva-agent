@@ -55,10 +55,10 @@ function workspace(options: RelayOptions = {}) {
   check('a description without --version is refused, nothing published', !bare.ok && /edit-issue --description needs --version/.test(bare.message) && published.length === 0, bare.ok ? 'it saved' : bare.message)
 }
 
-// — A different block: merged, whether or not the relay keeps this team's issues in order —
-for (const keepsOrder of [true, false]) {
-  const label = keepsOrder ? 'a team kept in order' : 'a team not switched yet'
-  const { context, published, addr, read, events } = workspace({ keepsOrder })
+// — A different block: merged —
+{
+  const label = 'a different block'
+  const { context, published, addr, read, events } = workspace()
   const theirs = textChange(QA1, addr, doc(['b1', 'One, with the rollout in it.'], ['b2', 'Two, by QA-1.']), read.id)
   events.push(theirs)
   const answer = await run(context, 'edit-issue', [addr], { description: 'One, with the rollout in it, by Claude.\n\nTwo.', version: read.id })
@@ -71,9 +71,9 @@ for (const keepsOrder of [true, false]) {
 }
 
 // — The same block: nothing saved, no other field either; names them, shows both —
-for (const keepsOrder of [true, false]) {
-  const label = keepsOrder ? 'a team kept in order' : 'a team not switched yet'
-  const { context, published, addr, read, events } = workspace({ keepsOrder })
+{
+  const label = 'the same block'
+  const { context, published, addr, read, events } = workspace()
   events.push(textChange(QA1, addr, doc(['b1', 'One, rewritten by QA-1.'], ['b2', 'Two.']), read.id))
   const answer = await run(context, 'edit-issue', [addr], { description: 'One, rewritten by Claude.\n\nTwo.', version: read.id, title: 'Login is slow on Safari' })
   check(`${label}: nothing of the agent's is saved, the title included`, mine(published).length === 0, JSON.stringify(mine(published).map((e) => tag(e, 'field'))))
@@ -83,7 +83,7 @@ for (const keepsOrder of [true, false]) {
 
 // — A status set with nobody crossing it follows the status change it replaces, not the record —
 {
-  // On a team not switched yet, where nothing corrects a wrong `prev` with a refusal.
+  // On a relay that takes any `prev`, so a wrong one would stand uncorrected.
   const { context, published, addr, status } = workspace({ keepsOrder: false })
   const answer = await run(context, 'set-status', [addr, 'in_progress'])
   const saved = mine(published).find((e) => tag(e, 'field') === 'status')
@@ -155,9 +155,9 @@ for (const [command, positional, flags, field, value] of [
 }
 
 // — Delete and restore —
-for (const how of [{ inOrder: ISSUES }, { refuseKind5: 'issue' as const }]) {
-  const label = 'inOrder' in how ? 'relay announcing issues in order' : 'team refusing kind:5 (the fence)'
-  const { context, published, addr, root } = workspace(how)
+{
+  const label = 'delete-issue'
+  const { context, published, addr, root } = workspace()
   const answer = await run(context, 'delete-issue', [addr], { yes: true })
   const deleted = mine(published).find((e) => tag(e, 'field') === 'deleted')
   check(`${label}: a delete is a deleted change after the record, no kind:5 stored`, answer.ok && tag(deleted, 'value') === 'true' && tag(deleted, 'prev') === root.id && !mine(published).some((e) => e.kind === 5), answer.ok ? '' : answer.message)

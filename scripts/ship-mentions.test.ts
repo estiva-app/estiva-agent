@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { addrToNaddr, encodeNpub, type SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
+import { withListRead } from './list-read'
 import { shipApp } from '../lib/agent/apps/ship'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -38,7 +39,7 @@ function relay(events: SignedEvent[]) {
     (!Array.isArray(filter.kinds) || filter.kinds.includes(e.kind)) &&
     (!Array.isArray(filter.authors) || filter.authors.includes(e.pubkey)) &&
     Object.entries(filter).every(([key, wanted]) => !key.startsWith('#') || (wanted as string[]).some((v) => values(e, key.slice(1)).includes(v)))
-  const queryAll = async (filters: Record<string, unknown>[]) => {
+  const nip01 = async (filters: Record<string, unknown>[]) => {
     const found = new Map<string, SignedEvent>()
     for (const filter of filters) {
       const hits = events.filter((e) => matches(e, filter)).sort((a, b) => b.created_at - a.created_at)
@@ -46,6 +47,7 @@ function relay(events: SignedEvent[]) {
     }
     return [...found.values()]
   }
+  const queryAll = withListRead(() => events, nip01)
   let seq = 0
   const context = {
     relayUrl: 'https://estiva.example',
@@ -59,6 +61,8 @@ function relay(events: SignedEvent[]) {
 const run = (name: string, context: AgentContext, positional: string[], flags: Record<string, string>) =>
   shipApp.commands.find((command) => command.name === name)!.run(context, { positional, flags } as never) as Promise<Record<string, any>>
 const refusal = (promise: Promise<unknown>) => promise.then(() => '', (error: Error) => error.message)
+/** The text's version as `show` prints it, which `edit-issue --description` takes back. */
+const versionOf = async (context: AgentContext) => (await run('show', context, [ISSUE], {})).version as string
 
 const fixture = JSON.parse(readFileSync(join(here, '..', 'conformance', 'fold-fixture.json'), 'utf8')) as { events: SignedEvent[] }
 const manifest = JSON.parse(readFileSync(join(here, '..', 'conformance', 'ship-manifest.json'), 'utf8')) as { event: SignedEvent }
@@ -73,7 +77,7 @@ const addOf = (published: SignedEvent[], person: string) =>
 console.log('— A mention in a description adds the person —')
 {
   const { context, published } = workspace()
-  const out = await run('edit-issue', context, [ISSUE], { description: `Ask nostr:${QA2_NPUB} about it.`, mention: QA2_NPUB })
+  const out = await run('edit-issue', context, [ISSUE], { version: await versionOf(context), description: `Ask nostr:${QA2_NPUB} about it.`, mention: QA2_NPUB })
   const save = published.find((e) => tag(e, 'field') === 'description')
   const add = addOf(published, QA2)
   check(
@@ -85,11 +89,11 @@ console.log('— A mention in a description adds the person —')
   check('…and says who was added', out.mentioned?.[0]?.added === `nostr:${QA2_NPUB}`, JSON.stringify(out.mentioned))
 
   published.length = 0
-  await run('edit-issue', context, [ISSUE], { description: `Ask nostr:${QA2_NPUB} about it, please.` })
+  await run('edit-issue', context, [ISSUE], { version: await versionOf(context), description: `Ask nostr:${QA2_NPUB} about it, please.` })
   check('a second edit that keeps the mention writes no Add', published.length === 1 && !addOf(published, QA2), `${published.length} published`)
 
   published.length = 0
-  const again = await run('edit-issue', context, [ISSUE], { description: `Ask nostr:${QA2_NPUB} about it, thanks.`, mention: QA2_NPUB })
+  const again = await run('edit-issue', context, [ISSUE], { version: await versionOf(context), description: `Ask nostr:${QA2_NPUB} about it, thanks.`, mention: QA2_NPUB })
   check(
     '--mention for somebody the text already named adds nobody, and says so rather than reporting them told',
     published.length === 1 && !addOf(published, QA2) && again.mentioned === undefined && /already mentioned/.test(again.notAdded ?? ''),
@@ -102,7 +106,7 @@ console.log('— A mention in a description adds the person —')
   const publish = context.relay.publish
   context.relay.publish = (async (e: SignedEvent) => (tag(e, 'field') === 'project' ? { ok: false, reason: 'refused for the test' } : publish(e))) as typeof publish
   const project = fixture.events.find((e) => e.kind === 30850 && addressOf(e) !== tag(issue, 'a'))!
-  const refused = await refusal(run('edit-issue', context, [ISSUE], { description: `Ask nostr:${QA2_NPUB}.`, mention: QA2_NPUB, project: addressOf(project) }))
+  const refused = await refusal(run('edit-issue', context, [ISSUE], { version: await versionOf(context), description: `Ask nostr:${QA2_NPUB}.`, mention: QA2_NPUB, project: addressOf(project) }))
   check(
     'a later field the relay refuses leaves the description and its Add both standing',
     /refused project/.test(refused) && Boolean(addOf(published, QA2)),
@@ -111,7 +115,7 @@ console.log('— A mention in a description adds the person —')
 }
 {
   const { context, published } = workspace()
-  const refused = await refusal(run('edit-issue', context, [ISSUE], { description: `Ask nostr:${QA2_NPUB}.` }))
+  const refused = await refusal(run('edit-issue', context, [ISSUE], { version: await versionOf(context), description: `Ask nostr:${QA2_NPUB}.` }))
   check('a mention --mention does not name is refused with nothing published', published.length === 0 && /--mention does not/.test(refused), refused || `${published.length} published`)
   const alone = await refusal(run('edit-issue', context, [ISSUE], { title: 'Renamed', mention: QA2_NPUB }))
   check('--mention without --description is refused', published.length === 0 && /goes with --description/.test(alone), alone || `${published.length} published`)

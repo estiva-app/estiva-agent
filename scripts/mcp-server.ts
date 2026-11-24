@@ -461,7 +461,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'ship_delete_issue',
       description:
         'Delete one Estiva Ship issue. **`ship_archive` is almost always the right tool instead** — it hides the issue, is reversible, and records who did it. ' +
-        'Where the relay keeps issues in order, a delete is a change: the issue leaves every list and search, keeps its id, number and conversation, shows who deleted it, and `restore: true` with its id or address brings it back whole. Elsewhere it is IRREVERSIBLE: it asks the relay to drop the event, republishing does not undo it, and the conversations about it stop being reachable from the issue. ' +
+        'A delete is a change: the issue leaves every app\'s lists and the relay\'s search, keeps its id, number and conversation, shows who deleted it, and `restore: true` with its id or address brings it back whole. ' +
         'Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. ' +
         WRITE_NOTE,
       inputSchema: {
@@ -477,7 +477,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           reason: {
             type: 'string',
-            description: 'Optional. Recorded on the deletion request.',
+            description: 'Optional. Saved as the note on the delete, shown with who deleted it.',
           },
           restore: {
             type: 'boolean',
@@ -492,9 +492,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       name: 'ship_delete_project',
       description:
         'Delete one Estiva Ship project. **`ship_archive_project` is almost always the right tool instead** — it hides the project, is reversible, and records who did it. ' +
-        'Where the relay keeps projects in order, a delete is a change: the project leaves every list and search, keeps its id, and `restore: true` with its id or address brings it back whole. Elsewhere it is IRREVERSIBLE: it asks the relay to drop the event, and republishing does not undo it. ' +
+        'A delete is a change: the project leaves every app\'s lists and the relay\'s search, keeps its id, and `restore: true` with its id or address brings it back whole. ' +
         'Two steps on purpose: without `confirm: true` it publishes nothing and answers with what would go and what would survive. Show that to the person and get their word before calling again with `confirm: true`. ' +
-        'It removes the project record, not the work: its issues are separate events, are not deleted, and keep appearing in the issue listing with no project. ' +
+        'It deletes the project, not the work: its issues are separate files, are not deleted, and keep appearing in the issue listing with no project. ' +
         WRITE_NOTE,
       inputSchema: {
         type: 'object',
@@ -509,7 +509,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           reason: {
             type: 'string',
-            description: 'Optional. Recorded on the deletion request.',
+            description: 'Optional. Saved as the note on the delete, shown with who deleted it.',
           },
           restore: {
             type: 'boolean',

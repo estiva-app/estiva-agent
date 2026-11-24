@@ -2,8 +2,8 @@
  * The in-memory relay the field tests write to (ALO-7 for projects, ISS-7 for
  * issues): it answers NIP-01 filters, the list read (`"fields": "newest"`,
  * with `"text"` beside `#d`) and its search over current words, and refuses a
- * change whose `prev` is not its field's current change, as buzz does where it
- * keeps a type in order. Folded by interop's `filesOf`, so it is SPEC §6.2's
+ * change whose `prev` is not its field's current change, as buzz does. Folded
+ * by interop's `filesOf`, so it is SPEC §6.2's
  * rule and not one restated here.
  */
 import { createHash } from 'node:crypto'
@@ -38,11 +38,8 @@ export const wordsOfDoc = (value: string | undefined) =>
   value ? (JSON.parse(value) as { content: { content: { text: string }[] }[] }).content.map((b) => b.content[0].text) : []
 
 export interface RelayOptions {
-  /** NIP-11 `files.requires_prev`: the types the relay announces it keeps in order. */
-  inOrder?: readonly string[]
   /** Refuses a stale `prev` (a fenced team, or a switched relay). True unless said. */
   keepsOrder?: boolean
-  refuseKind5?: 'project' | 'issue'
   /** The types `file_search` finds by their words. */
   search?: readonly string[]
   beforePublish?: (e: SignedEvent) => { ok: false; reason: string } | void
@@ -94,7 +91,6 @@ export function relay(events: SignedEvent[], options: RelayOptions = {}) {
   const publish = async (e: SignedEvent) => {
     const early = options.beforePublish?.(e)
     if (early) return early
-    if (e.kind === 5 && options.refuseKind5) return { ok: false, reason: `invalid: delete-by-field: a${options.refuseKind5 === 'issue' ? 'n' : ''} ${options.refuseKind5} is deleted by its deleted field, not kind 5` }
     if (e.kind === 1851 && options.keepsOrder !== false) {
       for (const { field } of fieldsSetBy(e)) {
         const prev = tag(e, 'prev')
@@ -110,9 +106,7 @@ export function relay(events: SignedEvent[], options: RelayOptions = {}) {
     relayUrl: 'https://estiva.example',
     relay: {
       info: async () => ({
-        file_list: { newest: true, text: true },
         file_search: { types: searched },
-        ...(options.inOrder ? { files: { newest: true, requires_prev: options.inOrder } } : {}),
       }),
       queryAll: async (f: Record<string, unknown>[]) => answer(f),
       query: async (f: Record<string, unknown>[]) => answer(f),

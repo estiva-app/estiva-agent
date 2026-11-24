@@ -23,6 +23,7 @@ import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
 import { shipApp } from '../lib/agent/apps/ship'
 import { loadWorkspace } from '../lib/agent/apps/ship-workspace'
+import { withListRead } from './list-read'
 
 const here = dirname(fileURLToPath(import.meta.url))
 
@@ -64,9 +65,12 @@ function relay(events: SignedEvent[], { fullSearch = false } = {}) {
     }
     return [...out.values()]
   }
+  const listing = withListRead(() => events, answer)
+  // `answer` records the plain filters; the list read's are recorded here.
+  const read = (f: Record<string, unknown>[]) => (asked.push(...f.filter((each) => 'fields' in each)), listing(f))
   const context = {
     relayUrl: 'https://estiva.example',
-    relay: { queryAll: async (f: Record<string, unknown>[]) => answer(f), query: async (f: Record<string, unknown>[]) => answer(f) },
+    relay: { queryAll: read, query: read },
   } as unknown as AgentContext
   return { context, asked }
 }
@@ -98,7 +102,8 @@ const change = (target: string, author: string, folder: string, field: string, v
 
 const events = [...structuredClone(fixture.events), manifest.event]
 const { context: reader } = relay(events)
-const state = await loadWorkspace(reader)
+// The setup reads every change, `activity`'s read, to find an issue saved more than once.
+const state = await loadWorkspace(reader, undefined, { history: true })
 const roots = new Map(events.filter((e) => e.kind === 30850 || e.kind === 30851).map((e) => [addressOf(e), e]))
 
 /*
@@ -153,13 +158,21 @@ const references: [string, string][] = [
   ['a ref two issues share', twice],
   ['a reference naming nothing', 'no such thing anywhere'],
 ]
+/** Where two answers part, with a little of each from there. */
+const differ = (a: string, b: string) => {
+  let i = 0
+  while (i < a.length && a[i] === b[i]) i++
+  return `at ${i}: ${a.slice(Math.max(0, i - 60), i + 140)} ‖ ${b.slice(Math.max(0, i - 60), i + 140)}`
+}
 for (const [what, ref] of references) {
   const narrow = relay(events)
   const [one, whole] = await Promise.all([show(narrow.context, ref), show(relay(events, { fullSearch: true }).context, ref)])
-  check(`${what}: the same answer`, one === whole, one === whole ? one.slice(0, 90) : `${one.slice(0, 200)} ‖ ${whole.slice(0, 200)}`)
+  check(`${what}: the same answer`, one === whole, one === whole ? one.slice(0, 90) : differ(one, whole))
   if (!one.startsWith('refused')) {
-    const wholeRead = narrow.asked.some((f) => Array.isArray(f.kinds) && f.kinds.includes(1851) && Object.keys(f).every((k) => k === 'kinds' || k === 'limit'))
-    check(PART.has(what) ? `${what}: …by reading every change` : `${what}: …without reading every change`, PART.has(what) ? wholeRead : !wholeRead)
+    const everyChange = narrow.asked.some((f) => Array.isArray(f.kinds) && f.kinds.includes(1851) && Object.keys(f).every((k) => k === 'kinds' || k === 'limit'))
+    const everyIssue = narrow.asked.some((f) => 'fields' in f && Array.isArray(f.kinds) && f.kinds.includes(30851) && !('#d' in f) && !('search' in f))
+    check(PART.has(what) ? `${what}: …by reading every issue by its fields` : `${what}: …without reading every issue`, PART.has(what) ? everyIssue : !everyIssue)
+    check(`${what}: …and never every change`, !everyChange)
   }
 }
 const project = JSON.parse(await show(relay(events).context, into.addr))
@@ -173,12 +186,12 @@ const dated = await show(relay(events).context, planted.addr)
 check('a change with a planted ts still shows, dated when it was made', !dated.startsWith('refused') && JSON.parse(dated).history.at(-1)?.at === new Date(clock * 1000).toISOString(), dated.slice(0, 120))
 
 console.log('\n— history —')
-const shown = JSON.parse(await show(relay(events).context, edited.addr))
+const shown = JSON.parse(await show(relay(events).context, edited.addr, { history: true }))
 const texts = shown.history.filter((line: { field: string }) => line.field === 'description')
 check('each save of the text is a numbered version with its length', texts.length === saves(edited.addr) && texts.every((line: { version: number; length: number }, i: number) => line.version === i + 1 && line.length > 0), JSON.stringify(texts.slice(0, 2)))
 check('…and carries no old text', texts.every((line: object) => !('value' in line)))
 check('other fields keep their value', shown.history.filter((line: { field: string }) => line.field !== 'description').every((line: object) => 'value' in line))
-const withText = JSON.parse(await show(relay(events).context, edited.addr, { 'history-text': true }))
+const withText = JSON.parse(await show(relay(events).context, edited.addr, { history: true, 'history-text': true }))
 const versions = withText.history.filter((line: { field: string }) => line.field === 'description')
 check('--history-text adds each version’s text, as long as it says', versions.every((line: { value: string; length: number }) => typeof line.value === 'string' && line.value.length === line.length))
 check('…the last of them the description itself', versions.at(-1)?.value === withText.description)

@@ -17,9 +17,7 @@ import {
   createLoadQuery,
   folderOf,
   KIND_CHANNEL_METADATA,
-  filesOf,
   openFile,
-  prevsAfterSwitch,
   writeChange,
   resolveForeignObject,
   resolveManifest,
@@ -29,10 +27,9 @@ import {
   type ResolvedManifest,
   type WriteChangeResult,
 } from '@estiva-app/interop'
-import { addrToNaddr, imetaTag, KIND, RELAY_BUSY_MESSAGE, type Imeta, type MergeText } from '@estiva-app/protocol'
+import { addrToNaddr, imetaTag, KIND, RELAY_BUSY_MESSAGE, type Imeta } from '@estiva-app/protocol'
 import { BadRequest, type AgentContext } from './cli'
 import { commentLinkTags } from './links'
-import { fileReadsFor } from './apps/ship-workspace'
 
 /** A `d` may itself hold a colon, so everything after the pubkey is the identifier. */
 export function pointerOf(address: string) {
@@ -140,7 +137,7 @@ export async function actOnFile(
    * With `ordered`: the change it follows, as the caller read it, instead of the field's current change read now; and
    * for a text, the version the caller's words were made on, merged onto what was saved since (§13.3, ALL-6).
    */
-  after?: { prev: string; base?: MergeText },
+  after?: { prev: string },
 ): Promise<{ ok: boolean; reason?: string; eventId?: string; written?: WriteChangeResult }> {
   const query = relayQuery(context)
   const pointer = pointerOf(file.address)
@@ -185,24 +182,18 @@ export async function actOnFile(
   if (ordered) {
     /*
       A field's change names the one it follows (SPEC §6.2), as `ship archive`
-      writes it: a relay that keeps the type in order refuses one that names
-      none, and answers a stale one with `conflict:`, which `writeChange` takes.
+      writes it: the relay refuses one that names none, and answers a stale one
+      with `conflict:`, which `writeChange` takes.
       The field's current change, or the file's first record when it never changed.
     */
     const handle = { kind: pointer.kind, pubkey: pointer.pubkey, d: pointer.identifier }
-    // The relay's list read where its NIP-11 offers one; elsewhere the file's changes, folded as every reader folds them.
-    const listed = after ? undefined : (await fileReadsFor(context)).list ? (await prevsAfterSwitch(query, handle, [ordered]).catch(() => undefined))?.[ordered] : undefined
-    const prev =
-      after?.prev ??
-      listed ??
-      filesOf([root, ...(await query([{ kinds: [signs], '#a': [file.address] }]))], { withText: true }).find((one) => one.address === file.address)?.fields[ordered]?.id ??
-      root.id
+    // The field's current change from the open read (§6.13), the text's only when the file is opened with it.
+    const prev = after?.prev ?? (await openFile(query, handle, { text: ordered === 'description' }))?.fields[ordered]?.id ?? root.id
     const written = await writeChange({
       field: ordered,
       value,
       prev,
       ...(contentFormat ? { format: contentFormat } : {}),
-      ...(after?.base ? { base: after.base } : {}),
       build,
       sign: (event) => context.signer.sign(event),
       publish: (event) => context.relay.publish(event),
@@ -218,3 +209,10 @@ export async function actOnFile(
   const result = await context.relay.publish(signed)
   return { ...result, eventId: result.eventId ?? signed.id }
 }
+
+/**
+ * Whether a team lists the file at `address`, by its address or by its id
+ * (`o`, SPEC §3.3): interop's `listsFile`, which its index does not export.
+ */
+export const listsFile = (folder: { addresses?: readonly string[]; ids?: readonly string[] }, address: string): boolean =>
+  !!folder.addresses?.includes(address) || !!folder.ids?.includes(address.split(':').slice(2).join(':'))
