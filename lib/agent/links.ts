@@ -24,7 +24,7 @@ import {
   type ContentFormat,
   type RenderBlock,
 } from '@estiva-app/protocol'
-import { linkReader, linksIn, matchObjectUrl, MAX_LINKS_ASKED, urlPatternsOf, type LinkReader, type OwnPlace } from '@estiva-app/interop'
+import { linkReader, linksIn, withTimes, matchObjectUrl, MAX_LINKS_ASKED, urlPatternsOf, type LinkReader, type OwnPlace } from '@estiva-app/interop'
 import { BadRequest, type AgentContext } from './cli'
 
 /** One link as it draws: `chip` in a sentence, `row` or `card` alone on its line, `link` for words or a URL no app claims. */
@@ -90,7 +90,8 @@ function manifestsOf(context: Pick<AgentContext, 'relay'>): Manifests {
  * created after its link was first asked would stay unnamed until a restart.
  */
 export function linkReaderOf(context: Pick<AgentContext, 'relay'>): LinkReader {
-  return linkReader({ query: (filters) => context.relay.queryAll(filters), manifests: manifestsOf(context) })
+  // With the times read, a link to a deleted file still says who deleted it (aa0ddf0c).
+  return linkReader({ query: withTimes((filters) => context.relay.queryAll(filters), (filters) => context.relay.queryTimes(filters as never)), manifests: manifestsOf(context) })
 }
 
 /**

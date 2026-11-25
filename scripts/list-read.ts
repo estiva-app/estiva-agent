@@ -6,7 +6,7 @@
  * so it is SPEC §6.2's order and not one restated here.
  */
 import { fieldsSetBy, filesOf } from '@estiva-app/interop'
-import type { SignedEvent } from '@estiva-app/protocol'
+import type { FileTimes, SignedEvent } from '@estiva-app/protocol'
 
 type Filter = Record<string, unknown>
 
@@ -75,6 +75,28 @@ export function withListRead(
     const out = new Map<string, SignedEvent>()
     for (const e of plain.length ? await nip01(plain) : []) out.set(e.id, e)
     for (const f of listed) for (const e of listRead(events(), f)) out.set(e.id, e)
+    return [...out.values()]
+  }
+}
+
+/**
+ * The relay's times read over `events` (SPEC §6.13, `"fields": "times"`): each file a filter picks, deleted ones
+ * included, with each field's current change by id and the field it set, never its value (§6.5).
+ */
+export function timesRead(events: () => readonly SignedEvent[]): (filters: Filter[]) => Promise<FileTimes[]> {
+  return async (filters) => {
+    const out = new Map<string, FileTimes>()
+    for (const filter of filters) {
+      const { fields: _fields, limit: _limit, ...rest } = filter
+      for (const file of filesOf([...events()], { withText: true })) {
+        if (!matches(file.root, rest)) continue
+        const changes = Object.entries(file.fields)
+          .filter(([field, change]) => !field.startsWith('member:') && change.event.kind === 1851)
+          .map(([field, change]) => ({ id: change.event.id, created_at: change.event.created_at, fields: [field] }))
+        const under = first(file.root, 'a')
+        out.set(file.address, { a: file.address, created_at: file.root.created_at, h: first(file.root, 'h') ?? null, ...(under ? { under } : {}), changes })
+      }
+    }
     return [...out.values()]
   }
 }

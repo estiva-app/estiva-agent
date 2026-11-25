@@ -19474,7 +19474,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.39.0",
+  version: "0.39.1",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -19943,8 +19943,8 @@ function reactionHorizon(targets, limit = REACTION_HORIZON) {
   for (const t of targets)
     if (!unique.has(t.id))
       unique.set(t.id, t.at);
-  const newestFirst = [...unique].sort((a, b) => b[1] - a[1] || (a[0] > b[0] ? -1 : a[0] < b[0] ? 1 : 0));
-  return { asked: newestFirst.slice(0, limit).map(([id]) => id), omitted: Math.max(0, newestFirst.length - limit) };
+  const newestFirst2 = [...unique].sort((a, b) => b[1] - a[1] || (a[0] > b[0] ? -1 : a[0] < b[0] ? 1 : 0));
+  return { asked: newestFirst2.slice(0, limit).map(([id]) => id), omitted: Math.max(0, newestFirst2.length - limit) };
 }
 function reactionEventsOf(events) {
   const out = [];
@@ -20410,6 +20410,9 @@ function readMoveRefusal(events, index, reason) {
 }
 
 // node_modules/@estiva-app/interop/dist/projection.js
+function withTimes(query, times) {
+  return Object.assign((filters) => query(filters), { times });
+}
 var PROFILE_HIT_TTL_MS = 10 * 6e4;
 function peopleViaRelay(query) {
   return async (pubkeys) => {
@@ -21016,10 +21019,57 @@ function bareFileOpenedBy(opener, template) {
     webTemplate: template
   };
 }
-var HANDLER_SWEEP_LIMIT = 50;
+var HANDLER_SWEEP_LIMIT = 100;
+var RECOMMENDATION_SWEEP_LIMIT = 100;
+var EMPTY_SWEEP = Symbol("empty sweep");
+async function handlerSweepOf(kind, limit, query, cache) {
+  const read = async () => {
+    const events = await query([{ kinds: [kind], limit }]);
+    if (events.length === 0)
+      throw EMPTY_SWEEP;
+    return { sweep: true, events, complete: events.length < limit };
+  };
+  try {
+    return await throughCache(cache, `sweep:${kind}`, read);
+  } catch (error2) {
+    if (error2 === EMPTY_SWEEP)
+      return { sweep: true, events: [], complete: false };
+    throw error2;
+  }
+}
+async function readAllManifests(query, cache) {
+  return (await handlerSweepOf(KIND_HANDLER_INFORMATION, HANDLER_SWEEP_LIMIT, query, cache)).events;
+}
+var newestFirst = (a, b) => b.created_at - a.created_at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+async function claimsFor(kind, query, cache) {
+  if (cache) {
+    const all = await handlerSweepOf(KIND_HANDLER_INFORMATION, HANDLER_SWEEP_LIMIT, query, cache);
+    if (all.complete) {
+      const claims = all.events.filter((e) => e.tags.some((t) => t[0] === "k" && t[1] === kind)).sort(newestFirst).slice(0, 20);
+      if (claims.length > 0)
+        return claims;
+      const asked = await throughCache(cache, `claims:${kind}`, async () => ({
+        sweep: true,
+        events: await query([{ kinds: [KIND_HANDLER_INFORMATION], "#k": [kind], limit: 20 }]),
+        complete: true
+      }));
+      return [...asked.events];
+    }
+  }
+  return query([{ kinds: [KIND_HANDLER_INFORMATION], "#k": [kind], limit: 20 }]);
+}
+async function recommendationFor(pointer, query, cache) {
+  const kind = String(pointer.kind);
+  if (cache) {
+    const all = await handlerSweepOf(KIND_HANDLER_RECOMMENDATION, RECOMMENDATION_SWEEP_LIMIT, query, cache);
+    if (all.complete)
+      return all.events.filter((e) => e.pubkey === pointer.pubkey && tagValue2(e, "d") === kind).sort(newestFirst).slice(0, 1);
+  }
+  return query([{ kinds: [KIND_HANDLER_RECOMMENDATION], authors: [pointer.pubkey], "#d": [kind], limit: 1 }]);
+}
 async function resolveAspectApp(aspect, query, cache, entity = "naddr") {
   return throughCache(cache, `aspect:${aspect}:${entity}`, async () => {
-    const handlers = await query([{ kinds: [KIND_HANDLER_INFORMATION], limit: HANDLER_SWEEP_LIMIT }]);
+    const handlers = await readAllManifests(query, cache);
     for (const candidate of [...handlers].sort((a, b) => b.created_at - a.created_at)) {
       const manifest = parseManifest(candidate);
       if (manifest?.aspect !== aspect)
@@ -21106,24 +21156,15 @@ async function resolveManifest(pointer, query, cache) {
   if (pointer.kind === KIND_CHANNEL_METADATA) {
     return folderManifest(await resolveAspectApp("conversation", query, cache, "naddr").catch(() => null));
   }
-  return throughCache(cache, `${pointer.kind}:${pointer.pubkey}`, () => resolveManifestUncached(pointer, query));
+  return throughCache(cache, `${pointer.kind}:${pointer.pubkey}`, () => resolveManifestUncached(pointer, query, cache));
 }
-async function resolveManifestUncached(pointer, query) {
+async function resolveManifestUncached(pointer, query, cache) {
   const parse3 = parseManifest;
   const addressOf2 = (event) => `${event.kind}:${event.pubkey}:${tagValue2(event, "d") ?? ""}`;
-  const claim = query([
-    { kinds: [KIND_HANDLER_INFORMATION], "#k": [String(pointer.kind)], limit: 20 }
-  ]);
+  const claim = claimsFor(String(pointer.kind), query, cache);
   void claim.catch(() => {
   });
-  const recommended = await query([
-    {
-      kinds: [KIND_HANDLER_RECOMMENDATION],
-      authors: [pointer.pubkey],
-      "#d": [String(pointer.kind)],
-      limit: 1
-    }
-  ]);
+  const recommended = await recommendationFor(pointer, query, cache);
   const manifestAddr = recommended[0]?.tags.find((t) => t[0] === "a")?.[1];
   if (manifestAddr) {
     const [kind, pubkey, ...rest] = manifestAddr.split(":");
@@ -21156,7 +21197,7 @@ async function resolveManifestUncached(pointer, query) {
 }
 async function creatorsOn(kind, query, cache) {
   return throughCache(cache, `creators:${kind}`, async () => {
-    const handlers = await query([{ kinds: [KIND_HANDLER_INFORMATION], limit: HANDLER_SWEEP_LIMIT }]);
+    const handlers = await readAllManifests(query, cache);
     const creators = [];
     const claimed = /* @__PURE__ */ new Set();
     for (const candidate of [...handlers].sort((a, b) => b.created_at - a.created_at)) {
@@ -21888,6 +21929,29 @@ function listReadFilters(pointers) {
 function listedIn(events, pointer) {
   return events.some((e) => e.kind === pointer.kind && e.pubkey === pointer.pubkey && tagValue2(e, "d") === pointer.identifier);
 }
+async function readUnlisted(pointers, query, text2 = true) {
+  const times = query.times;
+  if (pointers.length === 0 || !times)
+    return [];
+  const byTimes = listReadFilters(pointers).map(({ fields: _list, ...filter }) => ({ ...filter, fields: "times" }));
+  const parts = [];
+  for (let start = 0; start < byTimes.length; start += MAX_FILTERS_PER_QUERY)
+    parts.push(byTimes.slice(start, start + MAX_FILTERS_PER_QUERY));
+  const rows = (await Promise.all(parts.map((part) => times(part)))).flat();
+  const asked = new Set(pointers.map(pointerToAddress));
+  const answered = rows.filter((row) => asked.has(row.a));
+  if (answered.length === 0)
+    return [];
+  const wanted = answered.flatMap((row) => row.changes.filter((change) => text2 || !change.fields.every((field) => field === "description")));
+  const ids = [...new Set(wanted.map((change) => change.id))];
+  const roots = listReadFilters(answered.map((row) => addressPointerOf(row.a))).map(({ fields: _list, ...filter }) => filter);
+  const changes = [];
+  for (let start = 0; start < ids.length; start += RELAY_PAGE_CEILING) {
+    const chunk = ids.slice(start, start + RELAY_PAGE_CEILING);
+    changes.push({ ids: chunk, limit: chunk.length });
+  }
+  return queryChunked([...roots, ...changes], query);
+}
 function textUnread(objects) {
   return objects.map((object3) => FILE_KINDS.includes(object3.kind) ? { ...object3, prevs: { ...object3.prevs, description: "" } } : object3);
 }
@@ -21968,7 +22032,7 @@ async function walkArchivedAbove(starts, query, cache, listKinds = []) {
       plainRead(addresses.filter((address) => !byList.has(address)))
     ]);
     const unanswered = [...byList].filter((address) => !listedIn(listed, addressPointerOf(address)));
-    const events = [...listed, ...plain, ...await plainRead(unanswered)];
+    const events = [...listed, ...plain, ...await readUnlisted(unanswered.map((address) => addressPointerOf(address)), query)];
     const read = /* @__PURE__ */ new Map();
     for (const [index, { key, address, pointer, manifest }] of ancestors.entries()) {
       const root = events.filter((e) => e.kind === pointer.kind && e.pubkey === pointer.pubkey && tagValue2(e, "d") === pointer.identifier).sort(byOrder).at(-1);
@@ -22077,8 +22141,7 @@ async function openedEvents(plans, query, text2 = true) {
   }
   const answered = await queryChunked(filters, query);
   const unanswered = [...opened.values()].filter(({ pointer }) => !listedIn(answered, pointer));
-  const history = unanswered.length ? await queryChunked(unanswered.flatMap((plan) => plan.history), query) : [];
-  return [...answered, ...history];
+  return [...answered, ...await readUnlisted(unanswered.map(({ pointer }) => pointer), query, text2)];
 }
 function assembleObject(plan, answered, childChanges = [], childOwners = /* @__PURE__ */ new Set(), archivedChildren = false) {
   const { naddr, pointer, address, resolved, projection, commentKinds, childFilter, openUrl } = plan;
@@ -23056,7 +23119,7 @@ async function resolveFolderContents(folder, query, lookupPeople, cache, options
       addresses: await listedAddressesOf(state, query),
       placed: /* @__PURE__ */ new Map()
     }
-  ) : options.listedOnly ? { addresses: [], placed: /* @__PURE__ */ new Map() } : await addressesByContainment(folder, query);
+  ) : options.listedOnly ? { addresses: [], placed: /* @__PURE__ */ new Map() } : await addressesByContainment(folder, query, cache);
   const { kinds } = options;
   const addresses = kinds ? everyAddress.filter((address) => kinds.includes(addressPointerOf(address)?.kind ?? NaN)) : everyAddress;
   if (addresses.length === 0) {
@@ -23262,8 +23325,8 @@ async function addressesOfIds(ids, query) {
   return out;
 }
 var ID_GROUP = 50;
-async function addressesByContainment(folder, query) {
-  const handlers = await query([{ kinds: [KIND_HANDLER_INFORMATION], limit: HANDLER_SWEEP_LIMIT }]);
+async function addressesByContainment(folder, query, cache) {
+  const handlers = await readAllManifests(query, cache);
   const manifests = handlers.flatMap((event) => parseManifest(event) ?? []);
   const kinds = [
     .../* @__PURE__ */ new Set([
@@ -23438,7 +23501,8 @@ function createLoadQuery(query, options = {}) {
     flights.set(key, flight);
     return flight;
   };
-  return async (filters) => {
+  return Object.assign(load, query.times ? { times: query.times } : {});
+  async function load(filters) {
     const send = [];
     const asked = [];
     const askedWhole = [];
@@ -23547,7 +23611,7 @@ function createLoadQuery(query, options = {}) {
       out.push(...await ask(again));
     const seen = /* @__PURE__ */ new Set();
     return out.filter((e) => !seen.has(e.id) && !!seen.add(e.id));
-  };
+  }
 }
 
 // node_modules/@estiva-app/interop/dist/fields.js
@@ -24107,7 +24171,7 @@ function manifestsOf(context2) {
   return manifests;
 }
 function linkReaderOf(context2) {
-  return linkReader({ query: (filters) => context2.relay.queryAll(filters), manifests: manifestsOf(context2) });
+  return linkReader({ query: withTimes((filters) => context2.relay.queryAll(filters), (filters) => context2.relay.queryTimes(filters)), manifests: manifestsOf(context2) });
 }
 async function commentLinkTags(context2, body, own, options = {}) {
   const reader = linkReaderOf(context2);
@@ -24193,7 +24257,10 @@ function refused(what, reason, after) {
   return new BadRequest(`The relay refused ${what}: ${reason ?? "no reason given"}${after ? `. ${after}` : ""}`);
 }
 function relayQuery(context2) {
-  return (filters) => context2.relay.queryAll(filters);
+  return withTimes(
+    (filters) => context2.relay.queryAll(filters),
+    (filters) => context2.relay.queryTimes(filters)
+  );
 }
 function loadQuery(context2) {
   return createLoadQuery(relayQuery(context2), { paged: true });

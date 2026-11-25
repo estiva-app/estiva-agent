@@ -21,6 +21,7 @@ import {
   writeChange,
   resolveForeignObject,
   resolveManifest,
+  withTimes,
   type Archive,
   type ProjectionCache,
   type QueryFn,
@@ -54,7 +55,12 @@ export function refused(what: string, reason: string | undefined, after?: string
 }
 
 export function relayQuery(context: AgentContext): QueryFn {
-  return (filters) => context.relay.queryAll(filters as never)
+  // The same reader's times read rides on the query: a file the list read leaves out, a deleted one, is read by its
+  // current changes and still says who deleted it, never by every change it ever had (aa0ddf0c).
+  return withTimes(
+    (filters) => context.relay.queryAll(filters as never),
+    (filters) => context.relay.queryTimes(filters as never),
+  )
 }
 
 /**
