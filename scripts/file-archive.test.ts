@@ -10,7 +10,7 @@
 import { createHash } from 'node:crypto'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
-import { withListRead } from './list-read'
+import { timesRead, withListRead } from './list-read'
 import { fileApp } from '../lib/agent/apps/file'
 
 let failures = 0
@@ -48,7 +48,7 @@ function relay(events: SignedEvent[]) {
   }
   const queryAll = withListRead(() => events, nip01)
   const context = {
-    relay: { queryAll, publish: async (e: SignedEvent) => (published.push(e), { ok: true, eventId: e.id }) },
+    relay: { queryAll, queryTimes: timesRead(() => events), publish: async (e: SignedEvent) => (published.push(e), { ok: true, eventId: e.id }) },
     signer: { pubkey: SELF, sign: async (e: SignedEvent) => ({ ...e, id: createHash('sha256').update(JSON.stringify(e)).digest('hex'), sig: '' }) },
   } as unknown as AgentContext
   return { context, published }
