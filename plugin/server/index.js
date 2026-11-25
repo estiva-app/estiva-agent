@@ -24171,7 +24171,7 @@ function manifestsOf(context2) {
   return manifests;
 }
 function linkReaderOf(context2) {
-  return linkReader({ query: withTimes((filters) => context2.relay.queryAll(filters), (filters) => context2.relay.queryTimes(filters)), manifests: manifestsOf(context2) });
+  return linkReader({ query: (filters) => context2.relay.queryAll(filters), manifests: manifestsOf(context2) });
 }
 async function commentLinkTags(context2, body, own, options = {}) {
   const reader = linkReaderOf(context2);
