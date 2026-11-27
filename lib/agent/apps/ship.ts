@@ -18,7 +18,7 @@ import { describePlacing, placeFiles, uploadFiles, type PlacedFiles } from '../a
 import { BadRequest, flagValue, type AgentApp, type AgentContext, type ParsedArgs } from '../cli'
 import { edited, findMessage, publishEdit } from '../conversation'
 import { describe, descriptionText, formatName } from '../descriptions'
-import { commentLinkTags, printedLinks } from '../links'
+import { commentLinkTags, fileLinkOf, printedLinks } from '../links'
 import { askedToMention, fileText, mentionAdds, mentionedKeys, NO_MENTIONS, publishMentionAdds, relayMembers, withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, short } from '../resolve'
@@ -1827,6 +1827,8 @@ async function showProject(
     kind: 'project' as const,
     addr: project.addr,
     title: project.title,
+    // Its link as Copy link gives it in Ship (LIN-6).
+    url: await fileLinkOf(context, project.addr, project.title),
     summary: project.summary,
     key: project.key,
     status: status(state.vocab.project, project.status),
@@ -1876,6 +1878,8 @@ async function showIssue(
   return {
     kind: 'issue' as const,
     ...issueSummary(issue, directory, state.vocab.issue),
+    // Its link as Copy link gives it in Ship (LIN-6).
+    url: await fileLinkOf(context, issue.addr, issue.title),
     // SPEC §6.5, as a project's: off every list and out of search, still opened by its id, and who deleted it.
     ...(issue.deleted
       ? {

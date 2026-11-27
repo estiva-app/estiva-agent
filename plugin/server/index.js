@@ -19474,7 +19474,7 @@ import { dirname, join as join2 } from "node:path";
 var plugin_default = {
   name: "estiva",
   description: "Read and act on the Estiva workspace \u2014 Ship issues and Peek topics \u2014 as your own service identity.",
-  version: "0.39.1",
+  version: "0.40.0",
   author: {
     name: "Estiva",
     url: "https://github.com/estiva-app"
@@ -20995,18 +20995,18 @@ var FOLDER_MANIFEST = {
     }
   }
 };
-function folderManifest(opener) {
-  const name = opener?.webTemplate ? wordOf(opener.manifest.name) : void 0;
+function folderManifest(opener2) {
+  const name = opener2?.webTemplate ? wordOf(opener2.manifest.name) : void 0;
   return {
     manifest: name ? { ...FOLDER_MANIFEST, name } : FOLDER_MANIFEST,
     address: FOLDER_ACTIONS_ADDRESS,
     viaRecommendation: false,
-    ...opener?.webTemplate ? { webTemplate: opener.webTemplate } : {}
+    ...opener2?.webTemplate ? { webTemplate: opener2.webTemplate } : {}
   };
 }
-function bareFileOpenedBy(opener, template) {
-  const name = wordOf(opener.name) ?? BARE_FILE_MANIFEST.name;
-  const fileNoun = wordOf(opener.fileNoun);
+function bareFileOpenedBy(opener2, template) {
+  const name = wordOf(opener2.name) ?? BARE_FILE_MANIFEST.name;
+  const fileNoun = wordOf(opener2.fileNoun);
   const projections = BARE_FILE_MANIFEST.projections;
   const bare = String(KIND_BARE_FILE);
   return {
@@ -21045,9 +21045,9 @@ async function claimsFor(kind, query, cache) {
   if (cache) {
     const all = await handlerSweepOf(KIND_HANDLER_INFORMATION, HANDLER_SWEEP_LIMIT, query, cache);
     if (all.complete) {
-      const claims = all.events.filter((e) => e.tags.some((t) => t[0] === "k" && t[1] === kind)).sort(newestFirst).slice(0, 20);
-      if (claims.length > 0)
-        return claims;
+      const claims2 = all.events.filter((e) => e.tags.some((t) => t[0] === "k" && t[1] === kind)).sort(newestFirst).slice(0, 20);
+      if (claims2.length > 0)
+        return claims2;
       const asked = await throughCache(cache, `claims:${kind}`, async () => ({
         sweep: true,
         events: await query([{ kinds: [KIND_HANDLER_INFORMATION], "#k": [kind], limit: 20 }]),
@@ -21150,8 +21150,8 @@ function manifestKeyOf(pointer) {
 }
 async function resolveManifest(pointer, query, cache) {
   if (pointer.kind === KIND_BARE_FILE || pointer.kind === KIND_COMMENT2 || pointer.kind === KIND_MESSAGE2) {
-    const opener = await resolveAspectApp("conversation", query, cache, pointer.kind === KIND_BARE_FILE ? "naddr" : "nevent");
-    return opener?.webTemplate ? bareFileOpenedBy(opener.manifest, opener.webTemplate) : bareFileManifest();
+    const opener2 = await resolveAspectApp("conversation", query, cache, pointer.kind === KIND_BARE_FILE ? "naddr" : "nevent");
+    return opener2?.webTemplate ? bareFileOpenedBy(opener2.manifest, opener2.webTemplate) : bareFileManifest();
   }
   if (pointer.kind === KIND_CHANNEL_METADATA) {
     return folderManifest(await resolveAspectApp("conversation", query, cache, "naddr").catch(() => null));
@@ -23324,8 +23324,9 @@ async function addressesOfIds(ids, query) {
       out.set(id, `${[...one][0]}:${id}`);
   return out;
 }
+var KIND_PROJECT = 30850;
 var ID_GROUP = 50;
-async function addressesByContainment(folder, query, cache) {
+async function addressesByContainment(folder, query, cache, options = {}) {
   const handlers = await readAllManifests(query, cache);
   const manifests = handlers.flatMap((event) => parseManifest(event) ?? []);
   const kinds = [
@@ -23339,12 +23340,22 @@ async function addressesByContainment(folder, query, cache) {
     if (manifest.records)
       rules.set(manifest.records.changeKind, manifest.records);
   }
-  const found = await query([
-    { "#h": [folder], kinds, limit: 500 },
-    { "#buzz-channel": [folder], kinds, limit: 500 },
-    ...rules.size ? [{ "#h": [folder], kinds: [...rules.keys()], limit: 500 }] : []
+  const byList = query.catchesUpLists === true;
+  const [found, projects] = await Promise.all([
+    query([
+      { "#h": [folder], kinds, limit: 500 },
+      ...byList ? [] : [{ "#buzz-channel": [folder], kinds, limit: 500 }],
+      ...rules.size ? [{ "#h": [folder], kinds: [...rules.keys()], limit: 500 }] : []
+    ]),
+    // A list read goes on its own: a relay refuses a request mixing it with plain ones. It leaves a deleted file out
+    // (§6.13), so the deleted files' listing reads the first records instead, a plain read the copy catches up too.
+    byList ? query([options.deleted ? { kinds: [KIND_PROJECT] } : { fields: "newest", kinds: [KIND_PROJECT] }]) : Promise.resolve([])
   ]);
-  const held = found.filter((event) => kinds.includes(event.kind));
+  const held = [
+    ...found.filter((event) => kinds.includes(event.kind)),
+    // First records only: the changes beside them are the list's, not placements in this Folder.
+    ...projects.filter((event) => event.kind === KIND_PROJECT && kinds.includes(event.kind) && tagValue2(event, "buzz-channel") === folder)
+  ];
   const addressOf2 = (event) => pointerToAddress({
     kind: event.kind,
     pubkey: event.pubkey,
@@ -23474,6 +23485,10 @@ function completeByValue(shape, answer, paged) {
   }
   return !paged && matched >= Math.min(shape.limit, RELAY_PAGE_CEILING) ? null : byValue;
 }
+function isWideList(filter) {
+  const { kinds, fields, ...rest } = filter;
+  return fields === "newest" && Object.keys(rest).length === 0 && Array.isArray(kinds) && kinds.length > 0 && kinds.every((kind) => typeof kind === "number");
+}
 function createLoadQuery(query, options = {}) {
   const paged = options.paged === true;
   const answers = (held, limit) => !!held && (paged || held.limit <= limit);
@@ -23482,6 +23497,7 @@ function createLoadQuery(query, options = {}) {
   const files = /* @__PURE__ */ new Map();
   const fileKey = (read, d) => `${read.text ? "text" : "list"}:${read.kind}:${read.author}:${d}`;
   const flights = /* @__PURE__ */ new Map();
+  const wideLists = /* @__PURE__ */ new Map();
   const remember = (memo, key, entry) => {
     if ((memo.get(key)?.limit ?? -1) > entry.limit)
       return;
@@ -23501,8 +23517,18 @@ function createLoadQuery(query, options = {}) {
     flights.set(key, flight);
     return flight;
   };
-  return Object.assign(load, query.times ? { times: query.times } : {});
+  return Object.assign(load, query.times ? { times: query.times } : {}, query.catchesUpLists ? { catchesUpLists: true } : {});
   async function load(filters) {
+    if (query.catchesUpLists && filters.length === 1 && isWideList(filters[0])) {
+      const key = JSON.stringify(filters[0]);
+      const held = wideLists.get(key);
+      if (held)
+        return held;
+      const read = query(filters);
+      wideLists.set(key, read);
+      read.catch(() => wideLists.get(key) === read && wideLists.delete(key));
+      return read;
+    }
     const send = [];
     const asked = [];
     const askedWhole = [];
@@ -23815,6 +23841,14 @@ var BASE_KINDS = new Set(Object.keys(BASE_TYPE_OF_KIND).map(Number));
 // node_modules/@estiva-app/interop/dist/objectUrl.js
 var TRAILING_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var TRAILING_EVENT_ID_RE = /(?:^|[^0-9a-f])([0-9a-f]{64})$/i;
+var SLUG_MAX_LENGTH = 60;
+function slugify2(title) {
+  return title.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, SLUG_MAX_LENGTH).replace(/-+$/g, "");
+}
+function objectRef(identifier, title) {
+  const slug = title ? slugify2(title) : "";
+  return slug ? `${slug}-${identifier}` : identifier;
+}
 function identifierFromRef(ref) {
   const match = TRAILING_UUID_RE.exec(ref);
   return match ? match[0].toLowerCase() : null;
@@ -24146,6 +24180,72 @@ function writtenOpenerOf(url, opens, origin, declared) {
   }
 }
 
+// node_modules/@estiva-app/interop/dist/fileLink.js
+var KIND_HANDLER_INFORMATION2 = 31990;
+var KIND_BARE_FILE2 = 30840;
+var KIND_NAMED_FILE = 30852;
+var WORD = /^[a-z][a-z0-9-]*$/;
+var RESERVED_WORDS = ["o", "app"];
+var ADDRESS3 = /^(\d+):([0-9a-f]{64}):([^]*)$/;
+var FILE_SHAPE = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+\/([^/?#]+)\/(?:<slug>-)?<d>(?:#(?!\/)[^]*)?$/i;
+function fileLinkWordsOf(manifests) {
+  const published3 = manifests.filter((m) => m.kind === void 0 || m.kind === KIND_HANDLER_INFORMATION2).sort((a, b) => b.created_at - a.created_at || (a.id ?? "").localeCompare(b.id ?? ""));
+  const patterns = published3.flatMap((m) => urlPatternsOf(m));
+  const origins = [...new Set(patterns.map((p) => originOf(p.pattern)).filter((o) => o !== null))];
+  const byKind2 = {};
+  for (const kind of FILE_KINDS) {
+    if (kind === KIND_NAMED_FILE)
+      continue;
+    const owner = published3.find((m) => kind === KIND_BARE_FILE2 ? opensConversations(m) : claims(m, kind));
+    const word = owner && ownersWord(owner, kind);
+    if (word && readsBackEverywhere(word, kind, patterns, origins))
+      byKind2[kind] = word;
+  }
+  return { byKind: byKind2 };
+}
+function filePathOf(address, words, title) {
+  const match = ADDRESS3.exec(address);
+  if (!match)
+    return null;
+  const kind = Number(match[1]);
+  const d = match[3];
+  if (!FILE_KINDS.includes(kind) || !isFileId(d))
+    return null;
+  const word = words.byKind[kind];
+  return word ? `/${word}/${objectRef(d, title)}` : `/o/${addrToNaddr(address)}`;
+}
+function claims(manifest, kind) {
+  if (!manifest.tags.some((t) => t[0] === "k" && t[1] === String(kind)))
+    return false;
+  return parseManifest(manifest)?.projections?.[String(kind)] !== void 0;
+}
+function opensConversations(manifest) {
+  return parseManifest(manifest)?.aspect === "conversation" && webTemplate(manifest, "naddr") !== void 0;
+}
+function ownersWord(owner, kind) {
+  for (const { pattern, kind: declared } of urlPatternsOf(owner)) {
+    if (declared !== kind)
+      continue;
+    const word = FILE_SHAPE.exec(pattern)?.[1];
+    if (word && WORD.test(word) && !RESERVED_WORDS.includes(word))
+      return word;
+  }
+  return void 0;
+}
+function readsBackEverywhere(word, kind, patterns, origins) {
+  const d = "00000000-0000-4000-8000-000000000000";
+  return origins.every((origin) => {
+    const match = matchObjectUrl(`${origin}/${word}/${d}`, patterns);
+    if (match === null || match.by !== "d" || match.identifier !== d || match.within)
+      return false;
+    return match.kind === kind || match.kind === void 0 && match.kinds === void 0;
+  });
+}
+function originOf(url) {
+  const match = /^(https?):\/\/([^/?#]+)/i.exec(url);
+  return match ? `${match[1].toLowerCase()}://${match[2].toLowerCase()}` : null;
+}
+
 // lib/agent/links.ts
 var KIND_APP_HANDLER2 = 31990;
 var byRelay = /* @__PURE__ */ new WeakMap();
@@ -24169,6 +24269,61 @@ function manifestsOf(context2) {
   };
   byRelay.set(context2.relay, manifests);
   return manifests;
+}
+var wordsOf = /* @__PURE__ */ new WeakMap();
+async function fileLinkOf(context2, address, title, fallback) {
+  let manifests;
+  try {
+    manifests = await manifestsOf(context2)();
+  } catch {
+    return fallback;
+  }
+  let held = wordsOf.get(manifests);
+  if (!held) {
+    held = { words: fileLinkWordsOf(manifests), origins: originsByShape(manifests) };
+    wordsOf.set(manifests, held);
+  }
+  const path = filePathOf(address, held.words, title);
+  if (path === null) return fallback;
+  const kind = address.slice(0, address.indexOf(":"));
+  const word = path.startsWith("/o/") ? void 0 : path.split("/")[1];
+  const origin = word && held.origins.get(`${kind}/${word}`) || originOf2(fallback) || held.origins.get(kind) || opener(held);
+  return origin ? `${origin}${path}` : fallback;
+}
+function originsByShape(manifests) {
+  const origins = /* @__PURE__ */ new Map();
+  const newestFirst2 = [...manifests].sort((a, b) => b.created_at - a.created_at || (a.id ?? "").localeCompare(b.id ?? ""));
+  const owns = (manifest, kind) => kind === KIND_BARE_FILE ? contentOf(manifest)?.aspect === "conversation" && manifest.tags.some((t) => t[0] === "web" && t[2] === "naddr") : manifest.tags.some((t) => t[0] === "k" && t[1] === String(kind)) && contentOf(manifest)?.projections?.[String(kind)] !== void 0;
+  for (const manifest of newestFirst2) {
+    for (const { pattern, kind } of urlPatternsOf(manifest)) {
+      const origin = originOf2(pattern);
+      if (kind === void 0 || !origin || !owns(manifest, kind)) continue;
+      const word = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+\/([^/?#]+)\//i.exec(pattern)?.[1];
+      if (word && !origins.has(`${kind}/${word}`)) origins.set(`${kind}/${word}`, origin);
+      if (!origins.has(String(kind))) origins.set(String(kind), origin);
+    }
+  }
+  return origins;
+}
+function opener(held) {
+  const word = held.words.byKind[KIND_BARE_FILE];
+  return word ? held.origins.get(`${KIND_BARE_FILE}/${word}`) : void 0;
+}
+function contentOf(manifest) {
+  try {
+    const parsed = JSON.parse(manifest.content);
+    return parsed && typeof parsed === "object" ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function originOf2(url) {
+  if (!url) return void 0;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return void 0;
+  }
 }
 function linkReaderOf(context2) {
   return linkReader({ query: (filters) => context2.relay.queryAll(filters), manifests: manifestsOf(context2) });
@@ -26318,6 +26473,8 @@ async function showProject(context2, state, project, { historyText, every }, rea
     kind: "project",
     addr: project.addr,
     title: project.title,
+    // Its link as Copy link gives it in Ship (LIN-6).
+    url: await fileLinkOf(context2, project.addr, project.title),
     summary: project.summary,
     key: project.key,
     status: status(state.vocab.project, project.status),
@@ -26356,6 +26513,8 @@ async function showIssue(context2, state, issue2, { historyText, every }, readMo
   return {
     kind: "issue",
     ...issueSummary(issue2, directory, state.vocab.issue),
+    // Its link as Copy link gives it in Ship (LIN-6).
+    url: await fileLinkOf(context2, issue2.addr, issue2.title),
     // SPEC §6.5, as a project's: off every list and out of search, still opened by its id, and who deleted it.
     ...issue2.deleted ? {
       deleted: {
@@ -27408,6 +27567,9 @@ function topicOf(file, folder) {
     object: file
   };
 }
+function linkOf(context2, topic) {
+  return fileLinkOf(context2, topic.address, topic.object.slots.title?.value, topic.url);
+}
 function who2(directory, pubkey) {
   return directory.get(pubkey)?.name ?? `${pubkey.slice(0, 8)}\u2026`;
 }
@@ -27463,6 +27625,7 @@ var peekApp = {
           relayQuery(context2),
           cache
         );
+        const links = new Map(await Promise.all(topics.map(async (topic) => [topic.address, await linkOf(context2, topic)])));
         return {
           topics: topics.map((topic) => {
             const talk = messages[topic.address] ?? [];
@@ -27480,7 +27643,7 @@ var peekApp = {
               */
               conversations: talk.length,
               newestConversation: last ? new Date(last * 1e3).toISOString() : void 0,
-              url: topic.url
+              url: links.get(topic.address)
             };
           }).sort((a, b) => (b.newestConversation ?? "").localeCompare(a.newestConversation ?? "")),
           /*
@@ -27529,7 +27692,7 @@ var peekApp = {
           title: topic.title,
           summary: topic.summary,
           folder: topic.folder.name ?? topic.folder.id,
-          url: topic.url,
+          url: await linkOf(context2, topic),
           conversations: conversations.map((thread) => ({
             id: thread.root.id,
             // Said on the wire by a kind:9101, never inferred from the text.
@@ -27563,7 +27726,7 @@ var peekApp = {
         const topic = await findTopicToWrite(context2, createProjectionCache(), reference);
         const result = await comment(context2, topic, body);
         published(result, `a comment on ${topic.title}`);
-        return { started: { topic: topic.title, url: topic.url }, eventId: result.eventId };
+        return { started: { topic: topic.title, url: await linkOf(context2, topic) }, eventId: result.eventId };
       }
     },
     {
@@ -27592,7 +27755,7 @@ var peekApp = {
         const result = await comment(context2, topic, body, replyToOf(thread.root));
         published(result, `a reply on ${topic.title}`);
         return {
-          repliedTo: { topic: topic.title, conversation: thread.id, opening: thread.opening.slice(0, 80), url: topic.url },
+          repliedTo: { topic: topic.title, conversation: thread.id, opening: thread.opening.slice(0, 80), url: await linkOf(context2, topic) },
           eventId: result.eventId
         };
       }
@@ -27717,7 +27880,7 @@ var peekApp = {
         const result = await onTopic(context2, topic, summaryAction, summary, KIND_CHANGE, void 0, void 0, void 0, [], void 0, "summary");
         published(result, `the summary of ${topic.title}`);
         return {
-          changed: { topic: topic.title, from: topic.summary ?? "", to: summary, url: topic.url },
+          changed: { topic: topic.title, from: topic.summary ?? "", to: summary, url: await linkOf(context2, topic) },
           eventId: result.eventId,
           ...summaryWarning(summary) ? { note: summaryWarning(summary) } : {}
         };
@@ -27728,21 +27891,21 @@ var peekApp = {
 
 // lib/agent/apps/file.ts
 import { createHash, randomUUID as randomUUID2 } from "node:crypto";
-var ADDRESS3 = /^\d+:[0-9a-f]{64}:[^\s]+$/;
+var ADDRESS4 = /^\d+:[0-9a-f]{64}:[^\s]+$/;
 var KIND_FOLDER = 39e3;
 var appliesTo2 = (action, kind) => (Array.isArray(action.appliesTo) ? action.appliesTo : [action.appliesTo]).includes(String(kind));
 var describeAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.field === "description" && appliesTo2(action, kind))?.id;
 var commentAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.kind === KIND.COMMENT && appliesTo2(action, kind))?.id;
 var archiveAction = (manifest, kind) => manifest.actions?.find((action) => action.emits?.field === "archived" && appliesTo2(action, kind))?.id;
 async function nameOf3(context2, address, cache) {
-  if (!ADDRESS3.test(address)) return "its team";
+  if (!ADDRESS4.test(address)) return "its team";
   const above = await resolveForeignObject(addrToNaddr(address), relayQuery(context2), async () => ({}), void 0, cache).catch(() => void 0);
   const title = above?.slots.title?.value;
   return title ? `\u201C${title}\u201D` : address;
 }
 function addressArg(args2, command2) {
   const address = args2.positional[0];
-  if (!address || !ADDRESS3.test(address)) {
+  if (!address || !ADDRESS4.test(address)) {
     throw new BadRequest(`${command2} needs a file's address, kind:pubkey:d, as \`file create\`, \`ship show\` and \`peek topics\` print it.`);
   }
   return address;
@@ -27984,7 +28147,7 @@ var fileApp = {
         const mentioned = await publishMentionAdds(context2, adds, `The text of "${title}" (${address})`);
         const file = await resolveForeignObject(addrToNaddr(address), query, async () => ({}));
         return {
-          created: { title, type, address, folder: folder.name ?? folder.id, ...summary ? { summary } : {}, url: file?.openUrl },
+          created: { title, type, address, folder: folder.name ?? folder.id, ...summary ? { summary } : {}, url: await fileLinkOf(context2, address, title, file?.openUrl) },
           eventId: signed.id,
           ...body?.blocks ? { blocks: body.blocks.added } : {},
           ...mentioned,
@@ -28010,7 +28173,7 @@ var fileApp = {
           // `file create --folder` takes it, where two Folders can share a name.
           folderId,
           address,
-          url: file.openUrl,
+          url: await fileLinkOf(context2, address, file.slots.title?.value, file.openUrl),
           /*
             The text as `describe` takes it back: one chunk per block, a blank
             line apart. `version` is the save that text is (§6.2); pass it to
@@ -28080,7 +28243,7 @@ var fileApp = {
         const detached = next.blocks?.removed.length ? detachedBy((await readConversation(context2, { address }, cache)).conversations, before, next.value) : [];
         return {
           // The save this one made is the version the next `describe` takes.
-          changed: { file: title, address, url: file.openUrl, version: result.eventId },
+          changed: { file: title, address, url: await fileLinkOf(context2, address, file.slots.title?.value, file.openUrl), version: result.eventId },
           ...next.blocks ? { blocks: next.blocks } : {},
           eventId: result.eventId,
           ...merged ? { merged } : {},
@@ -28125,7 +28288,7 @@ var fileApp = {
         return {
           [thread ? "repliedTo" : "commented"]: {
             file: title,
-            url: file.openUrl,
+            url: await fileLinkOf(context2, address, file.slots.title?.value, file.openUrl),
             ...thread ? { comment: thread.root.id, opening: thread.root.body.slice(0, 80), ...placeOn(thread.root, textOf4(file)) } : {}
           },
           eventId: result.eventId,
@@ -28141,7 +28304,7 @@ var fileApp = {
       usage: 'summarize <kind:pubkey:d> --summary "..."',
       async run(context2, args2) {
         const address = args2.positional[0];
-        if (!address || !ADDRESS3.test(address)) {
+        if (!address || !ADDRESS4.test(address)) {
           throw new BadRequest("summarize needs a file's address, kind:pubkey:d, as `ship show` and `peek topics` print it.");
         }
         const text2 = flagValue(args2, "summary");
@@ -28197,7 +28360,7 @@ var fileApp = {
         const result = await actOnFile(context2, { address, title }, archiveAction, value, KIND_CHANGE, void 0, changeShape(address, "archived", value), void 0, [], note, "archived");
         published(result, `${archived ? "archiving" : "unarchiving"} ${title}`);
         return {
-          changed: { file: title, address, url: file.openUrl },
+          changed: { file: title, address, url: await fileLinkOf(context2, address, file.slots.title?.value, file.openUrl) },
           archived,
           ...note ? { resolution: note } : {},
           eventId: result.eventId,

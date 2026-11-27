@@ -175,6 +175,16 @@ const fixture = () => {
   const saved = created!.events.find((e) => e.kind === 1851 && tag(e, 'field') === 'description')
   check('…and a version to pass back to describe: the save the text is, by its id', out.version === saved?.id, `${out.version} vs ${saved?.id}`)
   check('…and the words the comment quotes', thread?.quote === 'doing this', JSON.stringify(thread))
+  // LIN-6: the link Copy link gives in Leaf, never the `/f/` the old manifest's `web` still names.
+  const d = created!.address.split(':')[2]
+  check('…and its short link on Leaf, as Copy link gives it', out.url === `https://leaf.estiva.app/document/shaping-the-agent-in-leaf-${d}`, out.url)
+}
+{
+  // LIN-6: a type its app declares no address word for gets the `/o/` link every app answers.
+  const unworded = { ...leafManifest, id: 'f'.repeat(64), tags: leafManifest.tags.filter((t) => t[0] !== 'urls') }
+  const { context } = relay([unworded, ...created!.events.filter((e) => e !== leafManifest)])
+  const out = await run('show', context, [created!.address], {})
+  check('a file whose type has no short link prints /o/<naddr> on its app', out.url === `https://leaf.estiva.app/o/${addrToNaddr(created!.address)}`, out.url)
 }
 {
   // A Leaf link as Miky pastes one: host and type from the manifests' `urls` (§7.7), the block anchor ignored.

@@ -1,0 +1,48 @@
+{
+  "recordedAt": "2026-11-27T15:14:26.916Z",
+  "note": "Peek's published kind:31990, recorded from production for LIN-6's link tests.",
+  "event": {
+    "content": "{\"name\":\"Peek\",\"about\":\"Conversations\",\"aspect\":\"conversation\",\"fileNoun\":\"topic\",\"projections\":{},\"actions\":[],\"vocabularies\":{}}",
+    "created_at": 1793796471,
+    "id": "d2f0030c028557342334e644780189c71d5fc8ad75f251dbc0d3b9f200909ac3",
+    "kind": 31990,
+    "pubkey": "0a592986344997daba31087948acabd1e4c976e2862b2179e8c803701aef142d",
+    "sig": "eb9da0ca8521b75e13c34818be0ddc08367a0a13a32508ffad00b975119d170b8812fe7d80f5701aea48c99095a9634f67eeb8a20560948cf6b426821c0cf27e",
+    "tags": [
+      [
+        "d",
+        "estiva-peek"
+      ],
+      [
+        "web",
+        "https://peek.estiva.app/o/<bech32>",
+        "naddr"
+      ],
+      [
+        "web",
+        "https://peek.estiva.app/o/<bech32>",
+        "nevent"
+      ],
+      [
+        "urls",
+        "https://peek.estiva.app/topic/<slug>-<d>",
+        "30840"
+      ],
+      [
+        "urls",
+        "https://peek.estiva.app/topic/<slug>-<d>?thread=<id>",
+        "1111"
+      ],
+      [
+        "urls",
+        "https://peek.estiva.app/topic-old/<slug>-<d>",
+        "39000"
+      ],
+      [
+        "urls",
+        "https://peek.estiva.app/message/<id>",
+        "9"
+      ]
+    ]
+  }
+}
