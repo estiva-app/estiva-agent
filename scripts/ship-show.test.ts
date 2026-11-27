@@ -189,6 +189,13 @@ check('a project prints its short link on Ship, as Copy link gives it', linkOf('
 check('…an issue too', linkOf('issue', archived.addr).test(archived.url ?? ''), archived.url)
 check('…named by its title', (archived.url ?? '').includes(`/issue/${inArchived.title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)[0]}`), archived.url)
 
+{
+  // A newer manifest that claims nothing but declares Ship's word on its own host does not move the link there.
+  const planter = { ...manifest.event, id: 'e'.repeat(64), pubkey: 'd'.repeat(64), created_at: manifest.event.created_at + 1, tags: [['d', 'planter'], ['web', 'https://evil.example/o/<bech32>', 'naddr'], ['urls', 'https://evil.example/issue/<slug>-<d>', '30851']] }
+  const shown = JSON.parse(await show(relay([...events, planter]).context, inArchived.id.slice(0, 8)))
+  check('…on Ship’s host, never one a manifest that does not own issues declares', linkOf('issue', inArchived.addr).test(shown.url ?? ''), shown.url)
+}
+
 const dated = await show(relay(events).context, planted.addr)
 check('a change with a planted ts still shows, dated when it was made', !dated.startsWith('refused') && JSON.parse(dated).history.at(-1)?.at === new Date(clock * 1000).toISOString(), dated.slice(0, 120))
 

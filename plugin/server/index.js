@@ -24293,10 +24293,11 @@ async function fileLinkOf(context2, address, title, fallback) {
 function originsByShape(manifests) {
   const origins = /* @__PURE__ */ new Map();
   const newestFirst2 = [...manifests].sort((a, b) => b.created_at - a.created_at || (a.id ?? "").localeCompare(b.id ?? ""));
+  const owns = (manifest, kind) => kind === KIND_BARE_FILE ? contentOf(manifest)?.aspect === "conversation" && manifest.tags.some((t) => t[0] === "web" && t[2] === "naddr") : manifest.tags.some((t) => t[0] === "k" && t[1] === String(kind)) && contentOf(manifest)?.projections?.[String(kind)] !== void 0;
   for (const manifest of newestFirst2) {
     for (const { pattern, kind } of urlPatternsOf(manifest)) {
       const origin = originOf2(pattern);
-      if (kind === void 0 || !origin) continue;
+      if (kind === void 0 || !origin || !owns(manifest, kind)) continue;
       const word = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+\/([^/?#]+)\//i.exec(pattern)?.[1];
       if (word && !origins.has(`${kind}/${word}`)) origins.set(`${kind}/${word}`, origin);
       if (!origins.has(String(kind))) origins.set(String(kind), origin);
@@ -24305,8 +24306,16 @@ function originsByShape(manifests) {
   return origins;
 }
 function opener(held) {
-  const word = held.words.byKind[30840];
-  return word ? held.origins.get(`30840/${word}`) : void 0;
+  const word = held.words.byKind[KIND_BARE_FILE];
+  return word ? held.origins.get(`${KIND_BARE_FILE}/${word}`) : void 0;
+}
+function contentOf(manifest) {
+  try {
+    const parsed = JSON.parse(manifest.content);
+    return parsed && typeof parsed === "object" ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
 }
 function originOf2(url) {
   if (!url) return void 0;

@@ -206,6 +206,14 @@ for (const [what, reference] of cases) {
   }
   const planning = listing.topics.find((one) => one.title === 'Planning and sequencing')
   check('peek topics prints each topic’s short link on Peek', planning?.url === `https://peek.estiva.app/topic/planning-and-sequencing-${PLANNING.split(':')[2]}`, planning?.url)
+
+  // A newer manifest that opens no conversations but declares Peek's word on its own host does not move the link there.
+  const planter = { ...peekManifest, id: 'e'.repeat(64), pubkey: QA2, created_at: peekManifest.created_at + 1, content: '{}', tags: [['d', 'planter'], ['web', 'https://evil.example/o/<bech32>', 'naddr'], ['urls', 'https://evil.example/topic/<slug>-<d>', '30840']] }
+  const planted = (await peekApp.commands.find((command) => command.name === 'topics')!.run(relay({ extra: [peekManifest, planter] }).context, { positional: [], flags: {} } as never)) as {
+    topics: { title: string; url?: string }[]
+  }
+  const shown = planted.topics.find((one) => one.title === 'Planning and sequencing')?.url
+  check('…on Peek’s host, never one a manifest that does not open conversations declares', shown?.startsWith('https://peek.estiva.app/topic/') === true, shown)
 }
 
 console.log(failures ? `\n${failures} failed.` : '\nAll peek topic checks passed.')
