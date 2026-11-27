@@ -54,6 +54,7 @@ import { KIND_CHANGE } from '@estiva-app/conversation'
 import { actOnFile, archiveOfFile, loadQuery, pointerOf, published, refuseIfArchived, relayQuery } from '../act-on-file'
 import { BadRequest, flagValue, type AgentApp, type AgentContext } from '../cli'
 import { edited, findMessage, findThread, publishEdit, readConversation, replyToOf } from '../conversation'
+import { fileLinkOf } from '../links'
 import { withMentions } from '../mentions'
 import { profilesOf, type Directory } from '../profiles'
 import { resolveMaybe, resolveOne, type Resolvable } from '../resolve'
@@ -246,6 +247,11 @@ function topicOf(file: ForeignObject, folder: FolderSummary): Topic {
   }
 }
 
+/** A topic's link as Copy link gives it in Peek (LIN-6); its manifest's `web` link only when none can be written. */
+function linkOf(context: AgentContext, topic: Topic): Promise<string | undefined> {
+  return fileLinkOf(context, topic.address, topic.object.slots.title?.value, topic.url)
+}
+
 function who(directory: Directory, pubkey: string): string {
   return directory.get(pubkey)?.name ?? `${pubkey.slice(0, 8)}…`
 }
@@ -369,6 +375,8 @@ export const peekApp: AgentApp = {
           relayQuery(context),
           cache,
         )
+        // Each topic's link as Copy link gives it (LIN-6), from the one manifest read.
+        const links = new Map(await Promise.all(topics.map(async (topic) => [topic.address, await linkOf(context, topic)] as const)))
         return {
           topics: topics
             .map((topic) => {
@@ -387,7 +395,7 @@ export const peekApp: AgentApp = {
                 */
                 conversations: talk.length,
                 newestConversation: last ? new Date(last * 1000).toISOString() : undefined,
-                url: topic.url,
+                url: links.get(topic.address),
               }
             })
             .sort((a, b) => (b.newestConversation ?? '').localeCompare(a.newestConversation ?? '')),
@@ -438,7 +446,7 @@ export const peekApp: AgentApp = {
           title: topic.title,
           summary: topic.summary,
           folder: topic.folder.name ?? topic.folder.id,
-          url: topic.url,
+          url: await linkOf(context, topic),
           conversations: conversations.map((thread) => ({
             id: thread.root.id,
             // Said on the wire by a kind:9101, never inferred from the text.
@@ -474,7 +482,7 @@ export const peekApp: AgentApp = {
         const result = await comment(context, topic, body)
         published(result, `a comment on ${topic.title}`)
 
-        return { started: { topic: topic.title, url: topic.url }, eventId: result.eventId }
+        return { started: { topic: topic.title, url: await linkOf(context, topic) }, eventId: result.eventId }
       },
     },
     {
@@ -512,7 +520,7 @@ export const peekApp: AgentApp = {
         published(result, `a reply on ${topic.title}`)
 
         return {
-          repliedTo: { topic: topic.title, conversation: thread.id, opening: thread.opening.slice(0, 80), url: topic.url },
+          repliedTo: { topic: topic.title, conversation: thread.id, opening: thread.opening.slice(0, 80), url: await linkOf(context, topic) },
           eventId: result.eventId,
         }
       },
@@ -675,7 +683,7 @@ export const peekApp: AgentApp = {
         published(result, `the summary of ${topic.title}`)
 
         return {
-          changed: { topic: topic.title, from: topic.summary ?? '', to: summary, url: topic.url },
+          changed: { topic: topic.title, from: topic.summary ?? '', to: summary, url: await linkOf(context, topic) },
           eventId: result.eventId,
           ...(summaryWarning(summary) ? { note: summaryWarning(summary) } : {}),
         }

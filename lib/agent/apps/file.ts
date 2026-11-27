@@ -54,7 +54,7 @@ import { describePlacing, uploadFiles } from '../attachments'
 import { BadRequest, flagValue, refuseUnsignable, type AgentApp, type AgentContext } from '../cli'
 import { edited, findThread, readConversation, replyToOf, type Conversation } from '../conversation'
 import { descriptionText, formatName } from '../descriptions'
-import { addressesOfUrl, printedLinks } from '../links'
+import { addressesOfUrl, fileLinkOf, printedLinks } from '../links'
 import { askedToMention, fileText, mentionAdds, mentionedKeys, NO_MENTIONS, publishMentionAdds, relayMembers, withMentions } from '../mentions'
 import { profilesOf } from '../profiles'
 import { resolveOne } from '../resolve'
@@ -428,7 +428,7 @@ export const fileApp: AgentApp = {
 
         const file = await resolveForeignObject(addrToNaddr(address), query, async () => ({}))
         return {
-          created: { title, type, address, folder: folder.name ?? folder.id, ...(summary ? { summary } : {}), url: file?.openUrl },
+          created: { title, type, address, folder: folder.name ?? folder.id, ...(summary ? { summary } : {}), url: await fileLinkOf(context, address, title, file?.openUrl) },
           eventId: signed.id,
           ...(body?.blocks ? { blocks: body.blocks.added } : {}),
           ...mentioned,
@@ -455,7 +455,7 @@ export const fileApp: AgentApp = {
           // `file create --folder` takes it, where two Folders can share a name.
           folderId,
           address,
-          url: file.openUrl,
+          url: await fileLinkOf(context, address, file.slots.title?.value, file.openUrl),
           /*
             The text as `describe` takes it back: one chunk per block, a blank
             line apart. `version` is the save that text is (§6.2); pass it to
@@ -541,7 +541,7 @@ export const fileApp: AgentApp = {
           : []
         return {
           // The save this one made is the version the next `describe` takes.
-          changed: { file: title, address, url: file.openUrl, version: result.eventId },
+          changed: { file: title, address, url: await fileLinkOf(context, address, file.slots.title?.value, file.openUrl), version: result.eventId },
           ...(next.blocks ? { blocks: next.blocks } : {}),
           eventId: result.eventId,
           ...(merged ? { merged } : {}),
@@ -597,7 +597,7 @@ export const fileApp: AgentApp = {
         return {
           [thread ? 'repliedTo' : 'commented']: {
             file: title,
-            url: file.openUrl,
+            url: await fileLinkOf(context, address, file.slots.title?.value, file.openUrl),
             ...(thread ? { comment: thread.root.id, opening: thread.root.body.slice(0, 80), ...placeOn(thread.root, textOf(file)) } : {}),
           },
           eventId: result.eventId,
@@ -685,7 +685,7 @@ export const fileApp: AgentApp = {
         published(result, `${archived ? 'archiving' : 'unarchiving'} ${title}`)
 
         return {
-          changed: { file: title, address, url: file.openUrl },
+          changed: { file: title, address, url: await fileLinkOf(context, address, file.slots.title?.value, file.openUrl) },
           archived,
           ...(note ? { resolution: note } : {}),
           eventId: result.eventId,

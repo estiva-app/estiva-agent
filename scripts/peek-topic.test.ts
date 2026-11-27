@@ -11,6 +11,9 @@
  * Asserted on the printed answer and on what the relay was asked.
  */
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { SignedEvent } from '@estiva-app/protocol'
 import type { AgentContext } from '../lib/agent/cli'
 import { peekApp } from '../lib/agent/apps/peek'
@@ -81,8 +84,8 @@ const EVENTS = [
  * (SPEC §5.2): every typed word starts a word of a title change's value.
  * `fullSearch` answers every search with a full page. `asked` records every filter.
  */
-function relay({ fullSearch = false } = {}) {
-  const events = [...EVENTS]
+function relay({ fullSearch = false, extra = [] as SignedEvent[] } = {}) {
+  const events = [...EVENTS, ...extra]
   /** The list read (§6.13): each matching first record, and the newest change of each of its fields. */
   const listed = (filter: Record<string, unknown>) =>
     events
@@ -192,6 +195,17 @@ for (const [what, reference] of cases) {
   check('peek topics asks for no topic’s every change where the relay offers the list read', everyChange.length === 0, JSON.stringify(everyChange).slice(0, 300))
   const titles = listing.topics.map((one) => one.title)
   check('…and lists each topic by its current title, the archived one left out', titles.includes('Roadmap review') && !titles.includes('Old name') && !titles.includes('Shelved idea'), JSON.stringify(titles))
+}
+
+{
+  // LIN-6: each topic's link is the one Copy link gives in Peek, from the manifest Peek published.
+  const peekManifest = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'conformance', 'peek-manifest.json'), 'utf8')).event as SignedEvent
+  const { context } = relay({ extra: [peekManifest] })
+  const listing = (await peekApp.commands.find((command) => command.name === 'topics')!.run(context, { positional: [], flags: {} } as never)) as {
+    topics: { title: string; url?: string }[]
+  }
+  const planning = listing.topics.find((one) => one.title === 'Planning and sequencing')
+  check('peek topics prints each topic’s short link on Peek', planning?.url === `https://peek.estiva.app/topic/planning-and-sequencing-${PLANNING.split(':')[2]}`, planning?.url)
 }
 
 console.log(failures ? `\n${failures} failed.` : '\nAll peek topic checks passed.')

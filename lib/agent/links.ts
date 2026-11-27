@@ -24,7 +24,19 @@ import {
   type ContentFormat,
   type RenderBlock,
 } from '@estiva-app/protocol'
-import { linkReader, linksIn, matchObjectUrl, MAX_LINKS_ASKED, urlPatternsOf, type LinkReader, type OwnPlace } from '@estiva-app/interop'
+import {
+  fileLinkWordsOf,
+  filePathOf,
+  linkReader,
+  linksIn,
+  matchObjectUrl,
+  MAX_LINKS_ASKED,
+  urlPatternsOf,
+  type FileLinkWords,
+  type LinkManifest,
+  type LinkReader,
+  type OwnPlace,
+} from '@estiva-app/interop'
 import { BadRequest, type AgentContext } from './cli'
 
 /** One link as it draws: `chip` in a sentence, `row` or `card` alone on its line, `link` for words or a URL no app claims. */
@@ -46,7 +58,7 @@ export interface PrintedLink {
 /** NIP-89's handler information, where an app publishes its manifest and `urls` (§7.2). */
 const KIND_APP_HANDLER = 31990
 
-type Manifests = () => Promise<readonly { tags: string[][] }[]>
+type Manifests = () => Promise<readonly LinkManifest[]>
 
 /** One per relay connection, the signed-in agent's: the MCP server holds one for its life, the CLI one per run. */
 const byRelay = new WeakMap<object, Manifests>()
@@ -60,7 +72,7 @@ const byRelay = new WeakMap<object, Manifests>()
 function manifestsOf(context: Pick<AgentContext, 'relay'>): Manifests {
   const held = byRelay.get(context.relay)
   if (held) return held
-  let read: Promise<readonly { tags: string[][] }[]> | null = null
+  let read: Promise<readonly LinkManifest[]> | null = null
   const manifests = () => {
     if (read) return read
     const asked = context.relay.queryAll([{ kinds: [KIND_APP_HANDLER], limit: 500 }])
@@ -77,6 +89,78 @@ function manifestsOf(context: Pick<AgentContext, 'relay'>): Manifests {
   }
   byRelay.set(context.relay, manifests)
   return manifests
+}
+
+/** The words and origins read off one manifest read, kept as long as that read is. */
+const wordsOf = new WeakMap<readonly LinkManifest[], { words: FileLinkWords; origins: Map<string, string> }>()
+
+/**
+ * A file's link as Copy link gives it in Peek, Ship and Leaf (LIN-6): the
+ * shared writer's `/<word>/<slug>-<d>`, or `/o/<naddr>` for a type with no
+ * word, on the host of the app whose manifest declares that shape for the
+ * kind — the file's own app. `fallback` (a manifest's `web` link, `openUrl`)
+ * is printed only when no link can be written: an id no file can have, or no
+ * app declaring an address for the kind.
+ *
+ * why: https://github.com/estiva-app/estiva-docs/blob/main/decisions/a-files-path-is-the-same-on-every-apps-host.md
+ */
+export async function fileLinkOf(context: Pick<AgentContext, 'relay'>, address: string, title?: string, fallback?: string): Promise<string | undefined> {
+  let manifests: readonly LinkManifest[]
+  try {
+    manifests = await manifestsOf(context)()
+  } catch {
+    return fallback
+  }
+  let held = wordsOf.get(manifests)
+  if (!held) {
+    held = { words: fileLinkWordsOf(manifests), origins: originsByShape(manifests) }
+    wordsOf.set(manifests, held)
+  }
+  const path = filePathOf(address, held.words, title)
+  if (path === null) return fallback
+  const kind = address.slice(0, address.indexOf(':'))
+  const word = path.startsWith('/o/') ? undefined : path.split('/')[1]
+  const origin = (word && held.origins.get(`${kind}/${word}`)) || originOf(fallback) || held.origins.get(kind) || opener(held)
+  return origin ? `${origin}${path}` : fallback
+}
+
+/**
+ * Where each kind's addresses are served, newest manifest first: `<kind>/<word>`
+ * for the app declaring that word, and `<kind>` for the first app declaring any
+ * address for it (the host a `/o/` link goes on when no `web` link says).
+ */
+function originsByShape(manifests: readonly LinkManifest[]): Map<string, string> {
+  const origins = new Map<string, string>()
+  const newestFirst = [...manifests].sort((a, b) => b.created_at - a.created_at || (a.id ?? '').localeCompare(b.id ?? ''))
+  for (const manifest of newestFirst) {
+    for (const { pattern, kind } of urlPatternsOf(manifest)) {
+      const origin = originOf(pattern)
+      if (kind === undefined || !origin) continue
+      const word = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+\/([^/?#]+)\//i.exec(pattern)?.[1]
+      if (word && !origins.has(`${kind}/${word}`)) origins.set(`${kind}/${word}`, origin)
+      if (!origins.has(String(kind))) origins.set(String(kind), origin)
+    }
+  }
+  return origins
+}
+
+/**
+ * The host of the app that opens a bare file as a conversation (§7.8): where a
+ * `/o/` link goes for a type no app declares an address for, since every app
+ * answers `/o/` (§7.7 rule 3) and that one opens any file.
+ */
+function opener(held: { words: FileLinkWords; origins: Map<string, string> }): string | undefined {
+  const word = held.words.byKind[30840]
+  return word ? held.origins.get(`30840/${word}`) : undefined
+}
+
+function originOf(url: string | undefined): string | undefined {
+  if (!url) return undefined
+  try {
+    return new URL(url).origin
+  } catch {
+    return undefined
+  }
 }
 
 /**

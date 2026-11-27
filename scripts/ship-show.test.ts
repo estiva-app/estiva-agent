@@ -182,6 +182,13 @@ check('…and the project it left does not', !left.issues.some((issue: { addr: s
 const archived = JSON.parse(await show(relay(events).context, inArchived.id.slice(0, 8)))
 check('an issue in an archived project says it is archived with it', archived.archived?.with === archivedProject.addr, JSON.stringify(archived.archived))
 
+console.log('\n— the link it prints (LIN-6) —')
+// What Copy link gives in Ship: the path Ship's manifest declares for the kind, the slug from the title, the file's id last.
+const linkOf = (word: string, addr: string) => new RegExp(`^https://ship\\.estiva\\.app/${word}/[a-z0-9-]+-${addr.split(':')[2]}$`)
+check('a project prints its short link on Ship, as Copy link gives it', linkOf('project', into.addr).test(project.url ?? ''), project.url)
+check('…an issue too', linkOf('issue', archived.addr).test(archived.url ?? ''), archived.url)
+check('…named by its title', (archived.url ?? '').includes(`/issue/${inArchived.title.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)[0]}`), archived.url)
+
 const dated = await show(relay(events).context, planted.addr)
 check('a change with a planted ts still shows, dated when it was made', !dated.startsWith('refused') && JSON.parse(dated).history.at(-1)?.at === new Date(clock * 1000).toISOString(), dated.slice(0, 120))
 

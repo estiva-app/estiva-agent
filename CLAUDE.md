@@ -58,6 +58,12 @@ printed in every listing and on every write. Any unique prefix of four or more
 characters resolves; one that two issues share is refused with both listed
 (MAK-1). Refs collide and addresses are 110 characters; a short id is neither.
 
+**A file's `url` is its short link** (LIN-6): `ship show`, `file show|create|describe|comment|archive`
+and `peek topics|say|reply|edit-topic` print `https://<its app>/<word>/<slug>-<d>`, the
+link Copy link gives in Peek, Ship and Leaf, written by interop's `fileLinkWordsOf` /
+`filePathOf` (`fileLinkOf` in `lib/agent/links.ts`); a type no app declares a word for
+gets `/o/<naddr>`. Paste that one; never build a link by hand.
+
 **A write echoes the state it produced**, on one line — `MAK-1 · a57c26e3 ·
 in_progress · Claude · 4 comments · last: "…"` — so there is nothing to read
 back after a `set-status`, `comment` or `assign`. `status <ref>` answers the
